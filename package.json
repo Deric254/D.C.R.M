@@ -1,0 +1,14 @@
+{
+  "name": "dericbi-crm",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DericBI CRM desktop app (Tauri shell around the Python engine)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build --config src-tauri/tauri.release.conf.json"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

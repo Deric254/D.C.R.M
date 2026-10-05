@@ -1,0 +1,8 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+backend-dist/
+__pycache__/
+*.pyc
+*.sqlite3*
+backend.log

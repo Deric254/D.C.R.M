@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DericBI CRM</title>
+<style>
+  :root { --bg:#12202b; --ink:#e7edf1; --mute:#8fa1ad; --accent:#2cb391; --bad:#ff8a78; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--ink); display: grid; place-items: center;
+         font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  main { width: min(440px, 88vw); text-align: center; }
+  .mark { width: 64px; height: 64px; margin: 0 auto 22px; border-radius: 16px; background: #0f7a5f;
+          display: grid; place-items: center; font-weight: 800; font-size: 26px; color: #fff; }
+  h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  p { margin: 0; color: var(--mute); }
+  .bar { height: 3px; width: 160px; margin: 26px auto 0; background: #22333f; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 40%; background: var(--accent); border-radius: 3px;
+           animation: slide 1.1s ease-in-out infinite; }
+  @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+  .err { color: var(--bad); margin-top: 18px; white-space: pre-wrap; }
+  button { margin-top: 20px; padding: 8px 18px; border-radius: 6px; border: 0; background: var(--accent);
+           color: #06231b; font: inherit; font-weight: 650; cursor: pointer; }
+  button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .hidden { display: none; }
+  @media (prefers-reduced-motion: reduce) { .bar i { animation: none; width: 100%; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">BI</div>
+  <h1>DericBI CRM</h1>
+  <p id="line">Starting up…</p>
+  <div class="bar" id="bar"><i></i></div>
+  <div class="err hidden" id="err" role="alert"></div>
+  <button class="hidden" id="retry">Try again</button>
+</main>
+<script>
+  const line = document.getElementById('line'), bar = document.getElementById('bar');
+  const err = document.getElementById('err'), retry = document.getElementById('retry');
+  const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+  let timer = null, started = Date.now();
+
+  async function poll() {
+    try {
+      const s = await invoke('backend_status');
+      if (s.state === 'ready') { clearInterval(timer); line.textContent = 'Opening…'; location.replace(s.url); return; }
+      if (s.state === 'error') {
+        clearInterval(timer); bar.classList.add('hidden'); line.textContent = "The CRM couldn't start.";
+        err.textContent = s.message; err.classList.remove('hidden'); retry.classList.remove('hidden'); return;
+      }
+      if (Date.now() - started > 8000) line.textContent = 'Still starting. The first launch can take a little longer…';
+    } catch (e) {
+      line.textContent = 'Starting up…';
+    }
+  }
+  function begin() { started = Date.now(); clearInterval(timer); timer = setInterval(poll, 300); poll(); }
+  retry.addEventListener('click', async () => {
+    retry.classList.add('hidden'); err.classList.add('hidden'); bar.classList.remove('hidden');
+    line.textContent = 'Starting up…';
+    try { await invoke('retry_backend'); } catch (_) {}
+    begin();
+  });
+  begin();
+</script>
+</body>
+</html>

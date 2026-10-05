@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "externalBin": ["../backend-dist/dericbi-backend"]
+  }
+}
