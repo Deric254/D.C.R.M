@@ -15,11 +15,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  # Public repo that holds the installers. Must match the endpoint in src-tauri/tauri.release.conf.json.
-  RELEASES_OWNER: Deric254
-  RELEASES_REPO: D.C.R.M-releases
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -36,6 +31,8 @@ jobs:
   build:
     needs: test
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -43,10 +40,8 @@ jobs:
         shell: pwsh
         env:
           SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
           if (-not $env:SIGNING_KEY) { throw "Secret TAURI_SIGNING_PRIVATE_KEY is missing. See README > One-time setup." }
-          if (-not $env:RELEASES_TOKEN) { throw "Secret RELEASES_TOKEN is missing. See README > One-time setup." }
           if (Select-String -Path src-tauri/tauri.release.conf.json -Pattern "REPLACE_WITH_PUBLIC_KEY" -Quiet) {
             throw "Paste your updater public key into src-tauri/tauri.release.conf.json. See README > One-time setup."
           }
@@ -98,12 +93,10 @@ jobs:
       - name: Build and publish the installer
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          owner: ${{ env.RELEASES_OWNER }}
-          repo: ${{ env.RELEASES_REPO }}
           tagName: v${{ steps.ver.outputs.version }}
           releaseName: DericBI CRM v${{ steps.ver.outputs.version }}
           releaseBody: Install this version, or open the app and use Settings > About and updates.

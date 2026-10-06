@@ -8,17 +8,13 @@ Every push to `main` runs the tests, builds the Windows installer and publishes 
 
 ## One-time setup
 
-Fastest path: log in with `gh auth login`, then double-click `setup-release.bat`. It does steps 1 to 4 below and pushes. The manual steps follow.
+Log in with `gh auth login`, then double-click `setup-release.bat`. It makes the signing key, puts the public key in `src-tauri/tauri.release.conf.json`, sets the `TAURI_SIGNING_PRIVATE_KEY` secret and pushes.
 
-1. **Releases repo.** Create a public repo (created with a README, since GitHub cannot tag a release in a repo with no commits) `Deric254/D.C.R.M-releases`. This code repo is private, and an installed app cannot download from a private repo, so installers are published there.
-2. **Signing keys.** Run `npx tauri signer generate -w dericbi.key`. Keep `dericbi.key` safe and never commit it (`.gitignore` blocks `*.key`). Losing it means installed apps can no longer update.
-3. **Public key.** Paste the contents of `dericbi.key.pub` into `src-tauri/tauri.release.conf.json`, replacing `REPLACE_WITH_PUBLIC_KEY`.
-4. **GitHub secrets** (this repo > Settings > Secrets and variables > Actions):
-   - `TAURI_SIGNING_PRIVATE_KEY`: contents of `dericbi.key`
-   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the password you chose (leave empty if none)
-   - `RELEASES_TOKEN`: a personal access token (fine-grained, contents read and write on the releases repo only)
+Installers are published as GitHub Releases on this repo, which must be public (an installed app cannot download from a private repo). No other secret is needed.
 
-The workflow stops with a clear message if any of this is missing.
+Manual version: run `npx tauri signer generate -w dericbi.key`, paste `dericbi.key.pub` over `REPLACE_WITH_PUBLIC_KEY` in `src-tauri/tauri.release.conf.json`, and add the contents of `dericbi.key` as the repo secret `TAURI_SIGNING_PRIVATE_KEY` (Settings > Secrets and variables > Actions). Add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` only if you set a password. Never commit the key (`.gitignore` blocks `*.key`). Losing it means installed apps can no longer update.
+
+The workflow stops with a clear message if the key or public key is missing.
 
 ## Logo and slogan
 
