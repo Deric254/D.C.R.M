@@ -42,8 +42,11 @@ jobs:
           SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           if (-not $env:SIGNING_KEY) { throw "Secret TAURI_SIGNING_PRIVATE_KEY is missing. See README > One-time setup." }
-          if (Select-String -Path src-tauri/tauri.release.conf.json -Pattern "REPLACE_WITH_PUBLIC_KEY" -Quiet) {
-            throw "Paste your updater public key into src-tauri/tauri.release.conf.json. See README > One-time setup."
+          $pub = (Get-Content -Raw src-tauri/tauri.release.conf.json | ConvertFrom-Json).plugins.updater.pubkey
+          $decoded = ""
+          try { $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pub)) } catch {}
+          if (-not $decoded.StartsWith("untrusted comment: minisign public key")) {
+            throw "src-tauri/tauri.release.conf.json has no valid updater public key (paste the contents of dericbi.key.pub). See README > One-time setup."
           }
 
       - name: Work out the version
