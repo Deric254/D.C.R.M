@@ -7,6 +7,8 @@
       ${hint ? html`<span class="hint">${hint}</span>` : ''}</label>`;
   const select = (s, key, label, options, hint = '') => html`
     <label class="field">${label}<select name="${key}">${options.map(([v, l]) => html`<option value="${v}" ${String(s[key]) === v ? 'selected' : ''}>${l}</option>`)}</select>${hint ? html`<span class="hint">${hint}</span>` : ''}</label>`;
+  const AI_KEYS = [['gemini', 'Google Gemini', 'https://aistudio.google.com/apikey'], ['groq', 'Groq', 'https://console.groq.com/keys'],
+    ['nvidia', 'NVIDIA', 'https://build.nvidia.com/'], ['openrouter', 'OpenRouter', 'https://openrouter.ai/keys'], ['mistral', 'Mistral', 'https://console.mistral.ai/api-keys']];
   const check = (s, key, label) => html`<label class="check"><input type="checkbox" name="${key}" ${s[key] ? 'checked' : ''}>${label}</label>`;
 
   function collect(form) {
@@ -22,9 +24,16 @@
     title: 'Settings',
     async render(el) {
       let [s, health] = await Promise.all([api('/settings'), api('/health')]);
-      const draw = () => render(el, html`<form id="sform" class="stack" style="max-width:860px">
+      const form = () => html`<form id="sform" class="stack" style="max-width:860px">
         <section class="panel"><div class="panel-head"><h2>Your business</h2></div><div class="panel-body">
           ${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}</div></section>
+
+        <section class="panel"><div class="panel-head"><h2>Logo and slogan</h2></div><div class="panel-body stack" style="gap:14px">
+          <div class="row"><img id="logo-preview" class="logo-preview" src="/api/branding/logo?${Date.now()}" alt="Current logo" onerror="this.hidden=true">
+            <div class="stack" style="gap:8px"><input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp"><button type="button" class="btn small" id="logo-reset">Use the default logo</button></div></div>
+          ${field(s, 'slogan', 'Slogan', { hint: 'Shown under the name in the sidebar. Save settings to apply.' })}
+          <p class="muted small">The logo changes straight away inside the app. The program icon itself is set when the app is built: replace <code>backend/static/logo.png</code> (square PNG, 512 px or larger) and push.</p>
+        </div></section>
 
         <section class="panel"><div class="panel-head"><h2>Sending email</h2><button type="button" class="btn small right" id="gmail-smtp">Fill in Gmail settings</button></div>
           <div class="panel-body stack" style="gap:14px">
@@ -71,6 +80,24 @@
             <p class="muted small">Anyone who replies STOP, unsubscribe or similar (in English or Swahili) is marked do-not-contact and never messaged again. Keeping an opt-out line in place is good practice and helps with Kenya's Data Protection Act.</p>
           </div></section>
 
+        <section class="panel"><div class="panel-head"><h2>About and updates</h2></div><div class="panel-body stack" style="gap:12px">
+          <div class="small">DericBI CRM <strong>version ${health.version}</strong></div>
+          <div id="update-box"></div>
+        </div></section>
+
+        <section class="panel"><div class="panel-head"><h2>AI writing help</h2></div>
+          <div class="panel-body stack" style="gap:14px">
+            <p class="muted small">Paste a free key from any provider below. Keys are tried in order, so when one reaches its free limit the next one answers. Use “Write with AI” when writing a campaign or a message to one lead.</p>
+            <label class="field">What you sell<textarea name="ai_pitch" rows="2">${s.ai_pitch}</textarea><span class="hint">One or two sentences. The AI uses this so messages stay accurate.</span></label>
+            <div class="grid2">${select(s, 'ai_provider', 'Try first', [...AI_KEYS.map(([id, label]) => [id, label]), ['custom', 'Your own server']])}
+              ${field(s, 'ai_model', 'Model for that provider (optional)', { hint: 'Leave blank to use the default.' })}
+              ${AI_KEYS.map(([id, label, url]) => field(s, 'ai_key_' + id, label + ' key', { secret: true, hint: html`Free key: <a href="${url}">${url.replace('https://', '')}</a>` }))}</div>
+            <details><summary class="small muted" style="cursor:pointer">Your own server (any OpenAI-compatible address, such as Ollama)</summary>
+              <div class="grid2" style="margin-top:10px">${field(s, 'ai_custom_url', 'Address', { placeholder: 'http://localhost:11434/v1' })}${field(s, 'ai_custom_model', 'Model')}${field(s, 'ai_key_custom', 'Key (if it needs one)', { secret: true })}</div></details>
+            ${check(s, 'ai_grade_replies', 'Let the AI grade replies that the built-in rules cannot read')}
+            <div><button type="button" class="btn" id="test-ai">Test the keys</button></div>
+          </div></section>
+
         <section class="panel"><div class="panel-head"><h2>Your data</h2></div>
           <div class="panel-body stack" style="gap:12px">
             <div class="small muted">Everything is stored on this computer in <code>${health.data_dir}</code>. Passwords are stored there too, so keep backups private.</div>
@@ -83,7 +110,12 @@
           </div></section>
 
         <div class="row"><button class="btn primary" type="submit">Save settings</button><span class="muted small" id="saved"></span></div>
-      </form>`);
+      </form>`;
+      const updateBox = () => render($('#update-box'), !App.desktop()
+        ? html`<p class="muted small">Updates are installed from the desktop app.</p>`
+        : html`<div class="row"><button type="button" class="btn" id="check-update">Check for updates</button>
+            ${App.state.update ? html`<button type="button" class="btn primary" id="install-update">Install version ${App.state.update.version} and restart</button>` : ''}</div>`);
+      const draw = () => { render(el, form()); updateBox(); };
       draw();
 
       const save = async () => {
@@ -92,7 +124,13 @@
       };
       el.addEventListener('submit', async (e) => {
         e.preventDefault();
-        try { await save(); toast('Settings saved'); draw(); } catch (err) { fail(err); }
+        try { await save(); toast('Settings saved'); draw(); App.loadBrand(); } catch (err) { fail(err); }
+      });
+      const refreshLogo = () => { App.showLogo($('#logo-preview')); return App.loadBrand(); };
+      el.addEventListener('change', async (e) => {
+        const file = e.target.id === 'logo-file' && e.target.files[0]; if (!file) return;
+        try { await api('/branding/logo', { method: 'PUT', body: file }); await refreshLogo(); toast('Logo updated'); } catch (err) { fail(err); }
+        e.target.value = '';
       });
       el.addEventListener('click', async (e) => {
         const id = e.target.id; if (!id) return;
@@ -106,9 +144,18 @@
           } else if (id === 'test-sms') {
             const to = $('#t-sms').value.trim(); if (!to) return toast('Enter a mobile number to send the test to', true);
             e.target.disabled = true; await save(); const r = await api('/settings/test-sms', { method: 'POST', body: { to } }); toast(r.message);
+          } else if (id === 'test-ai') {
+            e.target.disabled = true; await save(); const r = await api('/settings/test-ai', { method: 'POST', timeout: 60000 }); toast(r.message, !r.ok, 8000);
           } else if (id === 'test-imap') {
             e.target.disabled = true; await save(); const r = await api('/settings/test-imap', { method: 'POST' }); toast(r.message);
           } else if (id === 'backup') App.download('/api/backup');
+          else if (id === 'logo-reset') { await api('/branding/logo', { method: 'DELETE' }); await refreshLogo(); toast('Default logo restored'); }
+          else if (id === 'check-update') {
+            e.target.disabled = true; const u = await App.checkUpdate(); updateBox();
+            toast(u ? `Version ${u.version} is available` : 'You have the latest version');
+          } else if (id === 'install-update') {
+            e.target.disabled = true; toast('Downloading the update. The app restarts by itself when it is ready.'); await App.installUpdate();
+          }
         } catch (err) { fail(err); }
         finally { if (e.target.tagName === 'BUTTON') e.target.disabled = false; }
       });

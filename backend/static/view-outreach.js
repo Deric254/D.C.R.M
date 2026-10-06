@@ -23,7 +23,7 @@
             <label class="field hidden" id="subj-wrap">Subject<input type="text" name="subject" placeholder="A quick idea for {name}"></label>
             <div class="field">Message
               <textarea name="body" rows="6" placeholder="Hi {name}, I'm Deric from DericBI. We help pharmacies in {town} see stock, sales and expiry in one dashboard. Want a 10-minute demo?"></textarea>
-              <div class="row tags">${TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}<span class="smsmeter right" id="meter"></span></div>
+              <div class="row tags"><button type="button" class="btn small primary" id="ai-write" title="Uses anything you have typed as guidance">Write with AI</button>${TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}<span class="smsmeter right" id="meter"></span></div>
               <span class="hint">${settings.append_optout ? 'An opt-out line is added to every message, and anyone who replies STOP is never contacted again.' : ''}</span></div>
 
             <div class="stack" style="gap:12px"><h3>Who gets it</h3>
@@ -136,6 +136,7 @@
         }, 400);
         f.addEventListener('input', preview); f.addEventListener('change', preview);
         $$('[data-tag]', f).forEach((b) => (b.onclick = () => { const ta = f.elements.body; ta.setRangeText(b.dataset.tag, ta.selectionStart, ta.selectionEnd, 'end'); ta.focus(); preview(); }));
+        $('#ai-write').onclick = (e) => App.aiFill(e.currentTarget, '/ai/template', f.elements.channel.value, f);
         $('#hide-form').onclick = () => { render($('#formwrap'), html``); $('#new').classList.remove('hidden'); };
         const submit = async (launch) => {
           try {

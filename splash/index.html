@@ -11,8 +11,7 @@
   body { background: var(--bg); color: var(--ink); display: grid; place-items: center;
          font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
   main { width: min(440px, 88vw); text-align: center; }
-  .mark { width: 64px; height: 64px; margin: 0 auto 22px; border-radius: 16px; background: #0f7a5f;
-          display: grid; place-items: center; font-weight: 800; font-size: 26px; color: #fff; }
+  .mark { display: block; width: 64px; height: 64px; margin: 0 auto 22px; object-fit: contain; }
   h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: -0.01em; }
   p { margin: 0; color: var(--mute); }
   .bar { height: 3px; width: 160px; margin: 26px auto 0; background: #22333f; border-radius: 3px; overflow: hidden; }
@@ -29,7 +28,7 @@
 </head>
 <body>
 <main>
-  <div class="mark">BI</div>
+  <img class="mark" src="logo.png" alt="" onerror="this.hidden=true">
   <h1>DericBI CRM</h1>
   <p id="line">Starting up…</p>
   <div class="bar" id="bar"><i></i></div>

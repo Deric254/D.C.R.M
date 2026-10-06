@@ -13,6 +13,8 @@ import io
 import re
 import sqlite3
 
+import ai
+import db
 import grading
 from db import log_event
 from util import (address_similarity, name_key, normalize_email, normalize_phone,
@@ -308,6 +310,11 @@ def record_reply(conn, lead_id: int, channel: str, text: str, subject: str = "",
             return {"id": dup["id"], "duplicate": True}
 
     res = grading.classify(text)
+    if res["grade"] == "unclear" and not forced_grade:
+        s = db.get_settings(conn)
+        guess = ai.grade_reply(s, text) if s["ai_grade_replies"] else None
+        if guess:
+            res = {"grade": guess, "score": res["score"], "reasons": ["AI"]}
     grade = forced_grade or res["grade"]
     ts = received_at or now()
     if campaign_id is None:

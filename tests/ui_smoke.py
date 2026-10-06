@@ -147,10 +147,17 @@ try:
         # ---- find leads (build searches, don't run)
         page.click('#nav a[data-view="find"]')
         page.wait_for_selector("#builder")
-        page.click('label.opt:has(input[data-cat="Chemist"])')
+        page.fill('input[data-filter="cat"]', "chem")
+        assert page.locator("#chips-cat label.opt").count() == 1
+        page.click('#chips-cat label.opt:has(input[value="Chemist"])')
+        page.fill('input[data-filter="cat"]', "")
+        page.fill('form[data-add="town"] input', "Mwingi, Kyuso")   # several at once
+        page.press('form[data-add="town"] input', "Enter")
+        assert "3 selected" in page.inner_text("#count-town"), page.inner_text("#count-town")
         page.click("#mix")
         page.click("#orig")
         assert "Searches to run" in page.inner_text("#queue")
+        assert page.locator("#queue [data-rm]").count() >= 9
         shot("6-find")
 
         # ---- settings
@@ -161,6 +168,13 @@ try:
         page.wait_for_selector(".toast")
         shot("7-settings")
         assert call("GET", "/settings")["email_daily_cap"] == 55
+        page.fill('input[name=slogan]', "Leads that reply")
+        page.fill('textarea[name=ai_pitch]', "Stock software")
+        page.click("#sform button[type=submit]")
+        page.wait_for_function("document.querySelector('#slogan').textContent === 'Leads that reply'")
+        assert call("GET", "/settings")["ai_pitch"] == "Stock software"
+        page.click("#test-ai")
+        page.wait_for_selector(".toast.bad")   # no key yet: a clear error, not a crash
 
         # ---- overview again, mobile-ish width
         page.set_viewport_size({"width": 820, "height": 800})

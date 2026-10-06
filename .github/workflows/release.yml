@@ -1,0 +1,112 @@
+name: Build and release
+
+# Every push to main tests the backend, builds the Windows installer and publishes it as a new version.
+# Installed copies of the app find it themselves (Settings > About and updates).
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", ".gitignore", ".gitattributes"]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Public repo that holds the installers. Must match the endpoint in src-tauri/tauri.release.conf.json.
+  RELEASES_OWNER: Deric254
+  RELEASES_REPO: D.C.R.M-releases
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r backend/requirements-dev.txt
+      - run: python tests/test_backend.py
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check release settings
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          if (-not $env:SIGNING_KEY) { throw "Secret TAURI_SIGNING_PRIVATE_KEY is missing. See README > One-time setup." }
+          if (-not $env:RELEASES_TOKEN) { throw "Secret RELEASES_TOKEN is missing. See README > One-time setup." }
+          if (Select-String -Path src-tauri/tauri.release.conf.json -Pattern "REPLACE_WITH_PUBLIC_KEY" -Quiet) {
+            throw "Paste your updater public key into src-tauri/tauri.release.conf.json. See README > One-time setup."
+          }
+
+      - name: Work out the version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "$((Get-Content VERSION).Trim()).${{ github.run_number }}"
+          python scripts/set_version.py $v
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Package the CRM engine
+        shell: pwsh
+        run: |
+          pip install -r backend/requirements.txt pyinstaller
+          pyinstaller --noconfirm --clean --onefile --name dericbi-backend `
+            --distpath backend-dist/out --workpath backend-dist/work --specpath backend-dist/work `
+            --collect-all playwright --add-data "$PWD/backend/static;static" `
+            --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto `
+            --hidden-import uvicorn.lifespan.on "$PWD/backend/main.py"
+          if ($LASTEXITCODE) { throw "PyInstaller failed" }
+          $triple = (rustc -vV | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
+          Copy-Item backend-dist/out/dericbi-backend.exe "backend-dist/dericbi-backend-$triple.exe"
+
+      - run: npm install
+
+      # A missing or unusable logo must never block a release: the committed icons are used instead.
+      - name: Build the app icons from the logo
+        continue-on-error: true
+        run: |
+          Copy-Item backend/static/logo.png splash/logo.png
+          npx tauri icon backend/static/logo.png
+
+      - name: Build and publish the installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          owner: ${{ env.RELEASES_OWNER }}
+          repo: ${{ env.RELEASES_REPO }}
+          tagName: v${{ steps.ver.outputs.version }}
+          releaseName: DericBI CRM v${{ steps.ver.outputs.version }}
+          releaseBody: Install this version, or open the app and use Settings > About and updates.
+          releaseDraft: false
+          prerelease: false
+          args: --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.ci.conf.json

@@ -27,12 +27,16 @@
   App.debounce = debounce;
 
   // -------------------------------------------------------------------- API
-  async function api(path, { method = 'GET', body, raw: wantRaw } = {}) {
+  async function api(path, { method = 'GET', body, raw: wantRaw, timeout = 45000 } = {}) {
     const opts = { method, headers: {} };
-    if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    if (body instanceof Blob) opts.body = body;
+    else if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), timeout);
+    opts.signal = ctl.signal;
     let res;
     try { res = await fetch('/api' + path, opts); }
-    catch (e) { throw new Error("Can't reach the CRM engine. If the app was just opened, wait a few seconds and try again."); }
+    catch (e) { throw new Error(e.name === 'AbortError' ? 'That took too long. Please try again.' : "Can't reach the CRM engine. If the app was just opened, wait a few seconds and try again."); }
+    finally { clearTimeout(timer); }
     if (wantRaw) return res;
     let data = null;
     try { data = await res.json(); } catch (_) { /* empty body */ }
@@ -79,6 +83,18 @@
   }
   App.toast = toast;
   App.fail = (e) => toast(e.message || String(e), true);
+
+  // Fills a message form from the AI. Whatever is already typed is sent along as guidance.
+  App.aiFill = async (btn, url, channel, form) => {
+    const label = btn.textContent; btn.disabled = true; btn.textContent = 'Writing…';
+    try {
+      const r = await api(url, { method: 'POST', body: { channel, notes: form.elements.body.value }, timeout: 100000 });
+      if (form.elements.subject && r.subject) form.elements.subject.value = r.subject;
+      form.elements.body.value = r.body;
+      form.elements.body.dispatchEvent(new Event('input', { bubbles: true }));
+    } catch (e) { App.fail(e); }
+    finally { btn.disabled = false; btn.textContent = label; }
+  };
 
   // ---------------------------------------------------------------- dialogs
   function dialog({ title, body, ok = 'OK', cancel = 'Cancel', danger = false, onOpen, wide = false }) {
@@ -146,7 +162,13 @@
   App.refresh = route;
 
   // ------------------------------------------------------------- status bar
+  let polling = false;   // never stack requests when the engine is slow
   async function pollStatus() {
+    if (polling) return;
+    polling = true;
+    try { await readStatus(); } finally { polling = false; }
+  }
+  async function readStatus() {
     try {
       const s = await api('/status');
       App.state.status = s;
@@ -158,6 +180,7 @@
         pills.push(html`<span class="pill" title="${snd.detail || ''}"><i class="dot ${s.campaigns_paused && !s.campaigns_running ? 'warn' : 'on'}"></i>${label}</span>`);
       }
       if (s.job) pills.push(html`<a class="pill" href="#/find"><i class="dot on"></i>${s.job.kind === 'enrich' ? 'Finding emails' : 'Finding leads'}${s.job.progress ? ': ' + s.job.progress : ''}</a>`);
+      if (App.state.update) pills.push(html`<a class="pill" href="#/settings"><i class="dot on"></i>Update ${App.state.update.version} ready</a>`);
       if (!s.email_ready && !s.sms_ready) pills.push(html`<a class="pill" href="#/settings"><i class="dot warn"></i>Set up email or SMS</a>`);
       render($('#pills'), html`${pills}`);
       const b = $('#badge-replies');
@@ -167,6 +190,22 @@
     }
   }
   App.pollStatus = pollStatus;
+
+  // ----------------------------------------------------- branding + updates
+  // A missing or unreadable logo just hides the image; it never gets in the way.
+  App.showLogo = (img) => { img.hidden = false; img.src = '/api/branding/logo?' + Date.now(); };
+  App.loadBrand = async () => {
+    const [s, h] = await Promise.all([api('/settings'), api('/health')]);
+    const slogan = $('#slogan');
+    slogan.textContent = s.slogan; slogan.classList.toggle('hidden', !s.slogan);
+    $('#side-foot').textContent = 'v' + h.version;
+    App.showLogo($('#brand-logo'));
+  };
+  // Only the desktop shell can update itself; in a plain browser these stay unavailable.
+  const shell = () => window.__TAURI__ && window.__TAURI__.core;
+  App.desktop = () => !!shell();
+  App.checkUpdate = async () => (App.state.update = await shell().invoke('check_update'));
+  App.installUpdate = () => shell().invoke('install_update');
 
   App.start = function () {
     window.addEventListener('hashchange', route);
@@ -181,6 +220,8 @@
     });
     $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close('cancel'); });
     pollStatus(); setInterval(pollStatus, 4000);
+    App.loadBrand().catch(() => {});
+    if (App.desktop()) setTimeout(() => App.checkUpdate().catch(() => {}), 6000);
     route();
   };
 

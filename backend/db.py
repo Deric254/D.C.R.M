@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS settings (
 SETTING_DEFAULTS = {
     # identity
     "sender_name": "DericBI",
+    "slogan": "",
     # outgoing email
     "smtp_host": "", "smtp_port": 587, "smtp_security": "starttls",  # starttls | ssl | none
     "smtp_user": "", "smtp_pass": "", "from_email": "", "reply_to": "",
@@ -151,10 +152,15 @@ SETTING_DEFAULTS = {
     "append_optout": True,
     "optout_footer_email": "If you'd rather not hear from us, reply STOP and we won't contact you again.",
     "optout_suffix_sms": " Reply STOP to opt out.",
+    # AI writing help (free keys from Google Gemini, Groq, NVIDIA, OpenRouter, Mistral, or your own server)
+    "ai_provider": "gemini", "ai_model": "", "ai_pitch": "", "ai_grade_replies": True,
+    "ai_key_gemini": "", "ai_key_groq": "", "ai_key_nvidia": "", "ai_key_openrouter": "", "ai_key_mistral": "",
+    "ai_custom_url": "", "ai_custom_model": "", "ai_key_custom": "",
     # optional webhook for inbound SMS (needs the app reachable from the internet)
     "webhook_token": "",
 }
-SECRET_KEYS = {"smtp_pass", "imap_pass", "at_api_key"}
+SECRET_KEYS = {"smtp_pass", "imap_pass", "at_api_key", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
+               "ai_key_openrouter", "ai_key_mistral", "ai_key_custom"}
 
 
 def connect() -> sqlite3.Connection:

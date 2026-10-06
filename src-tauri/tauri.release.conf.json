@@ -1,5 +1,11 @@
 {
   "bundle": {
     "externalBin": ["../backend-dist/dericbi-backend"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_PUBLIC_KEY",
+      "endpoints": ["https://github.com/Deric254/D.C.R.M-releases/releases/latest/download/latest.json"]
+    }
   }
 }

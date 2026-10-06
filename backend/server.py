@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import ai
+import branding
 import campaigns as C
 import config
 import db
@@ -22,8 +24,7 @@ import leads as L
 import messaging
 from messaging import SendError
 from util import now, parent_alive, today_start
-
-VERSION = "1.0.0"
+from version import VERSION
 
 
 # ---------------------------------------------------------------------- models
@@ -68,7 +69,7 @@ class SearchIn(BaseModel):
 class ScrapeIn(BaseModel):
     searches: list[SearchIn]
     max_per_search: int = Field(60, ge=1, le=300)
-    headless: bool = False
+    headless: bool = True
     enrich: bool = False
 
 
@@ -95,6 +96,11 @@ class TestSend(BaseModel):
 
 class UrlIn(BaseModel):
     url: str
+
+
+class AIDraftIn(BaseModel):
+    channel: str
+    notes: str = ""
 
 
 # ------------------------------------------------------------------------- app
@@ -149,6 +155,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     @app.exception_handler(L.Conflict)
     async def _conflict(_, e):
         return JSONResponse({"detail": str(e)}, status_code=409)
+
+    @app.exception_handler(ai.AIError)
+    async def _ai(_, e):
+        return JSONResponse({"detail": str(e)}, status_code=502)
 
     @app.exception_handler(SendError)
     async def _send(_, e):
@@ -321,8 +331,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 searches.append({"category": cat, "town": town, "query": f"{cat} in {town}"})
         if not searches:
             raise ValueError("Pick at least one category and town")
-        if len(searches) > 80:
-            raise ValueError("That's a lot of searches at once - keep it under 80 per run")
+        if len(searches) > 500:
+            raise ValueError("That's a lot of searches at once - keep it under 500 per run")
         with db.db() as conn:
             if jobs.active_job(conn):
                 return JSONResponse({"detail": "A job is already running. Stop it or wait for it to finish."}, status_code=409)
@@ -492,11 +502,62 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise ValueError("Email security must be starttls, ssl or none")
         if clean.get("imap_security") not in (None, "ssl", "starttls", "none"):
             raise ValueError("Reply-inbox security must be ssl, starttls or none")
+        if clean.get("ai_provider", "gemini") not in ai.PROVIDERS:
+            raise ValueError("Unknown AI provider")
+        if clean.get("ai_custom_url") and not clean["ai_custom_url"].startswith(("http://", "https://")):
+            raise ValueError("The AI server address must start with http:// or https://")
+        if len(clean.get("slogan", "")) > 80:
+            raise ValueError("The slogan is too long (80 characters at most)")
         db.save_settings(clean)
         s = db.get_settings()
         if s["imap_host"] and s["imap_user"] and db.get_internal("imap_last_uid") is None:
             threading.Thread(target=lambda: _safe(request.app.state.poller.poll_now), daemon=True).start()
         return masked(s)
+
+    @app.get("/api/branding/logo")
+    def get_logo():
+        path, mime = branding.current()
+        if not path.is_file():
+            raise KeyError("No logo")   # the page hides the image; a missing logo never breaks the app
+        return FileResponse(path, media_type=mime, headers={"Cache-Control": "no-cache"})
+
+    @app.put("/api/branding/logo")
+    async def put_logo(request: Request):
+        branding.save(await request.body())
+        return {"ok": True}
+
+    @app.delete("/api/branding/logo")
+    def delete_logo():
+        branding.reset()
+        return {"ok": True}
+
+    @app.post("/api/ai/template")
+    def ai_template(body: AIDraftIn):
+        return ai.draft_template(db.get_settings(), body.channel, body.notes)
+
+    @app.post("/api/leads/{lead_id}/ai-draft")
+    def ai_draft(lead_id: int, body: AIDraftIn):
+        with db.db() as conn:
+            lead = L.lead_detail(conn, lead_id)
+        if not lead:
+            raise KeyError("Lead not found")
+        return ai.draft_for_lead(db.get_settings(), lead, body.channel, body.notes)
+
+    @app.post("/api/leads/{lead_id}/ai-summary")
+    def ai_summary(lead_id: int):
+        with db.db() as conn:
+            lead = L.lead_detail(conn, lead_id)
+        if not lead:
+            raise KeyError("Lead not found")
+        return {"summary": ai.summarize(db.get_settings(), lead)}
+
+    @app.post("/api/settings/test-ai")
+    def test_ai():
+        results = ai.check(db.get_settings())
+        if not results:
+            raise ValueError("Add an AI key first")
+        return {"ok": all(r[1] for r in results),
+                "message": ". ".join(f"{label}: {detail}" for label, _, detail in results)}
 
     @app.post("/api/settings/test-email")
     def test_email(body: TestSend):

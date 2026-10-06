@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::Manager;
+use tauri_plugin_updater::UpdaterExt;
 
 const DEFAULT_PORT: u16 = 8765;
 const START_TIMEOUT: Duration = Duration::from_secs(90);
@@ -245,6 +246,39 @@ fn start_backend(shared: Arc<Shared>) {
     }
 }
 
+#[derive(Serialize)]
+struct UpdateInfo {
+    version: String,
+}
+
+/// The newest published version, if it is newer than this one. Dev runs have no updater, so they never see one.
+async fn find_update(app: &tauri::AppHandle) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    if cfg!(debug_assertions) {
+        return Ok(None);
+    }
+    app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    Ok(find_update(&app).await?.map(|u| UpdateInfo { version: u.version }))
+}
+
+/// Download the update, stop the engine (the installer cannot replace a running file), install and restart.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, shared: tauri::State<'_, Arc<Shared>>) -> Result<(), String> {
+    let Some(update) = find_update(&app).await? else {
+        return Ok(());
+    };
+    let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    kill_child(&shared);
+    if let Err(e) = update.install(bytes) {
+        start_backend(shared.inner().clone());
+        return Err(e.to_string());
+    }
+    app.restart()
+}
+
 #[tauri::command]
 fn backend_status(shared: tauri::State<'_, Arc<Shared>>) -> Status {
     shared.status.lock().unwrap().clone()
@@ -259,7 +293,7 @@ fn main() {
     let shared = Arc::new(Shared::new());
     let for_setup = shared.clone();
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Opening the app twice just brings the existing window forward.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -267,9 +301,14 @@ fn main() {
                 let _ = w.show();
                 let _ = w.set_focus();
             }
-        }))
+        }));
+    // The updater is configured only in release builds (see tauri.release.conf.json).
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    let app = builder
         .manage(shared.clone())
-        .invoke_handler(tauri::generate_handler![backend_status, retry_backend])
+        .invoke_handler(tauri::generate_handler![backend_status, retry_backend, check_update, install_update])
         .setup(move |_app| {
             start_backend(for_setup.clone());
             Ok(())

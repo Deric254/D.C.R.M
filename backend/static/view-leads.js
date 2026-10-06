@@ -212,6 +212,7 @@
             <button class="btn small" data-compose="email" ${canEmail ? '' : 'disabled'} title="${canEmail ? '' : 'Needs a working email and not do-not-contact'}">Email</button>
             <button class="btn small" data-compose="sms" ${canSms ? '' : 'disabled'} title="${canSms ? '' : 'Needs a mobile number and not do-not-contact'}">Text</button>
             <button class="btn small" id="log-reply">Log a reply</button>
+            ${lead.messages.length ? html`<button class="btn small" id="ai-summary" title="A short summary and the best next step">Summarise with AI</button>` : ''}
             ${lead.maps_url ? html`<a class="btn small" href="${lead.maps_url}" rel="noopener noreferrer">Google Maps</a>` : ''}
             ${/^https?:\/\//i.test(lead.website) ? html`<a class="btn small" href="${lead.website}" rel="noopener noreferrer">Website</a>` : ''}
           </div>
@@ -259,6 +260,15 @@
     // ---- composer: send message / log reply
     $$('[data-compose]', ov).forEach((b) => (b.onclick = () => composer(b.dataset.compose)));
     $('#log-reply').onclick = () => logReply();
+    if ($('#ai-summary')) $('#ai-summary').onclick = async (e) => {
+      const b = e.currentTarget; b.disabled = true;
+      try {
+        const r = await api(`/leads/${id}/ai-summary`, { method: 'POST', timeout: 100000 });
+        render($('#composer'), html`<div class="panel"><div class="panel-body stack" style="gap:8px"><h3>Summary</h3><div class="sample">${r.summary}</div>
+          <div><button class="btn quiet small" type="button" id="cancel-c">Close</button></div></div></div>`);
+        $('#cancel-c').onclick = () => render($('#composer'), html``);
+      } catch (err) { fail(err); } finally { b.disabled = false; }
+    };
 
     async function composer(channel) {
       const s = App.state.settings || (await getSettings());
@@ -268,7 +278,7 @@
         ${!ready ? html`<div class="notice">${channel === 'email' ? 'Email' : 'SMS'} isn't set up yet. <a href="#/settings" id="goset">Open settings</a></div>` : ''}
         ${channel === 'email' ? html`<label class="field">Subject<input type="text" name="subject" required></label>` : ''}
         <label class="field">Message<textarea name="body" rows="5" required></textarea></label>
-        <div class="row tags">${TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}
+        <div class="row tags"><button type="button" class="btn small primary" id="ai-write" title="Writes a first message or a reply to their latest one. Uses anything you have typed as guidance.">Write with AI</button>${TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}
           <span class="smsmeter right" id="meter"></span></div>
         <div class="small muted">${s.append_optout ? 'An opt-out line is added automatically.' : ''}</div>
         <div class="row"><button class="btn primary" type="submit" ${ready ? '' : 'disabled'}>${channel === 'email' ? 'Send email' : 'Send text'}</button>
@@ -278,6 +288,7 @@
       ta.addEventListener('input', meter); meter();
       $$('[data-tag]', f).forEach((b) => (b.onclick = () => { const p = ta.selectionStart; ta.setRangeText(b.dataset.tag, p, ta.selectionEnd, 'end'); ta.focus(); meter(); }));
       $('#cancel-c').onclick = () => render($('#composer'), html``);
+      $('#ai-write').onclick = (e) => App.aiFill(e.currentTarget, `/leads/${id}/ai-draft`, channel, f);
       $('#goset') && ($('#goset').onclick = close);
       f.addEventListener('submit', async (e) => {
         e.preventDefault(); const btn = e.submitter; btn.disabled = true;

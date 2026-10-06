@@ -1,8 +1,45 @@
+# --- Build output
 node_modules/
 src-tauri/target/
 src-tauri/gen/
 backend-dist/
+dist/
+build/
+*.spec
+
+# --- Generated icon variants (the files listed in tauri.conf.json stay committed)
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/Square*.png
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/icon.icns
+
+# --- Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Your data and secrets: never commit these
 *.sqlite3*
-backend.log
+*.db
+*.db-journal
+*.log
+.env
+.env.*
+*.key
+*.pem
+.tauri/
+
+# --- Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
