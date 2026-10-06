@@ -8,7 +8,9 @@ Every push to `main` runs the tests, builds the Windows installer and publishes 
 
 ## One-time setup
 
-1. **Releases repo.** Create a public, empty repo `Deric254/D.C.R.M-releases`. This code repo is private, and an installed app cannot download from a private repo, so installers are published there.
+Fastest path: log in with `gh auth login`, then double-click `setup-release.bat`. It does steps 1 to 4 below and pushes. The manual steps follow.
+
+1. **Releases repo.** Create a public repo (created with a README, since GitHub cannot tag a release in a repo with no commits) `Deric254/D.C.R.M-releases`. This code repo is private, and an installed app cannot download from a private repo, so installers are published there.
 2. **Signing keys.** Run `npx tauri signer generate -w dericbi.key`. Keep `dericbi.key` safe and never commit it (`.gitignore` blocks `*.key`). Losing it means installed apps can no longer update.
 3. **Public key.** Paste the contents of `dericbi.key.pub` into `src-tauri/tauri.release.conf.json`, replacing `REPLACE_WITH_PUBLIC_KEY`.
 4. **GitHub secrets** (this repo > Settings > Secrets and variables > Actions):
