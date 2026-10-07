@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS leads (
   email_bounced INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
   next_followup TEXT NOT NULL DEFAULT '',
+  offer TEXT NOT NULL DEFAULT '',            -- which of your services or tools you are offering them
+  deal_value INTEGER NOT NULL DEFAULT 0,     -- what the deal is worth (KES)
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_contacted_at TEXT,
@@ -57,6 +59,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
   filters TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'draft',
   ai_personalize INTEGER NOT NULL DEFAULT 0,   -- 1: body is a brief and the AI writes each lead's message as it is sent
+  followup_of INTEGER,                         -- a follow-up: sent to leads of this campaign who have not replied
+  followup_days INTEGER NOT NULL DEFAULT 0,    -- ... once this many days have passed since their last message
   total INTEGER NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -69,7 +73,7 @@ CREATE TABLE IF NOT EXISTS messages (
   lead_id INTEGER NOT NULL REFERENCES leads(id),
   campaign_id INTEGER REFERENCES campaigns(id),
   direction TEXT NOT NULL,                 -- 'out' | 'in'
-  channel TEXT NOT NULL,                   -- 'email' | 'sms' | 'other'
+  channel TEXT NOT NULL,                   -- 'email' | 'sms' | 'whatsapp' | 'other'
   to_addr TEXT NOT NULL DEFAULT '',
   subject TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL DEFAULT '',
@@ -82,6 +86,7 @@ CREATE TABLE IF NOT EXISTS messages (
   score INTEGER NOT NULL DEFAULT 0,
   reasons TEXT NOT NULL DEFAULT '',
   handled INTEGER NOT NULL DEFAULT 0,
+  reply_to INTEGER,                        -- inbound only: the message of ours this answers
   scheduled_at TEXT,
   created_at TEXT NOT NULL,
   sent_at TEXT
@@ -136,9 +141,15 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
+DEFAULT_PITCH = (
+    "Deric Marangu is a data analyst. He helps local businesses use their own sales and stock records to see "
+    "what is selling, what is not, and where money is being lost, so they can decide with facts. He also has "
+    "ready-made tools that he customises to each business."
+)
+
 SETTING_DEFAULTS = {
     # identity
-    "sender_name": "DericBI",
+    "sender_name": "Deric Marangu",
     "slogan": "",
     # outgoing email
     "smtp_host": "", "smtp_port": 587, "smtp_security": "starttls",  # starttls | ssl | none
@@ -159,7 +170,7 @@ SETTING_DEFAULTS = {
     "optout_footer_email": "If you'd rather not hear from us, reply STOP and we won't contact you again.",
     "optout_suffix_sms": " Reply STOP to opt out.",
     # AI writing help (free keys from Google Gemini, Groq, NVIDIA, OpenRouter, Mistral, or your own server)
-    "ai_provider": "gemini", "ai_model": "", "ai_pitch": "", "ai_grade_replies": True,
+    "ai_provider": "gemini", "ai_model": "", "ai_pitch": DEFAULT_PITCH, "ai_grade_replies": True,
     "ai_key_gemini": "", "ai_key_groq": "", "ai_key_nvidia": "", "ai_key_openrouter": "", "ai_key_mistral": "",
     "ai_custom_url": "", "ai_custom_model": "", "ai_key_custom": "",
     # optional webhook for inbound SMS (needs the app reachable from the internet)
@@ -195,8 +206,19 @@ def init_db():
     conn = connect()
     try:
         conn.executescript(SCHEMA)
-        if "ai_personalize" not in {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}:
-            conn.execute("ALTER TABLE campaigns ADD COLUMN ai_personalize INTEGER NOT NULL DEFAULT 0")   # databases made before AI campaigns
+        # Databases made before a column existed gain it here.
+        for table, column, ddl in (
+                ("messages", "reply_to", "INTEGER"),
+                ("leads", "offer", "TEXT NOT NULL DEFAULT ''"),
+                ("leads", "deal_value", "INTEGER NOT NULL DEFAULT 0"),
+                ("campaigns", "ai_personalize", "INTEGER NOT NULL DEFAULT 0"),
+                ("campaigns", "followup_of", "INTEGER"),
+                ("campaigns", "followup_days", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        # Settings still on the old built-in defaults move to the current ones (anything the owner wrote is kept).
+        for key, old in (("sender_name", "DericBI"), ("ai_pitch", "")):
+            conn.execute("DELETE FROM settings WHERE key=? AND value=?", (key, json.dumps(old)))
         conn.commit()
     finally:
         conn.close()

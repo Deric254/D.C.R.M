@@ -1,7 +1,7 @@
 (function () {
   const { html, render, api, $, $$, when, toast, fail, debounce } = App;
   const TAGS = ['{name}', '{town}', '{sector}', '{sender}'];
-  const CSTATUS = { draft: ['Draft', ''], running: ['Sending', 'ok'], paused: ['Paused', 'warm'], done: ['Done', 'ok'], cancelled: ['Cancelled', 'cold'] };
+  const CSTATUS = { draft: ['Draft', ''], running: ['Sending', 'ok'], paused: ['Paused', 'warm'], done: ['Done', 'ok'], cancelled: ['Cancelled', 'cold'], scheduled: ['Waiting for follow-up time', 'warm'] };
 
   App.views.outreach = {
     title: 'Outreach',
@@ -26,6 +26,8 @@
                   <label class="opt"><input type="radio" name="channel" value="email">Email</label></div></div>
             </div>
             <label class="check"><input type="checkbox" name="ai">Let the AI write each message for each person</label>
+            <label class="field">If they don't reply <span class="hint">The AI writes each follow-up to fit what was already said. Only people who have not answered get one, counted from your last message to them on any channel. Replies, opt-outs and cancelling stop them.</span>
+              <select name="followups"><option value="">No follow-ups</option><option value="3">One follow-up after 3 days</option><option value="3,4">Two: after 3 days, then 4 days later</option><option value="3,4,7">Three: after 3 days, then 4, then 7 days later</option></select></label>
             <label class="field hidden" id="subj-wrap">Subject<input type="text" name="subject" placeholder="A quick idea for {name}"></label>
             <div class="field"><span id="msg-title">Message</span>
               <textarea name="body" rows="6" placeholder="Hi {name}, I'm Deric from DericBI. We help pharmacies in {town} see stock, sales and expiry in one dashboard. Want a 10-minute demo?"></textarea>
@@ -59,7 +61,7 @@
         let rows; try { rows = await api('/campaigns'); } catch (_) { return; }
         render($('#clist'), rows.length ? html`<div class="tablewrap"><table class="t"><thead><tr><th>Campaign</th><th>Status</th><th style="width:170px">Progress</th><th>Failed</th><th>Replies</th><th></th></tr></thead><tbody>
           ${rows.map((c) => { const [lab, cls] = CSTATUS[c.status] || [c.status, '']; return html`<tr style="cursor:default">
-            <td><div class="name">${c.name}</div><div class="muted small">${c.channel === 'sms' ? 'Text' : 'Email'}${c.ai_personalize ? ' · AI-written' : ''} · ${c.launched_at ? 'Started ' + when(c.launched_at) : 'Created ' + when(c.created_at)}</div>${c.last_error ? html`<div class="small" style="color:var(--bad)">${c.last_error}</div>` : ''}</td>
+            <td><div class="name">${c.name}</div><div class="muted small">${c.channel === 'sms' ? 'Text' : 'Email'}${c.ai_personalize ? ' · AI-written' : ''}${c.followup_days ? ` · follow-up after ${c.followup_days} day${c.followup_days === 1 ? '' : 's'} of silence` : ''} · ${c.launched_at ? 'Started ' + when(c.launched_at) : 'Created ' + when(c.created_at)}</div>${c.last_error ? html`<div class="small" style="color:var(--bad)">${c.last_error}</div>` : ''}</td>
             <td><span class="chip ${cls}">${lab}</span></td>
             <td><div class="progress"><i style="width:${App.pct(c.sent, c.total)}%"></i></div><div class="small muted">${c.sent} of ${c.total} sent${c.queued ? ` · ${c.queued} waiting` : ''}</div></td>
             <td>${c.failed || '0'}${c.skipped ? html`<div class="small muted">${c.skipped} skipped</div>` : ''}</td>
@@ -68,7 +70,7 @@
               ${c.status === 'paused' ? html`<button class="btn small primary" data-act="resume" data-id="${c.id}">Resume</button>` : ''}
               ${c.status === 'draft' ? html`<button class="btn small primary" data-act="launch" data-id="${c.id}">Start sending</button>` : ''}
               ${c.failed && c.status !== 'cancelled' ? html`<button class="btn small" data-act="retry" data-id="${c.id}" title="Try failed messages again">Retry failed</button>` : ''}
-              ${['running', 'paused', 'draft'].includes(c.status) ? html`<button class="btn small danger" data-act="cancel" data-id="${c.id}">Cancel</button>` : ''}
+              ${['running', 'paused', 'draft', 'scheduled'].includes(c.status) ? html`<button class="btn small danger" data-act="cancel" data-id="${c.id}">Cancel</button>` : ''}
               <button class="btn small quiet" data-act="view" data-id="${c.id}">Details</button></td></tr>`; })}
           </tbody></table></div>` : html`<div class="empty"><strong>No campaigns yet</strong>Write a message above and choose who should get it.</div>`);
       }
@@ -110,7 +112,8 @@
           const fd = new FormData(f);
           const filters = { sectors: fd.getAll('sectors'), towns: fd.getAll('towns'), statuses: fd.getAll('statuses'), exclude_replied: f.elements.exclude_replied.checked, skip_recent_days: +fd.get('skip') || 0 };
           if (+fd.get('limit') > 0) filters.limit = +fd.get('limit');
-          return { name: fd.get('name'), channel: fd.get('channel'), subject: fd.get('subject') || '', body: fd.get('body'), filters, ai: f.elements.ai.checked };
+          return { name: fd.get('name'), channel: fd.get('channel'), subject: fd.get('subject') || '', body: fd.get('body'), filters, ai: f.elements.ai.checked,
+            followups: (fd.get('followups') || '').split(',').filter(Boolean).map(Number) };
         };
         let lastPreview = null;
         const plainHint = f.elements.body.placeholder;

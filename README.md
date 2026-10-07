@@ -29,6 +29,20 @@ On **Find leads**, describe who you want to reach in your own words, for example
 
 Settings > AI writing help takes free keys from Google Gemini, Groq, NVIDIA, OpenRouter, Mistral, or any OpenAI-compatible server (such as Ollama). Keys are tried in order, so when one hits its free limit the next one answers. **Write with AI** appears when you write a campaign and when you message one lead (it replies to their latest message). Free-tier model names change now and then: if **Test the keys** says a model isn't found, type a current model name in the model field.
 
+## WhatsApp, email and text from one lead
+
+Open a lead and press **WhatsApp**, **Email** or **Text**. The AI writes the message straight away from the lead's business, town and type of business, your notes, and the whole conversation so far: a first hello that introduces you and your offer, an answer to something they said, or a follow-up that refers to your earlier message when they have not replied (a different angle each time, and a gracious last note after three). Edit it or press **Write with AI** for another version.
+
+- **WhatsApp is free:** **Open WhatsApp** logs the message in the lead's history and opens the chat with the text ready; you press send. Log their answer with **Log a reply > WhatsApp**.
+- **Everything is tracked:** each reply is matched to the message of ours it answers ("In answer to our WhatsApp of ..."), a lead you are still waiting on shows **Awaiting reply**, and Overview shows how many leads answered on each channel.
+- **Your identity:** Settings > Sender name and Settings > AI writing help > *Who you are and what you sell* decide how the AI introduces you (default: Deric Marangu, data analyst, with ready-made tools adapted to each business). Edit that text to name your actual tools.
+
+## Today, follow-up sequences and deal value
+
+- **Today:** the page to open each morning. It lists leads that replied and are waiting for you (hottest first), follow-ups that are due, and leads who have not answered for 3 days. Each row has **WhatsApp** and **Email** buttons: the message opens already written for that person. A lead leaves the list once you answer it.
+- **Follow-up sequences:** when writing a campaign, choose **If they don't reply**: one follow-up after 3 days, two (3 days, then 4 more) or three (3, 4, then 7). Each follow-up is written by the AI to fit what was already said, goes only to people who have not replied, and is counted from your last message to them on any channel (a WhatsApp you sent by hand counts). Replies, opt-outs and the usual daily limits and sending hours apply, and cancelling the first campaign cancels its follow-ups. Follow-ups need a free AI key.
+- **Deal value:** on each lead, fill in **What you are offering** and **Deal value (KES)**. Overview shows the total won and the total still open (interested or meeting).
+
 ## AI campaigns (Outreach)
 
 On **Outreach**, tick **Let the AI write each message for each person**. The message box becomes a brief (the goal, the offer, what you want them to do) and the AI writes every lead's own message just before it is sent, from everything you know about that lead: business, town, address, website, status, your notes and the conversation so far. Emails and texts go out through the same sender as any campaign, with the same daily limits, sending hours, opt-out line and do-not-contact rules.

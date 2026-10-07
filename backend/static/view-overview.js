@@ -30,9 +30,12 @@
         </div></section>
 
         <div class="kpis">
-          <div class="panel kpi"><b>${sent.sms + sent.email}</b><span>sent today (${sent.sms} SMS, ${sent.email} email)</span></div>
+          <div class="panel kpi"><b>${sent.sms + sent.email + sent.whatsapp}</b><span>sent today (${sent.sms} SMS, ${sent.email} email, ${sent.whatsapp} WhatsApp)</span></div>
           <div class="panel kpi"><b>${d.replies_week}</b><span>replies this week</span></div>
           <div class="panel kpi"><b>${d.reply_rate}%</b><span>of contacted leads replied</span></div>
+          ${['email', 'sms', 'whatsapp'].map((ch) => { const c = d.channels[ch]; return c.contacted ? html`<div class="panel kpi"><b>${Math.round(100 * c.replied / c.contacted)}%</b><span>${ch === 'sms' ? 'SMS' : ch === 'email' ? 'email' : 'WhatsApp'} answered (${c.replied} of ${c.contacted})</span></div>` : ''; })}
+          <div class="panel kpi"><b>KES ${d.won_value.toLocaleString()}</b><span>won</span></div>
+          <div class="panel kpi"><b>KES ${d.open_value.toLocaleString()}</b><span>still open (interested or meeting)</span></div>
           <div class="panel kpi"><b>${d.by_grade.hot || 0}</b><span>hot leads</span></div>
           <div class="panel kpi"><b>${d.with_mobile}</b><span>have a mobile number</span></div>
           <div class="panel kpi"><b>${d.with_email}</b><span>have an email</span></div>

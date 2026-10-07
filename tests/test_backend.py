@@ -893,7 +893,7 @@ def ai_drafts_providers_and_errors():
             lid = cl.post("/api/leads", json={"name": "Reply Chem", "town": "Embu", "phone": "0755000111"}).json()["id"]
             cl.post(f"/api/leads/{lid}/reply", json={"text": "How much is it?", "channel": "sms"})
             r = cl.post(f"/api/leads/{lid}/ai-draft", json={"channel": "sms"}).json()
-            assert r["subject"] == "" and "Them: How much is it?" in seen[-1]["messages"][1]["content"]
+            assert r["subject"] == "" and "Them by text" in seen[-1]["messages"][1]["content"] and "How much is it?" in seen[-1]["messages"][1]["content"]
             assert cl.post("/api/leads/99999/ai-draft", json={"channel": "sms"}).status_code == 404
             cl.patch(f"/api/leads/{lid}", json={"do_not_contact": True})
             assert cl.post(f"/api/leads/{lid}/ai-draft", json={"channel": "sms"}).status_code == 400
@@ -1329,6 +1329,202 @@ def database_from_before_ai_campaigns_gains_the_column():
         assert "ai_personalize" in {r["name"] for r in c.execute("PRAGMA table_info(campaigns)")}
         cid = C.create_campaign(c, "Old style", "sms", "", "Hi {name}", {})
         assert c.execute("SELECT ai_personalize FROM campaigns WHERE id=?", (cid,)).fetchone()[0] == 0
+
+
+@test
+def whatsapp_is_logged_and_replies_are_matched_to_the_message_they_answer():
+    fresh()
+    import ai
+    s = db.get_settings()
+    assert s["sender_name"] == "Deric Marangu" and "data analyst" in s["ai_pitch"]
+    with db.db() as c:
+        a = L.add_lead(c, {"name": "Meru Chemist", "town": "Meru", "sector": "Pharmacy", "phone": "0700000101"})["id"]
+        nm = L.add_lead(c, {"name": "Landline Shop", "town": "Meru", "phone": "020 2000000"})["id"]
+    r = C.log_whatsapp(a, "Hello, I'm Deric Marangu, a data analyst.")
+    assert r["url"].startswith("https://wa.me/254700000101?text=Hello%2C") and r["status"] == "sent"
+    for bad in (nm, 99999):
+        try:
+            C.log_whatsapp(bad, "x"); raise AssertionError("should refuse")
+        except (ValueError, KeyError):
+            pass
+    try:
+        C.log_whatsapp(a, "  "); raise AssertionError("should refuse")
+    except ValueError:
+        pass
+    with db.db() as c:
+        assert L.get_lead(c, a)["status"] == "contacted"
+        lead = L.lead_detail(c, a)
+        assert [(m["channel"], m["status"]) for m in lead["messages"]] == [("whatsapp", "sent")]
+        # nothing answered yet: the next draft is a follow-up that names the WhatsApp message
+        stage = ai._stage(lead)
+        assert "NO reply" in stage and "WhatsApp" in stage
+        out_id = lead["messages"][0]["id"]
+        res = L.record_reply(c, a, "whatsapp", "Interesting, how much?")
+        row = c.execute("SELECT channel, reply_to FROM messages WHERE id=?", (res["id"],)).fetchone()
+        assert row["channel"] == "whatsapp" and row["reply_to"] == out_id
+        assert "They replied" in ai._stage(L.lead_detail(c, a))
+        assert "FIRST message" in ai._stage({"messages": []})
+        # the prompt the AI really receives: persona, business angle, conversation with channel and date
+        seen = {}
+        real_ask, ai.ask = ai.ask, lambda s_, system, prompt, **kw: seen.update(prompt=prompt) or "Hi Meru Chemist, Deric here."
+        try:
+            d = ai.draft_for_lead(s, L.lead_detail(c, a), "whatsapp", "")
+        finally:
+            ai.ask = real_ask
+        p = seen["prompt"]
+        assert d["subject"] == "" and "Deric Marangu" in p and "data analyst" in p and "medicines" in p
+        assert "Us by WhatsApp" in p and "Them by WhatsApp" in p and "under 90 words" in p
+        try:
+            ai.draft_for_lead(s, L.lead_detail(c, a), "fax", "")
+            raise AssertionError("fax is not a channel")
+        except ValueError:
+            pass
+        c.execute("UPDATE leads SET do_not_contact=1 WHERE id=?", (a,))
+    try:
+        C.log_whatsapp(a, "again"); raise AssertionError("should refuse do-not-contact")
+    except ValueError:
+        pass
+    # a WhatsApp sent by hand keeps campaigns from messaging the same lead again within the skip days
+    with db.db() as c:
+        c.execute("UPDATE leads SET do_not_contact=0, status='contacted' WHERE id=?", (a,))
+        c.execute("DELETE FROM messages WHERE direction='in' AND lead_id=?", (a,))
+        s2 = db.get_settings(c)
+        assert a not in [r["id"] for r in C.build_audience(c, "sms", {"statuses": ["contacted"]}, s2)]
+        assert a not in [r["id"] for r in C.build_audience(c, "email", {"statuses": ["contacted"]}, s2)]
+        c.execute("UPDATE messages SET sent_at=? WHERE lead_id=?", ("2020-01-01 00:00:00", a))
+        assert a in [r["id"] for r in C.build_audience(c, "sms", {"statuses": ["contacted"]}, s2)]
+    assert "medicines" in ai._angle("Pharmacy") and "selling" in ai._angle("")
+    assert "customers" in ai._angle("Barber shop") and "reorder" in ai._angle("Grocery store") and "season" in ai._angle("Hardware store")
+
+
+@test
+def old_database_gains_reply_tracking_and_new_persona_defaults():
+    fresh()
+    with db.db() as c:
+        c.execute("ALTER TABLE messages DROP COLUMN reply_to")
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('sender_name', ?)", (json.dumps("DericBI"),))
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('ai_pitch', ?)", (json.dumps(""),))
+    db.init_db()
+    db.init_db()
+    assert db.get_settings()["sender_name"] == "Deric Marangu"
+    assert "data analyst" in db.get_settings()["ai_pitch"]
+    with db.db() as c:
+        assert "reply_to" in {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
+    db.save_settings({"sender_name": "Someone Else"})
+    db.init_db()
+    assert db.get_settings()["sender_name"] == "Someone Else"
+
+
+@test
+def follow_ups_go_only_to_people_who_have_not_replied_when_they_fall_due():
+    from fastapi.testclient import TestClient
+    import server
+    from util import days_ago
+    fresh(); SMTP_INBOX.clear(); configure()
+    srv, seen = _ai_server({"text": lambda req: f"Subject: About {_who(req)}\n\n{DISTINCT[_who(req)]}"})
+    _use_ai(srv)
+    try:
+        with db.db() as c:
+            ids = {name: L.add_lead(c, {"name": name, "town": "Meru", "sector": "Pharmacy",
+                                        "email": name.split()[0].lower() + "@shop.test"})["id"] for name in DISTINCT}
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            body = {"name": "Seq", "channel": "email", "body": "Offer a demo of the stock dashboard.",
+                    "filters": {"sectors": ["Pharmacy"]}, "ai": True}
+            for bad in ([0], [31], ["x"], [1, 2, 3, 4]):
+                r = cl.post("/api/campaigns", json={**body, "followups": bad})
+                assert r.status_code == 400, (bad, r.text)
+            first = cl.post("/api/campaigns", json={**body, "followups": [3, 4], "launch": True}).json()
+            rows = cl.get("/api/campaigns").json()
+            kids = sorted((r for r in rows if r["followup_of"] is not None), key=lambda r: r["id"])
+            assert [(k["status"], k["followup_days"], k["ai_personalize"]) for k in kids] == [("scheduled", 3, 1), ("scheduled", 4, 1)]
+            assert kids[0]["followup_of"] == first["id"] and kids[1]["followup_of"] == kids[0]["id"]
+            assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 3)
+            assert C.release_followups() == 0, "nobody is due yet"
+            with db.db() as c:
+                L.record_reply(c, ids["Alpha Chemist"], "email", "Not now, thanks")
+                c.execute("UPDATE leads SET last_contacted_at=?", (days_ago(4),))
+            assert C.release_followups() == 2, "Alpha replied, so only Beta and Gamma are followed up"
+            run_sender(lambda: count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 5)
+            assert count("SELECT COUNT(*) FROM messages WHERE campaign_id=? AND status='sent'", kids[0]["id"]) == 2
+            assert count("SELECT COUNT(*) FROM messages WHERE lead_id=? AND direction='out'", ids["Alpha Chemist"]) == 1
+            prompt = next(_prompt(q) for q in seen[::-1] if _who(q) == "Beta Pharmacy")
+            assert "NO reply to our email" in prompt and "Us by email" in prompt, prompt
+            st = {r["id"]: r["status"] for r in cl.get("/api/campaigns").json()}
+            assert st[first["id"]] == "done" and st[kids[0]["id"]] == "done" and st[kids[1]["id"]] == "scheduled", st
+            with db.db() as c:
+                c.execute("UPDATE leads SET last_contacted_at=?", (days_ago(5),))
+            assert C.release_followups() == 2
+            run_sender(lambda: count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 7)
+            st = {r["id"]: r["status"] for r in cl.get("/api/campaigns").json()}
+            assert st[kids[1]["id"]] == "done", st
+            assert C.release_followups() == 0, "nobody is messaged twice"
+            # cancelling the first campaign cancels the follow-ups waiting behind it
+            for lead in ids.values():
+                with db.db() as c:
+                    c.execute("UPDATE leads SET do_not_contact=0, status='new', last_contacted_at=NULL WHERE id=?", (lead,))
+                    c.execute("DELETE FROM messages WHERE lead_id=?", (lead,))
+            again = cl.post("/api/campaigns", json={**body, "followups": [2, 2]}).json()
+            assert cl.post(f"/api/campaigns/{again['id']}/cancel").status_code == 200
+            tail = [r for r in cl.get("/api/campaigns").json() if r["name"].startswith("Seq") and r["id"] > kids[1]["id"]]
+            assert len(tail) == 3 and all(r["status"] == "cancelled" for r in tail), tail
+            # without an AI key follow-ups are refused with a clear message
+            db.save_settings({"ai_custom_url": "", "ai_custom_model": ""})
+            r = cl.post("/api/campaigns", json={**body, "ai": False, "subject": "Hello {name}", "followups": [3]})
+            assert r.status_code == 400 and "AI key" in r.json()["detail"], r.text
+    finally:
+        srv.shutdown()
+
+
+@test
+def today_lists_replies_due_follow_ups_and_quiet_leads_once_each():
+    from util import days_ago
+    fresh()
+    with db.db() as c:
+        mk = lambda n, ph: L.add_lead(c, {"name": n, "town": "Meru", "phone": ph})["id"]
+        replied, due, quiet, fresh_sent, done, dnc = (mk(n, f"07000002{i:02d}") for i, n in enumerate(
+            ["Replied", "Due", "Quiet", "Just messaged", "Won already", "Opted out"]))
+        for lid in (replied, due, quiet, fresh_sent, done, dnc):
+            c.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, created_at, sent_at) "
+                      "VALUES(?,?,?,?,?,?,?,?)", (lid, "out", "whatsapp", "x", "hello", "sent", days_ago(6), days_ago(6)))
+            c.execute("UPDATE leads SET last_contacted_at=?, status='contacted' WHERE id=?", (days_ago(6), lid))
+        c.execute("UPDATE leads SET last_contacted_at=? WHERE id=?", (days_ago(1), fresh_sent))
+        L.record_reply(c, replied, "sms", "Yes, how much?")
+        c.execute("UPDATE leads SET next_followup=? WHERE id IN (?, ?)", ("2020-01-01", due, replied))
+        c.execute("UPDATE leads SET status='won' WHERE id=?", (done,))
+        c.execute("UPDATE leads SET do_not_contact=1 WHERE id=?", (dnc,))
+        q = L.today_queue(c)
+        assert [r["name"] for r in q["replies"]] == ["Replied"]
+        assert [r["name"] for r in q["due"]] == ["Due"], "a lead shows in the first list that applies, not twice"
+        assert [r["name"] for r in q["quiet"]] == ["Quiet"] and q["quiet"][0]["unanswered"] == 1
+        c.execute("UPDATE messages SET handled=1 WHERE lead_id=? AND direction='in'", (replied,))
+        q = L.today_queue(c)
+        assert [r["name"] for r in q["replies"]] == [] and "Replied" in [r["name"] for r in q["due"]]
+        # answering them (any channel) takes them off the list without marking anything handled
+        c.execute("UPDATE messages SET handled=0 WHERE lead_id=? AND direction='in'", (replied,))
+        c.execute("UPDATE leads SET last_contacted_at=? WHERE id=?", (days_ago(-1), replied))
+        assert [r["name"] for r in L.today_queue(c)["replies"]] == []
+
+
+@test
+def deal_value_and_offer_are_saved_validated_and_totalled():
+    import server
+    from fastapi.testclient import TestClient
+    fresh()
+    with db.db() as c:
+        a = L.add_lead(c, {"name": "Big Shop", "phone": "0700000301"})["id"]
+        b = L.add_lead(c, {"name": "Open Shop", "phone": "0700000302"})["id"]
+        L.update_lead(c, a, {"deal_value": "45,000", "offer": "Sales dashboard", "status": "won"})
+        L.update_lead(c, b, {"deal_value": 12000, "status": "interested"})
+        assert L.get_lead(c, a)["deal_value"] == 45000 and L.get_lead(c, a)["offer"] == "Sales dashboard"
+        for bad in ("abc", -5):
+            try:
+                L.update_lead(c, a, {"deal_value": bad}); raise AssertionError("should refuse")
+            except ValueError:
+                pass
+        assert "Sales dashboard,45000" in L.export_csv(c).replace("\r", "")
+    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        d = cl.get("/api/dashboard").json()
+        assert d["won_value"] == 45000 and d["open_value"] == 12000 and set(d["channels"]) == {"email", "sms", "whatsapp"}
 
 
 if __name__ == "__main__":

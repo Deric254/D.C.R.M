@@ -88,7 +88,7 @@
         <section class="panel"><div class="panel-head"><h2>AI writing help</h2></div>
           <div class="panel-body stack" style="gap:14px">
             <p class="muted small">Paste a free key from any provider below. Keys are tried in order, so when one reaches its free limit the next one answers. Use “Write with AI” when writing a campaign or a message to one lead.</p>
-            <label class="field">What you sell<textarea name="ai_pitch" rows="2">${s.ai_pitch}</textarea><span class="hint">One or two sentences. The AI uses this so messages stay accurate.</span></label>
+            <label class="field">Who you are and what you sell<textarea name="ai_pitch" rows="3">${s.ai_pitch}</textarea><span class="hint">Your name, your profession, your offer and your ready-made tools. Every AI message is written from this, so keep it true.</span></label>
             <div class="grid2">${select(s, 'ai_provider', 'Try first', [...AI_KEYS.map(([id, label]) => [id, label]), ['custom', 'Your own server']])}
               ${field(s, 'ai_model', 'Model for that provider (optional)', { hint: 'Leave blank to use the default.' })}
               ${AI_KEYS.map(([id, label, url]) => field(s, 'ai_key_' + id, label + ' key', { secret: true, hint: html`Free key: <a href="${url}">${url.replace('https://', '')}</a>` }))}</div>

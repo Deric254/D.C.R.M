@@ -8,6 +8,9 @@ Safety rules baked in:
   * Account problems (bad login, no SMS balance) pause the campaign instead of
     burning through the queue; five failures in a row also pauses it.
   * A crash mid-send marks the message failed rather than re-sending it.
+  * Follow-ups: a campaign can carry up to three follow-ups. Each one goes, written by the AI, only to leads of the
+    campaign before it who have not replied once enough days have passed since their last message of any kind.
+    Cancelling the first campaign cancels its follow-ups.
   * AI campaigns (ai_personalize): the message box is a brief and the AI writes each lead's own message just
     before it is sent, using everything known about that lead. A message nearly identical to another one in
     the campaign is reworded once, then held back rather than sent.
@@ -68,7 +71,7 @@ def build_audience(conn, channel: str, filters: dict, s: dict, limit=None):
         recent_args.append(days_ago(skip_days))
     recent += ")"
     where.append("NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.direction='out' "
-                 f"AND m.channel = ? AND {recent})")
+                 f"AND (m.channel = ? OR m.channel = 'whatsapp') AND {recent})")   # a WhatsApp you sent by hand counts too
     args += [channel] + recent_args
 
     sql = f"SELECT l.* FROM leads l WHERE {' AND '.join(where)} ORDER BY l.id"
@@ -133,13 +136,42 @@ def ai_samples(conn, channel, brief, filters, count=3):
         return list(pool.map(one, leads))
 
 
-def create_campaign(conn, name, channel, subject, body, filters, launch=False, personalize=False):
+MAX_FOLLOWUPS = 3
+
+
+def _parse_followups(followups) -> list:
+    gaps = []
+    for d in followups or []:
+        try:
+            n = int(d)
+        except (TypeError, ValueError):
+            raise ValueError("Follow-up days must be whole numbers")
+        if not 1 <= n <= 30:
+            raise ValueError("A follow-up goes out 1 to 30 days after the last message")
+        gaps.append(n)
+    if len(gaps) > MAX_FOLLOWUPS:
+        raise ValueError(f"At most {MAX_FOLLOWUPS} follow-ups")
+    return gaps
+
+
+def create_campaign(conn, name, channel, subject, body, filters, launch=False, personalize=False, followups=None):
     validate_campaign(channel, subject, body, personalize)
+    gaps = _parse_followups(followups)
+    if gaps and not ai.configured(db.get_settings(conn)):
+        raise ValueError("Follow-ups are written by the AI so each one fits what was said before. "
+                         "Add a free AI key in Settings first.")
     name = (name or "").strip() or f"{channel.upper()} campaign {now()}"
     cur = conn.execute(
         "INSERT INTO campaigns(name, channel, subject, body, filters, status, ai_personalize, created_at) VALUES(?,?,?,?,?,?,?,?)",
         (name, channel, "" if personalize else subject or "", body, json.dumps(filters or {}), "draft", int(personalize), now()))
     cid = cur.lastrowid
+    brief = body if personalize else f"Follow up on this earlier message: {body[:400]}"
+    previous = cid
+    for i, gap in enumerate(gaps, 1):
+        previous = conn.execute(
+            "INSERT INTO campaigns(name, channel, subject, body, filters, status, ai_personalize, followup_of, followup_days, "
+            "created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (f"{name} · follow-up {i}", channel, "", brief, "{}", "scheduled", 1, previous, gap, now())).lastrowid
     if launch:
         launch_campaign(conn, cid)
     return cid
@@ -184,10 +216,13 @@ def set_campaign_status(conn, cid: int, action: str):
         conn.execute("UPDATE campaigns SET status='paused' WHERE id=?", (cid,))
     elif action == "resume" and c["status"] == "paused":
         conn.execute("UPDATE campaigns SET status='running', last_error='' WHERE id=?", (cid,))
-    elif action == "cancel" and c["status"] in ("running", "paused", "draft"):
+    elif action == "cancel" and c["status"] in ("running", "paused", "draft", "scheduled"):
         conn.execute("UPDATE messages SET status='skipped', error='Campaign cancelled' "
                      "WHERE campaign_id=? AND status='queued'", (cid,))
         conn.execute("UPDATE campaigns SET status='cancelled', finished_at=? WHERE id=?", (now(), cid))
+        for child in conn.execute("SELECT id FROM campaigns WHERE followup_of=? AND status IN "
+                                  "('draft','scheduled','running','paused')", (cid,)).fetchall():
+            set_campaign_status(conn, child["id"], "cancel")
     else:
         raise ValueError(f"Can't {action} a campaign that is {c['status']}")
 
@@ -258,12 +293,78 @@ def send_now(lead_id: int, channel: str, subject: str, body: str) -> dict:
     return {"id": mid, "status": "sent"}
 
 
+def log_whatsapp(lead_id: int, body: str) -> dict:
+    """Record a WhatsApp message the owner is about to send by hand, so it sits in the lead's history, counts
+    as contact and lets later replies be matched to it. Returns the wa.me link that opens the chat."""
+    from urllib.parse import quote
+    text = (body or "").strip()
+    if not text:
+        raise ValueError("Message can't be empty")
+    with db.db() as conn:
+        lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if not lead:
+            raise KeyError("Lead not found")
+        if lead["do_not_contact"]:
+            raise ValueError("This lead is marked do-not-contact.")
+        if not lead["phone_norm"] or not lead["is_mobile"]:
+            raise ValueError("This lead has no mobile number for WhatsApp.")
+        cur = conn.execute(
+            "INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, attempts, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?)", (lead_id, "out", "whatsapp", lead["phone_norm"], text, "sending", 1, now()))
+        _mark_sent(conn, cur.lastrowid, lead_id, "manual", None)
+        digits = re.sub(r"\D", "", lead["phone_norm"])
+    return {"id": cur.lastrowid, "status": "sent", "url": f"https://wa.me/{digits}?text={quote(text)}"}
+
+
 def _mark_sent(conn, mid, lead_id, provider_id, header):
     conn.execute("UPDATE messages SET status='sent', sent_at=?, provider_id=?, message_id_header=?, error='' WHERE id=?",
                  (now(), provider_id or "", header, mid))
     conn.execute("UPDATE leads SET last_contacted_at=?, updated_at=?, "
                  "status=CASE WHEN status='new' THEN 'contacted' ELSE status END WHERE id=?", (now(), now(), lead_id))
     db.log_event(conn, lead_id, "sent", "Message sent")
+
+
+# ------------------------------------------------------------------ follow-ups
+def _followup_leads(conn, c, only_due: bool):
+    """Leads a follow-up campaign is still to message: they were sent the campaign before it, have never replied,
+    can still be reached on this channel and are not in this campaign yet. only_due keeps those whose last
+    message, of any kind (so a WhatsApp you sent by hand counts), is at least followup_days old."""
+    where = ["l.archived = 0", "l.do_not_contact = 0", "l.status IN ('new','contacted')",
+             "EXISTS (SELECT 1 FROM messages p WHERE p.lead_id = l.id AND p.campaign_id = ? "
+             "AND p.direction='out' AND p.status='sent')",
+             "NOT EXISTS (SELECT 1 FROM messages x WHERE x.lead_id = l.id AND x.campaign_id = ?)",
+             "NOT EXISTS (SELECT 1 FROM messages r WHERE r.lead_id = l.id AND r.direction='in' "
+             "AND r.grade NOT IN ('auto','bounce'))"]
+    args = [c["followup_of"], c["id"]]
+    where.append("l.email IS NOT NULL AND l.email_bounced = 0" if c["channel"] == "email"
+                 else "l.phone_norm IS NOT NULL AND l.is_mobile = 1")
+    if only_due:
+        where.append("l.last_contacted_at <= ?")
+        args.append(days_ago(int(c["followup_days"])))
+    return conn.execute(f"SELECT l.* FROM leads l WHERE {' AND '.join(where)} ORDER BY l.id", args).fetchall()
+
+
+def release_followups(s: dict = None) -> int:
+    """Queue every follow-up that has come due. Returns how many messages were queued."""
+    s = s or db.get_settings()
+    if not ai.configured(s):
+        return 0
+    queued = 0
+    with db.db() as conn:
+        for c in conn.execute("SELECT * FROM campaigns WHERE followup_of IS NOT NULL "
+                              "AND status IN ('scheduled','running')").fetchall():
+            rows = _followup_leads(conn, c, True)
+            for lead in rows:
+                to = lead["email"] if c["channel"] == "email" else lead["phone_norm"]
+                conn.execute(
+                    "INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, "
+                    "scheduled_at, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (lead["id"], c["id"], "out", c["channel"], to, "", "", "queued", now(), now()))
+            if rows:
+                conn.execute("UPDATE campaigns SET status='running', total=total+?, launched_at=COALESCE(launched_at, ?), "
+                             "finished_at=NULL, last_error='' WHERE id=?", (len(rows), now(), c["id"]))
+                queued += len(rows)
+    return queued
 
 
 # ------------------------------------------------------------ AI-written messages
@@ -312,6 +413,7 @@ class Sender(threading.Thread):
         super().__init__(daemon=True, name="sender")
         self.stop_event = threading.Event()
         self.next_ok = {"email": 0.0, "sms": 0.0}
+        self.last_release = 0.0
         self.fails = {}
         self.status = {"state": "idle", "detail": ""}
 
@@ -351,6 +453,12 @@ class Sender(threading.Thread):
 
     def tick(self) -> float:
         s = db.get_settings()
+        if time.time() - self.last_release >= 60:   # follow-ups that came due since last minute
+            self.last_release = time.time()
+            try:
+                release_followups(s)
+            except Exception:
+                traceback.print_exc()
         waits, sent_any, pending = [], False, False
         for ch in CHANNELS:
             with db.db() as conn:
@@ -481,8 +589,22 @@ class Sender(threading.Thread):
     def _maybe_finish(conn, cid):
         left = conn.execute("SELECT COUNT(*) FROM messages WHERE campaign_id=? AND direction='out' "
                             "AND status IN ('queued','sending')", (cid,)).fetchone()[0]
-        if left == 0:
+        if left:
+            return
+        c = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if c and c["followup_of"] is not None and _followups_may_come(conn, c):
+            conn.execute("UPDATE campaigns SET status='scheduled' WHERE id=? AND status='running'", (cid,))
+        else:
             conn.execute("UPDATE campaigns SET status='done', finished_at=? WHERE id=? AND status='running'", (now(), cid))
+
+
+def _followups_may_come(conn, c) -> bool:
+    """Is a follow-up campaign still waiting for someone to fall due? Not once the campaign before it is over and
+    everyone it reached has replied, opted out or been messaged."""
+    parent = conn.execute("SELECT status FROM campaigns WHERE id=?", (c["followup_of"],)).fetchone()
+    if parent and parent["status"] not in ("done", "cancelled"):
+        return True
+    return bool(_followup_leads(conn, c, False))
 
 
 # --------------------------------------------------------------- reply poller

@@ -12,18 +12,19 @@ import csv
 import io
 import re
 import sqlite3
+from datetime import datetime
 
 import ai
 import db
 import grading
 from db import log_event
-from util import (address_similarity, name_key, normalize_email, normalize_phone,
+from util import (address_similarity, days_ago, name_key, normalize_email, normalize_phone,
                   now, pretty_phone)
 
 STATUSES = ["new", "contacted", "replied", "interested", "meeting", "won", "lost"]
 GRADES = ["hot", "warm", "cold", "unclear"]
 EDITABLE = {"name", "sector", "town", "address", "phone", "email", "website", "maps_url",
-            "notes", "status", "grade", "next_followup", "do_not_contact"}
+            "notes", "status", "grade", "next_followup", "do_not_contact", "offer", "deal_value"}
 
 
 class Conflict(Exception):
@@ -158,6 +159,36 @@ def get_lead(conn, lead_id: int):
     return row_to_dict(r) if r else None
 
 
+def today_queue(conn, wait_days: int = 3, limit: int = 40) -> dict:
+    """Who needs you today: replies you have not answered yet, follow-ups that have come due, and leads we messaged
+    a few days ago who have not answered. A lead appears in the first list that applies, never twice."""
+    base = "l.archived=0 AND l.do_not_contact=0 AND l.status NOT IN ('won','lost')"
+    cols = ("l.id, l.name, l.town, l.sector, l.status, l.grade, l.is_mobile, l.email, l.email_bounced, "
+            "l.next_followup, l.last_contacted_at, l.last_reply_at")
+    unanswered = ("(SELECT COUNT(*) FROM messages m WHERE m.lead_id=l.id AND m.direction='out' AND m.status='sent' "
+                  "AND m.sent_at > COALESCE(l.last_reply_at, '')) AS unanswered")
+    seen = set()
+
+    def run(sql, args=()):
+        out = []
+        for r in conn.execute(sql, args):
+            if r["id"] not in seen and len(out) < limit:
+                seen.add(r["id"])
+                out.append(dict(r))
+        return out
+
+    replies = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND EXISTS (SELECT 1 FROM messages i "
+                  "WHERE i.lead_id=l.id AND i.direction='in' AND i.handled=0 AND i.grade NOT IN ('auto','bounce')) "
+                  "AND (l.last_contacted_at IS NULL OR l.last_contacted_at <= l.last_reply_at) "
+                  "ORDER BY CASE l.grade WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END, l.last_reply_at DESC")
+    due = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND l.next_followup != '' AND l.next_followup <= ? "
+              "ORDER BY l.next_followup", (datetime.now().strftime("%Y-%m-%d"),))
+    quiet = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND l.last_contacted_at IS NOT NULL "
+                "AND l.last_contacted_at <= ? AND (l.last_reply_at IS NULL OR l.last_reply_at < l.last_contacted_at) "
+                "ORDER BY l.last_contacted_at", (days_ago(wait_days),))
+    return {"replies": replies, "due": due, "quiet": quiet, "wait_days": wait_days}
+
+
 def lead_detail(conn, lead_id: int):
     lead = get_lead(conn, lead_id)
     if not lead:
@@ -248,7 +279,7 @@ def update_lead(conn, lead_id: int, patch: dict) -> dict:
     cur = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
     if not cur:
         raise KeyError("Lead not found")
-    sets, args = {}, []
+    sets = {}
     for k, v in patch.items():
         if k not in EDITABLE:
             continue
@@ -258,6 +289,15 @@ def update_lead(conn, lead_id: int, patch: dict) -> dict:
                 raise ValueError("Business name can't be empty")
         elif k in ("sector", "town", "address", "website", "maps_url", "notes", "next_followup"):
             v = str(v or "").strip()
+        elif k == "offer":
+            v = str(v or "").strip()[:200]
+        elif k == "deal_value":
+            try:
+                v = int(float(str(v or 0).replace(",", "").strip() or 0))
+            except ValueError:
+                raise ValueError("Deal value must be a number")
+            if v < 0:
+                raise ValueError("Deal value can't be negative")
         sets[k] = v
 
     if "phone" in sets:
@@ -341,13 +381,18 @@ def record_reply(conn, lead_id: int, channel: str, text: str, subject: str = "",
             "ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone()
         campaign_id = row["campaign_id"] if row else None
 
+    # which of our messages this answers: the latest one we sent before it (any channel)
+    prior = conn.execute(
+        "SELECT id, channel FROM messages WHERE lead_id=? AND direction='out' AND status='sent' "
+        "AND (sent_at IS NULL OR sent_at <= ?) ORDER BY id DESC LIMIT 1", (lead_id, ts)).fetchone()
     cur = conn.execute(
         """INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status,
-                                message_id_header, grade, score, reasons, created_at, sent_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                message_id_header, grade, score, reasons, reply_to, created_at, sent_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (lead_id, campaign_id, "in", channel,
          (lead["email"] if channel == "email" else lead["phone_norm"]) or "",
-         subject, text, "received", message_id, grade, res["score"], ", ".join(res["reasons"]), ts, ts),
+         subject, text, "received", message_id, grade, res["score"], ", ".join(res["reasons"]),
+         prior["id"] if prior else None, ts, ts),
     )
     msg_id = cur.lastrowid
 
@@ -368,7 +413,8 @@ def record_reply(conn, lead_id: int, channel: str, text: str, subject: str = "",
             updates["status"] = "interested"
     cols = ", ".join(f"{k}=?" for k in updates)
     conn.execute(f"UPDATE leads SET {cols} WHERE id=?", list(updates.values()) + [lead_id])
-    log_event(conn, lead_id, "reply", f"{channel} reply graded {grade}")
+    log_event(conn, lead_id, "reply", f"{channel} reply graded {grade}"
+              + (f", answering our {prior['channel']} message" if prior else ""))
     return {"id": msg_id, "grade": grade, "score": res["score"], "reasons": res["reasons"], "duplicate": False}
 
 
@@ -449,7 +495,7 @@ def import_csv(conn, text: str) -> dict:
 
 
 EXPORT_COLUMNS = ["id", "name", "sector", "town", "address", "phone", "email", "website", "status",
-                  "grade", "do_not_contact", "email_bounced", "next_followup", "notes", "source",
+                  "grade", "do_not_contact", "email_bounced", "next_followup", "offer", "deal_value", "notes", "source",
                   "created_at", "last_contacted_at", "last_reply_at"]
 
 

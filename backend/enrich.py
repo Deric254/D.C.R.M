@@ -12,7 +12,7 @@ import requests
 
 import db
 import leads as L
-from util import days_ago, normalize_email, now
+from util import days_ago, normalize_email
 
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)*\.[a-zA-Z]{2,}")
 SKIP_HOSTS = ("facebook.com", "instagram.com", "twitter.com", "x.com", "linktr.ee", "wa.me", "whatsapp.com",

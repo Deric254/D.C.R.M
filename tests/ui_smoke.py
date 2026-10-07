@@ -1,6 +1,5 @@
 """Drive the real UI in Chromium against a live backend. Run: python tests/ui_smoke.py [screenshot_dir]"""
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -212,6 +211,36 @@ try:
         assert call("GET", "/settings")["ai_pitch"] == "Stock software"
         page.click("#test-ai")
         page.wait_for_selector(".toast.bad")   # no key yet: a clear error, not a crash
+
+        # ---- Today: replies to answer, with the message already written when a button is pressed
+        page.click('#nav a[data-view="today"]')
+        page.wait_for_selector("text=They replied")
+        assert "Follow-ups due" in page.inner_text("#content") and "No reply after" in page.inner_text("#content")
+        shot("4-today")
+        page.locator('[data-ch="whatsapp"]').first.click()
+        page.wait_for_selector("#send-form")
+        page.wait_for_function("document.querySelector('#send-form textarea').value.length > 0")   # the AI wrote it
+        assert "Open WhatsApp" in page.inner_text("#send-form") and "Free" in page.inner_text("#send-form")
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".drawer", state="detached")
+        # deal value and the offer are saved from the lead
+        page.click('#nav a[data-view="leads"]')
+        page.wait_for_selector("table.t tbody tr")
+        page.locator("table.t tbody tr").nth(5).click()
+        page.wait_for_selector(".drawer")
+        page.fill('input[name="offer"]', "Sales dashboard")
+        page.fill('input[name="deal_value"]', "45000")
+        page.click('#edit button[type=submit]')
+        page.wait_for_selector(".toast")
+        page.wait_for_selector(".drawer")
+        assert page.input_value('input[name="deal_value"]') == "45000"
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".drawer", state="detached")
+        # follow-ups can be chosen when writing a campaign
+        page.click('#nav a[data-view="outreach"]')
+        page.wait_for_selector("#cform")
+        assert page.locator('select[name="followups"] option').count() == 4
+        shot("5-outreach")
 
         # ---- overview again, mobile-ish width
         page.set_viewport_size({"width": 820, "height": 800})

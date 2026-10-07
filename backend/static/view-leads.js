@@ -171,7 +171,7 @@
   const TAGS = ['{name}', '{town}', '{sector}', '{sender}'];
   async function getSettings() { return (App.state.settings = await api('/settings')); }
 
-  App.openLead = async function openLead(id) {
+  App.openLead = async function openLead(id, compose) {
     const ov = $('#overlay');
     let lead;
     try { lead = await api('/leads/' + id); } catch (e) { return fail(e); }
@@ -184,11 +184,16 @@
     lead.events.filter((e) => !['reply', 'sent'].includes(e.kind)).forEach((e) => items.push({ t: e.ts, e }));
     items.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
 
+    const CH = { email: 'email', sms: 'text', whatsapp: 'WhatsApp', other: 'call or chat' };
+    const byId = Object.fromEntries(lead.messages.map((m) => [m.id, m]));
+    const real = lead.messages.filter((m) => m.direction === 'in' || m.status === 'sent');
+    const awaiting = real.length && real[real.length - 1].direction === 'out';
     const timeline = items.length ? items.map(({ t, m, e }) => m ? (m.direction === 'in' ? html`
-      <div class="tl in"><i></i><div><div class="small muted">${m.channel === 'email' ? 'Replied by email' : m.channel === 'sms' ? 'Replied by SMS' : 'Reply noted'} · ${when(t)} ${gradeChip(m.grade)}</div>
+      <div class="tl in"><i></i><div><div class="small muted">${m.channel === 'email' ? 'Replied by email' : m.channel === 'sms' ? 'Replied by SMS' : m.channel === 'whatsapp' ? 'Replied on WhatsApp' : 'Reply noted'} · ${when(t)} ${gradeChip(m.grade)}</div>
+        ${byId[m.reply_to] ? html`<div class="small muted">In answer to our ${CH[byId[m.reply_to].channel] || 'message'} of ${when(byId[m.reply_to].sent_at || byId[m.reply_to].created_at)}</div>` : ''}
         <div class="bubble">${m.subject ? html`<strong>${m.subject}</strong><br>` : ''}${m.body}</div>
         ${m.reasons ? html`<div class="small muted">Matched: ${m.reasons}</div>` : ''}</div></div>` : html`
-      <div class="tl out"><i></i><div><div class="small muted">${m.channel === 'email' ? 'Emailed' : 'Texted'}${m.campaign_name ? ' (' + m.campaign_name + ')' : ''} · ${when(t)} · ${m.status === 'sent' ? 'Sent' : m.status === 'queued' ? 'Waiting to send' : m.status === 'failed' ? 'Failed' : m.status}</div>
+      <div class="tl out"><i></i><div><div class="small muted">${m.channel === 'email' ? 'Emailed' : m.channel === 'whatsapp' ? 'WhatsApp sent' : 'Texted'}${m.campaign_name ? ' (' + m.campaign_name + ')' : ''} · ${when(t)} · ${m.status === 'sent' ? 'Sent' : m.status === 'queued' ? 'Waiting to send' : m.status === 'failed' ? 'Failed' : m.status}</div>
         <div class="bubble">${m.subject ? html`<strong>${m.subject}</strong><br>` : ''}${m.body || (m.status === 'queued' ? 'The AI writes this just before it is sent.' : '')}</div>
         ${m.error ? html`<div class="small" style="color:var(--bad)">${m.error}</div>` : ''}</div></div>`)
       : html`<div class="tl"><i></i><div><div class="small muted">${when(t)}</div><div>${e.detail}</div></div></div>`)
@@ -196,12 +201,14 @@
 
     const canEmail = lead.email && !lead.email_bounced && !lead.do_not_contact;
     const canSms = lead.phone_norm && lead.is_mobile && !lead.do_not_contact;
+    const canWa = canSms;
 
     render(ov, html`<div class="scrim" id="scrim"></div>
       <aside class="drawer" role="dialog" aria-label="${lead.name}">
         <div class="drawer-head">
           <div style="flex:1;min-width:0"><h2>${lead.name}</h2>
             <div class="row" style="gap:6px;margin-top:6px">${statusChip(lead.status)} ${gradeChip(lead.grade)}
+              ${awaiting ? html`<span class="chip warm" title="We sent the last message and they have not answered yet">Awaiting reply</span>` : ''}
               ${lead.do_not_contact ? html`<span class="chip optout">Do not contact</span>` : ''}${lead.email_bounced ? html`<span class="chip bounce">Email bounced</span>` : ''}
               ${lead.archived ? html`<span class="chip">Archived</span>` : ''}</div></div>
           <button class="btn quiet" id="x" aria-label="Close">Close</button>
@@ -210,6 +217,7 @@
           <div class="row">
             ${lead.phone_norm ? html`<button class="btn small" type="button" id="copy-phone" title="Copy the number to dial it">Copy ${lead.phone_display}</button>` : ''}
             <button class="btn small" data-compose="email" ${canEmail ? '' : 'disabled'} title="${canEmail ? '' : 'Needs a working email and not do-not-contact'}">Email</button>
+            <button class="btn small" data-compose="whatsapp" ${canWa ? '' : 'disabled'} title="${canWa ? 'Free: opens WhatsApp with the message ready, you press send' : 'Needs a mobile number and not do-not-contact'}">WhatsApp</button>
             <button class="btn small" data-compose="sms" ${canSms ? '' : 'disabled'} title="${canSms ? '' : 'Needs a mobile number and not do-not-contact'}">Text</button>
             <button class="btn small" id="log-reply">Log a reply</button>
             ${lead.messages.length ? html`<button class="btn small" id="ai-summary" title="A short summary and the best next step">Summarise with AI</button>` : ''}
@@ -225,6 +233,8 @@
                 <span class="hint">${lead.grade_locked ? "Set by you. Replies won't change it." : lead.grade ? 'Set from their replies.' : 'Graded when they reply.'}</span></label>
               <label class="field">Business name<input type="text" name="name" value="${lead.name}" required></label>
               <label class="field">Follow up on<input type="date" name="next_followup" value="${lead.next_followup}"></label>
+              <label class="field">What you are offering<input type="text" name="offer" value="${lead.offer}" placeholder="e.g. Sales and stock dashboard"></label>
+              <label class="field">Deal value (KES)<input type="number" name="deal_value" min="0" step="1" value="${lead.deal_value || ''}"></label>
               <label class="field">Sector<input type="text" name="sector" value="${lead.sector}"></label>
               <label class="field">Town<input type="text" name="town" value="${lead.town}"></label>
               <label class="field">Phone<input type="text" name="phone" value="${lead.phone}"></label>
@@ -244,7 +254,7 @@
 
     $('#scrim').onclick = close; $('#x').onclick = close;
     if ($('#copy-phone')) $('#copy-phone').onclick = () => App.copy(lead.phone_norm, 'Number copied');
-    const reload = () => { close(); App.openLead(id); if (App.refreshLeadsTable) App.refreshLeadsTable(); if (location.hash.startsWith('#/overview') || location.hash.startsWith('#/replies')) App.refresh(); };
+    const reload = () => { close(); App.openLead(id); if (App.refreshLeadsTable) App.refreshLeadsTable(); if (/^#\/(overview|replies|today)/.test(location.hash)) App.refresh(); };
 
     $('#edit').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -272,16 +282,18 @@
 
     async function composer(channel) {
       const s = App.state.settings || (await getSettings());
-      const ready = channel === 'email' ? s.smtp_host && s.from_email : s.at_username && s.at_api_key_set;
+      const wa = channel === 'whatsapp';
+      const aiReady = !!s.ai_custom_url || Object.keys(s).some((k) => /^ai_key_.+_set$/.test(k) && s[k]);
+      const ready = wa ? true : channel === 'email' ? s.smtp_host && s.from_email : s.at_username && s.at_api_key_set;
       render($('#composer'), html`<form class="panel" id="send-form"><div class="panel-body stack" style="gap:10px">
-        <h3>${channel === 'email' ? 'Email ' : 'Text '}${lead.name}</h3>
+        <h3>${channel === 'email' ? 'Email ' : wa ? 'WhatsApp ' : 'Text '}${lead.name}</h3>
         ${!ready ? html`<div class="notice">${channel === 'email' ? 'Email' : 'SMS'} isn't set up yet. <a href="#/settings" id="goset">Open settings</a></div>` : ''}
         ${channel === 'email' ? html`<label class="field">Subject<input type="text" name="subject" required></label>` : ''}
         <label class="field">Message<textarea name="body" rows="5" required></textarea></label>
-        <div class="row tags"><button type="button" class="btn small primary" id="ai-write" title="Writes a first message or a reply to their latest one. Uses anything you have typed as guidance.">Write with AI</button>${TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}
+        <div class="row tags"><button type="button" class="btn small primary" id="ai-write" title="Writes a first message or a reply to their latest one. Uses anything you have typed as guidance.">Write with AI</button>${wa ? '' : TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}
           <span class="smsmeter right" id="meter"></span></div>
-        <div class="small muted">${s.append_optout ? 'An opt-out line is added automatically.' : ''}</div>
-        <div class="row"><button class="btn primary" type="submit" ${ready ? '' : 'disabled'}>${channel === 'email' ? 'Send email' : 'Send text'}</button>
+        <div class="small muted">${wa ? 'Free: WhatsApp opens with this message ready. You press send there, then use Log a reply when they answer.' : s.append_optout ? 'An opt-out line is added automatically.' : ''}</div>
+        <div class="row"><button class="btn primary" type="submit" ${ready ? '' : 'disabled'}>${channel === 'email' ? 'Send email' : wa ? 'Open WhatsApp' : 'Send text'}</button>
           <button class="btn quiet" type="button" id="cancel-c">Cancel</button></div></div></form>`);
       const f = $('#send-form'); const ta = f.elements.body;
       const meter = () => { if (channel !== 'sms') return; const len = ta.value.length + (s.append_optout ? (s.optout_suffix_sms || '').length : 0); $('#meter').textContent = `${len} characters · ${len <= 160 ? 1 : Math.ceil(len / 153)} SMS`; };
@@ -292,18 +304,27 @@
       $('#goset') && ($('#goset').onclick = close);
       f.addEventListener('submit', async (e) => {
         e.preventDefault(); const btn = e.submitter; btn.disabled = true;
+        if (wa) {
+          try {
+            const r = await api(`/leads/${id}/whatsapp`, { method: 'POST', body: { body: ta.value } });
+            await api('/open-url', { method: 'POST', body: { url: r.url } });
+            toast('WhatsApp opened and the message is logged'); reload();
+          } catch (err) { fail(err); btn.disabled = false; }
+          return;
+        }
         try { await api(`/leads/${id}/send`, { method: 'POST', body: { channel, subject: f.elements.subject ? f.elements.subject.value : '', body: ta.value } });
           toast(channel === 'email' ? 'Email sent' : 'Text sent'); reload(); }
         catch (err) { fail(err); btn.disabled = false; }
       });
       ta.focus();
+      if (aiReady) $('#ai-write').click();   // the first draft is written for you; edit it or press again for another
     }
 
     function logReply() {
       render($('#composer'), html`<form class="panel" id="reply-form"><div class="panel-body stack" style="gap:10px">
         <h3>Log a reply from ${lead.name}</h3>
-        <p class="muted small">Paste what they said by SMS, WhatsApp or on a call. It's graded automatically so it shows up in Replies.</p>
-        <div class="grid2"><label class="field">How did they reply?<select name="channel"><option value="sms">SMS</option><option value="email">Email</option><option value="other">WhatsApp or call</option></select></label>
+        <p class="muted small">Paste what they said by SMS, WhatsApp or on a call. It's graded automatically, matched to the message of ours it answers, and shows up in Replies.</p>
+        <div class="grid2"><label class="field">How did they reply?<select name="channel"><option value="sms">SMS</option><option value="email">Email</option><option value="whatsapp">WhatsApp</option><option value="other">Call or other</option></select></label>
           <label class="field">Grade<select name="grade"><option value="">Grade it for me</option><option value="hot">Hot</option><option value="warm">Warm</option><option value="cold">Cold</option><option value="unclear">Needs a look</option><option value="optout">Opted out</option></select></label></div>
         <label class="field">What did they say?<textarea name="text" rows="3" required></textarea></label>
         <div class="row"><button class="btn primary" type="submit">Save reply</button><button class="btn quiet" type="button" id="cancel-c">Cancel</button></div></div></form>`);
@@ -316,5 +337,9 @@
       });
       $('#reply-form').elements.text.focus();
     }
+
+    // opened from the Today page with a channel chosen: go straight to the message
+    if (compose === 'whatsapp' && canWa) composer('whatsapp');
+    else if (compose === 'email' && canEmail) composer('email');
   };
 })();

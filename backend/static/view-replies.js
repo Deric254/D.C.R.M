@@ -33,7 +33,7 @@
             <div class="row"><a href="#" data-lead="${r.lead_id}" class="name" style="font-weight:650;color:inherit">${r.name}</a>
               <span class="muted small">${[r.town, r.sector].filter(Boolean).join(' · ')}</span>
               ${gradeChip(r.grade)} ${r.do_not_contact ? html`<span class="chip optout">Do not contact</span>` : ''}
-              <span class="muted small right">${r.channel === 'email' ? 'Email' : r.channel === 'sms' ? 'SMS' : 'Noted'} · ${when(r.created_at)}${r.campaign_name ? ' · ' + r.campaign_name : ''}</span></div>
+              <span class="muted small right">${r.channel === 'email' ? 'Email' : r.channel === 'sms' ? 'SMS' : r.channel === 'whatsapp' ? 'WhatsApp' : 'Noted'} · ${when(r.created_at)}${r.campaign_name ? ' · ' + r.campaign_name : ''}</span></div>
             ${r.subject ? html`<div class="small muted">${r.subject}</div>` : ''}
             <div class="quote">${r.body || '(empty message)'}</div>
             <div class="row">
@@ -70,7 +70,7 @@
           <p class="muted small">For replies that arrive outside the app: an SMS on your phone, WhatsApp, or a call. It is graded like any other reply.</p>
           <label class="field">Find the business<input type="search" id="lead-q" placeholder="Type a name or phone number" autocomplete="off" autofocus></label>
           <div id="lead-res" class="stack" style="gap:4px"></div>
-          <div class="grid2"><label class="field">How did they reply?<select name="channel"><option value="sms">SMS</option><option value="email">Email</option><option value="other">WhatsApp or call</option></select></label>
+          <div class="grid2"><label class="field">How did they reply?<select name="channel"><option value="sms">SMS</option><option value="email">Email</option><option value="whatsapp">WhatsApp</option><option value="other">Call or other</option></select></label>
             <label class="field">Grade<select name="grade"><option value="">Grade it for me</option>${GRADES.map(([v, l]) => html`<option value="${v}">${l}</option>`)}</select></label></div>
           <label class="field">What did they say?<textarea name="text" rows="3" required></textarea></label>` },
         async (form) => {

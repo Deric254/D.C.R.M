@@ -114,9 +114,64 @@ def _context(s: dict, extra: str) -> str:
     return f"Sender: {s['sender_name']}. What we offer: {pitch}.\n{extra}"
 
 
+def _convo(lead: dict) -> list:
+    """Messages that really happened: what they sent us, and what we sent (not queued, failed or empty ones)."""
+    return [m for m in lead["messages"] if (m["body"] or "").strip() and (m["direction"] == "in" or m["status"] == "sent")]
+
+
+CHANNEL_NAMES = {"email": "email", "sms": "text", "whatsapp": "WhatsApp", "other": "call or chat"}
+
+
 def _thread(lead: dict, last: int) -> str:
-    return "\n".join(f"{'Us' if m['direction'] == 'out' else 'Them'}: {(m['body'] or '').strip()[:600]}"
-                     for m in lead["messages"][-last:])
+    return "\n".join(
+        f"{'Us' if m['direction'] == 'out' else 'Them'} by {CHANNEL_NAMES.get(m['channel'], m['channel'])}, "
+        f"{(m['sent_at'] or m['created_at'] or '')[:10]}: {(m['body'] or '').strip()[:600]}"
+        for m in _convo(lead)[-last:])
+
+
+# What a data analyst can help each kind of business find out. Offered as questions we can answer, never as facts about them.
+ANGLES = (
+    (("pharm", "chemist", "drug"), "which medicines sell fastest, what keeps running out, and what expires unsold"),
+    (("clinic", "hospital", "dental", "medical", "laborator", "optic"), "which services bring in the most money, the busy and quiet days, and missed appointments"),
+    (("restaurant", "cafe", "caf\u00e9", "hotel", "lodge", "pub", "eatery", "butcher", "bakery", "catering"), "which items sell best, the peak hours, and what gets wasted"),
+    (("hardware", "agrovet", "agro", "farm", "seed", "feed"), "which products move each season, stock to hold, and who owes you"),
+    (("salon", "barber", "spa", "beauty"), "which services and days earn most, and which customers stopped coming"),
+    (("school", "college", "academy", "nursery"), "fee collection, arrears, and enrolment trends"),
+    (("garage", "motor", "spare", "tyre", "auto"), "which parts and jobs earn most, and what sits unsold"),
+    (("supermarket", "shop", "store", "mini", "wholesale", "retail", "kiosk", "boutique", "cosmetic", "mart"), "best sellers and slow movers, what to reorder, and real margins"),
+)
+
+
+def _angle(sector: str) -> str:
+    low = (sector or "").lower()
+    for keys, text in ANGLES:
+        if any(k in low for k in keys):
+            return text
+    return "what is selling and what is not, where money leaks, and what to do next"
+
+
+def _stage(lead: dict) -> str:
+    """What this message is: a first hello, a reply, or a follow-up to something we sent that got no answer."""
+    convo = _convo(lead)
+    if not convo:
+        return ("This is the FIRST message. Introduce us by name and say in a few words what we do, show one concrete way "
+                "it could help this kind of business, mention that we have ready-made tools we adapt to their business "
+                "if the offer says so, and ask one easy question.")
+    last = convo[-1]
+    if last["direction"] == "in":
+        return "They replied. Answer exactly what they said first, then offer one clear next step."
+    waiting = 0
+    for m in reversed(convo):
+        if m["direction"] == "in":
+            break
+        waiting += 1
+    when = (last["sent_at"] or last["created_at"] or "")[:10]
+    how = CHANNEL_NAMES.get(last["channel"], last["channel"])
+    task = (f"We have had NO reply to our {how} message of {when} ({waiting} unanswered so far). Write a short follow-up that "
+            "refers to it naturally, takes a NEW angle instead of repeating it, and asks one easy question.")
+    if waiting >= 3:
+        task += " This is the last note: be gracious and say we will not keep messaging, and that they can reach us any time."
+    return task
 
 
 def _lead_facts(lead: dict) -> str:
@@ -171,25 +226,30 @@ def draft_template(s: dict, channel: str, brief: str) -> dict:
     return {"subject": subject, "body": body}
 
 
+FORMS = {
+    "sms": "A text message under 300 characters.",
+    "whatsapp": "A WhatsApp message in a warm, conversational voice, plain text, under 90 words, no subject line.",
+    "email": "An email: first line 'Subject: ...', then a blank line, then a body under 120 words.",
+}
+
+
 def draft_for_lead(s: dict, lead: dict, channel: str, notes: str, avoid: str = "") -> dict:
-    """A first message, or a reply that follows the conversation so far, for one lead.
+    """A first message, a reply, or a follow-up that fits the conversation so far, for one lead.
     `avoid` is another message to word differently from (used when a draft came out too alike)."""
-    if channel not in ("sms", "email"):
-        raise ValueError("Channel must be email or sms")
+    if channel not in FORMS:
+        raise ValueError("Channel must be email, sms or whatsapp")
     if lead["do_not_contact"]:
         raise ValueError("This lead asked not to be contacted.")
     thread = _thread(lead, 10)
-    form = "A text message under 300 characters." if channel == "sms" else \
-        "An email: first line 'Subject: ...', then a blank line, then a body under 120 words."
-    task = ("Reply to their latest message: answer what they said, then offer one clear next step."
-            if thread else "Write a friendly first message introducing us.")
     text = ask(s, SYSTEM, _context(s, (
         f"{_lead_facts(lead)}\n"
         f"Conversation so far:\n{thread or '(none yet)'}\n"
         f"Our rough notes or instructions for this message: {notes.strip() or 'none'}.\n"
-        f"{task} {form} Write the final text with real names, no placeholders, and sign off as {s['sender_name']}. "
-        "Use only the facts above, and weave in one or two real details about them so it reads as written for them alone. "
-        "Do not add an opt-out line; the app adds it."
+        f"{_stage(lead)} {FORMS[channel]} Write the final text with real names, no placeholders, speaking as {s['sender_name']} "
+        "in the first person and signing off with that name. "
+        f"What we can help a business like theirs find out (offer it as something we can look into together, never claim it is a fact about them): {_angle(lead['sector'])}. "
+        "Use only the facts above, and weave in one or two real details about them (their town, type of business, or something from the conversation) "
+        "so it reads as written for them alone. Do not add an opt-out line; the app adds it."
         + (f"\nWord it very differently from this message, with another opening and another structure: {avoid[:400]}" if avoid else ""))))
     subject, body = _split_subject(text) if channel == "email" else ("", text)
     return {"subject": subject, "body": body}
@@ -257,7 +317,7 @@ def plan_searches(s: dict, goal: str, history: list) -> dict:
             turns.append(f"{who}: {str(m['text']).strip()[:600]}")
     pitch = s["ai_pitch"].strip() or "not described"
     prompt = (f"What the owner sells: {pitch}.\n"
-              + (f"Conversation so far:\n" + "\n".join(turns) + "\n" if turns else "")
+              + ("Conversation so far:\n" + "\n".join(turns) + "\n" if turns else "")
               + f"Owner's latest message: {goal[:800]}\n"
               "Choose the searches now (or ask your one question).")
     return parse_plan(ask(s, PLAN_SYSTEM, prompt, max_tokens=1500, temperature=0.3, budget=40))

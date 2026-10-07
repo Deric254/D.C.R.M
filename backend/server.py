@@ -45,6 +45,10 @@ class ReplyIn(BaseModel):
     grade: Optional[str] = None
 
 
+class WhatsAppIn(BaseModel):
+    body: str
+
+
 class SendIn(BaseModel):
     channel: str
     subject: str = ""
@@ -86,6 +90,7 @@ class CampaignIn(BaseModel):
     filters: dict = {}
     launch: bool = False
     ai: bool = False   # body is a brief; the AI writes each lead's own message as it is sent
+    followups: list = []   # days to wait before each AI-written follow-up to people who have not replied, e.g. [3, 4]
 
 
 class GoalIn(BaseModel):
@@ -235,15 +240,29 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 "dnc": q("SELECT COUNT(*) FROM leads WHERE do_not_contact=1"),
                 "archived": q("SELECT COUNT(*) FROM leads WHERE archived=1"),
                 "sent_today": {ch: q("SELECT COUNT(*) FROM messages WHERE direction='out' AND channel=? AND status='sent' "
-                                     "AND sent_at >= ?", ch, today_start()) for ch in ("email", "sms")},
+                                     "AND sent_at >= ?", ch, today_start()) for ch in ("email", "sms", "whatsapp")},
                 "sent_week": q("SELECT COUNT(*) FROM messages WHERE direction='out' AND status='sent' AND sent_at >= ?", week_s),
                 "replies_week": q("SELECT COUNT(*) FROM messages WHERE direction='in' AND grade NOT IN ('auto','bounce') "
                                   "AND created_at >= ?", week_s),
+                "channels": {ch: {
+                    "contacted": q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='out' AND status='sent' "
+                                   "AND channel=?", ch),
+                    "replied": q("SELECT COUNT(DISTINCT i.lead_id) FROM messages i JOIN messages o ON o.id = i.reply_to "
+                                 "WHERE i.direction='in' AND i.grade NOT IN ('auto','bounce') AND o.channel=?", ch)}
+                    for ch in ("email", "sms", "whatsapp")},
                 "contacted": contacted, "replied": replied,
                 "reply_rate": round(100 * replied / contacted, 1) if contacted else 0,
+                "won_value": q("SELECT COALESCE(SUM(deal_value), 0) FROM leads WHERE archived=0 AND status='won'"),
+                "open_value": q("SELECT COALESCE(SUM(deal_value), 0) FROM leads WHERE archived=0 "
+                                "AND status IN ('interested','meeting')"),
                 "hot": hot, "due": due, "activity": activity,
                 "campaigns": [c for c in C.campaign_stats(conn) if c["status"] in ("running", "paused")][:5],
             }
+
+    @app.get("/api/today")
+    def today():
+        with db.db() as conn:
+            return L.today_queue(conn)
 
     @app.get("/api/facets")
     def facets():
@@ -323,11 +342,15 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     def log_reply(lead_id: int, body: ReplyIn):
         if not body.text.strip():
             raise ValueError("Paste or type the reply text")
-        if body.channel not in ("sms", "email", "other"):
+        if body.channel not in ("sms", "email", "whatsapp", "other"):
             raise ValueError("Unknown channel")
         with db.db() as conn:
             res = L.record_reply(conn, lead_id, body.channel, body.text.strip(), forced_grade=body.grade or None)
         return res
+
+    @app.post("/api/leads/{lead_id}/whatsapp")
+    def whatsapp_one(lead_id: int, body: WhatsAppIn):
+        return C.log_whatsapp(lead_id, body.body)
 
     @app.post("/api/leads/{lead_id}/send")
     def send_one(lead_id: int, body: SendIn):
@@ -414,7 +437,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     @app.post("/api/campaigns")
     def create_campaign(body: CampaignIn):
         with db.db() as conn:
-            cid = C.create_campaign(conn, body.name, body.channel, body.subject, body.body, body.filters, body.launch, body.ai)
+            cid = C.create_campaign(conn, body.name, body.channel, body.subject, body.body, body.filters, body.launch, body.ai,
+                                  body.followups)
             return C.campaign_stats(conn, cid)
 
     @app.get("/api/campaigns/{cid}")

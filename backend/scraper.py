@@ -325,7 +325,6 @@ def run_enrich(job_id: int, params: dict) -> str:
 
 
 def worker_main(kind: str, job_id: int):
-    import json
     with db.db() as conn:
         job = jobs.get_job(conn, job_id)
     if not job:
