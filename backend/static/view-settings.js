@@ -29,7 +29,7 @@
           ${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}</div></section>
 
         <section class="panel"><div class="panel-head"><h2>Logo and slogan</h2></div><div class="panel-body stack" style="gap:14px">
-          <div class="row"><img id="logo-preview" class="logo-preview" src="/api/branding/logo?${Date.now()}" alt="Current logo" onerror="this.hidden=true">
+          <div class="row"><img id="logo-preview" class="logo-preview" src="/api/branding/logo" alt="Current logo" onerror="this.hidden=true">
             <div class="stack" style="gap:8px"><input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp"><button type="button" class="btn small" id="logo-reset">Use the default logo</button></div></div>
           ${field(s, 'slogan', 'Slogan', { hint: 'Shown under the name in the sidebar. Save settings to apply.' })}
           <p class="muted small">The logo changes straight away inside the app. The program icon itself is set when the app is built: replace <code>backend/static/logo.png</code> (square PNG, 512 px or larger) and push.</p>
@@ -126,7 +126,7 @@
         e.preventDefault();
         try { await save(); toast('Settings saved'); draw(); App.loadBrand(); } catch (err) { fail(err); }
       });
-      const refreshLogo = () => { App.showLogo($('#logo-preview')); return App.loadBrand(); };
+      const refreshLogo = () => { App.showLogo($('#logo-preview'), true); return App.loadBrand(); };
       el.addEventListener('change', async (e) => {
         const file = e.target.id === 'logo-file' && e.target.files[0]; if (!file) return;
         try { await api('/branding/logo', { method: 'PUT', body: file }); await refreshLogo(); toast('Logo updated'); } catch (err) { fail(err); }

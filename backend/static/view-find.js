@@ -63,6 +63,14 @@
 
       render(el, html`<div class="grid2" style="align-items:start">
         <div class="stack">
+          <section class="panel"><div class="panel-head"><h2>Ask the AI</h2><button type="button" class="btn small quiet right hidden" id="plan-new">Start over</button></div>
+            <div class="panel-body stack" style="gap:12px">
+              <div id="plan-out" class="stack" style="gap:12px"></div>
+              <form id="plan-form" class="stack" style="gap:8px">
+                <textarea id="plan-text" rows="2" aria-label="Tell the AI what you want" placeholder="Tell the AI who you want to reach. For example: pharmacies and clinics in Kisii and Migori that could use my billing software."></textarea>
+                <div class="row"><button class="btn primary" id="plan-ask">Ask AI</button><span class="muted small">It suggests the searches. Nothing runs until you press a start button.</span></div>
+              </form>
+            </div></section>
           <section class="panel"><div class="panel-head"><h2>What to look for</h2></div><div class="panel-body stack" style="gap:16px">
             <div id="builder"></div><hr class="sep"><div id="queue"></div>
             <hr class="sep">
@@ -88,7 +96,40 @@
         </div>
       </div>`);
 
-      drawBuilder(); drawQueue();
+      // ---- AI planner: you talk, it proposes searches, you add them (or add and start in one click)
+      const chat = [];   // what you and the AI have said so far
+      let plan = [];     // suggested [category, town] pairs that are not added yet
+      function drawPlan() {
+        $('#plan-new').classList.toggle('hidden', !chat.length && !plan.length);
+        render($('#plan-out'), html`
+          ${chat.length ? html`<div class="plan-chat" id="plan-chat">${chat.map((m) => html`<div class="plan-msg ${m.role}">${m.text}</div>`)}</div>` : ''}
+          ${plan.length ? html`<div>
+            <div class="muted small" style="margin-bottom:6px">${plan.length} suggested search${plan.length === 1 ? '' : 'es'}. Remove any you don't want:</div>
+            <div class="chips chips-scroll">${plan.map(([c, t], i) => html`<span class="opt" style="cursor:default">${c} in ${t}<button type="button" class="btn small quiet" data-plan-rm="${i}" aria-label="Remove ${c} in ${t}" style="padding:0 4px">×</button></span>`)}</div>
+            <div class="row" style="margin-top:10px"><button type="button" class="btn" id="plan-add">Add to my searches</button><button type="button" class="btn primary" id="plan-go">Add and start finding leads</button></div>
+          </div>` : ''}`);
+        const box = $('#plan-chat'); if (box) box.scrollTop = box.scrollHeight;
+      }
+      async function askPlan() {
+        const ta = $('#plan-text'), btn = $('#plan-ask'), goal = ta.value.trim();
+        if (!goal) return;
+        btn.disabled = true; btn.textContent = 'Thinking…';
+        try {
+          const r = await api('/ai/plan-searches', { method: 'POST', body: { goal, history: chat }, timeout: 60000 });
+          chat.push({ role: 'user', text: goal }, { role: 'ai', text: r.reply || (r.searches.length ? 'Here is what I would search.' : 'Tell me a little more about who you want to reach.') });
+          if (r.searches.length) plan = r.searches.map((x) => [x.category, x.town]);   // the AI saw the whole conversation, so its newest list replaces the old one
+          ta.value = ''; drawPlan();
+        } catch (err) { fail(err); }
+        finally { if (alive()) { btn.disabled = false; btn.textContent = 'Ask AI'; } }
+      }
+      function addPlan() {
+        let n = 0;
+        plan.forEach(([c, tw]) => { if (!hasSearch(c, tw)) { S.searches.push([c, tw]); n++; } });
+        plan = []; save(S); drawQueue(); drawPlan();
+        toast(n ? `Added ${n} search${n === 1 ? '' : 'es'}` : 'Those searches were already in your list');
+      }
+
+      drawBuilder(); drawQueue(); drawPlan();
       const pick = (k, v, on) => { const sel = KINDS[k].sel; S[sel] = on ? [...new Set([...S[sel], v])] : S[sel].filter((x) => x !== v); };
       el.addEventListener('change', (e) => {
         const t = e.target;
@@ -97,11 +138,15 @@
         else if (t.id === 'enrich') { S.enrich = t.checked; save(S); }
         else if (t.id === 'max') { S.max = Math.max(1, Math.min(300, +t.value || 60)); save(S); }
       });
+      el.addEventListener('keydown', (e) => {
+        if (e.target.id === 'plan-text' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); askPlan(); }
+      });
       el.addEventListener('input', (e) => {
         const k = e.target.dataset.filter;
         if (k) { Q[k] = e.target.value.trim().toLowerCase(); drawChips(k); }
       });
       el.addEventListener('submit', (e) => {
+        if (e.target.id === 'plan-form') { e.preventDefault(); askPlan(); return; }
         const k = e.target.dataset.add; if (!k) return;
         e.preventDefault();
         const input = e.target.querySelector('input');
@@ -112,6 +157,12 @@
         });
         input.value = ''; save(S); drawChips(k); drawSummary();
       });
+      async function startRun() {
+        try {
+          const r = await api('/jobs/scrape', { method: 'POST', body: { searches: S.searches.map(([category, town]) => ({ category, town })), max_per_search: S.max, headless: !S.show, enrich: S.enrich } });
+          viewJob = r.id; lastLog = 0; $('#log').textContent = ''; toast('Started'); App.pollStatus(); tick();
+        } catch (err) { fail(err); }
+      }
       el.addEventListener('click', async (e) => {
         const t = e.target.closest('button'); if (!t) return;
         if (t.dataset.all) { shown(t.dataset.all).forEach((v) => pick(t.dataset.all, v, true)); save(S); drawChips(t.dataset.all); drawSummary(); }
@@ -124,12 +175,12 @@
           save(S); drawQueue();
         } else if (t.id === 'clear') { S.searches = []; save(S); drawQueue(); }
         else if (t.dataset.rm !== undefined) { S.searches.splice(+t.dataset.rm, 1); save(S); drawQueue(); }
-        else if (t.id === 'start') {
-          try {
-            const r = await api('/jobs/scrape', { method: 'POST', body: { searches: S.searches.map(([category, town]) => ({ category, town })), max_per_search: S.max, headless: !S.show, enrich: S.enrich } });
-            viewJob = r.id; lastLog = 0; $('#log').textContent = ''; toast('Started'); App.pollStatus(); tick();
-          } catch (err) { fail(err); }
-        } else if (t.id === 'emails') {
+        else if (t.id === 'start') { await startRun(); }
+        else if (t.id === 'plan-add') { addPlan(); }
+        else if (t.id === 'plan-go') { addPlan(); await startRun(); }
+        else if (t.dataset.planRm !== undefined) { plan.splice(+t.dataset.planRm, 1); drawPlan(); }
+        else if (t.id === 'plan-new') { chat.length = 0; plan = []; drawPlan(); }
+        else if (t.id === 'emails') {
           try { const r = await api('/jobs/enrich', { method: 'POST' }); viewJob = r.id; lastLog = 0; $('#log').textContent = ''; App.pollStatus(); tick(); } catch (err) { fail(err); }
         } else if (t.id === 'stop') {
           try { await api(`/jobs/${viewJob}/stop`, { method: 'POST' }); toast('Stopping after the current business…'); } catch (err) { fail(err); }

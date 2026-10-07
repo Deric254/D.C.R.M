@@ -61,6 +61,11 @@ class ImportIn(BaseModel):
     csv: str
 
 
+class PlanIn(BaseModel):
+    goal: str
+    history: list[dict] = []
+
+
 class SearchIn(BaseModel):
     category: str
     town: str
@@ -201,7 +206,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             by_grade = {(r[0] or "none"): r[1] for r in conn.execute(
                 "SELECT grade, COUNT(*) FROM leads WHERE archived=0 GROUP BY grade")}
             contacted = q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='out' AND status='sent'")
-            replied = q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='in' AND grade NOT IN ('auto','bounce')")
+            # "of contacted leads replied": only leads we actually sent to can count, so the rate never passes 100%
+            replied = q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='in' AND grade NOT IN ('auto','bounce') "
+                        "AND lead_id IN (SELECT lead_id FROM messages WHERE direction='out' AND status='sent')")
             week = datetime.now().timestamp() - 7 * 86400
             week_s = datetime.fromtimestamp(week).isoformat(sep=" ", timespec="seconds")
             hot = [dict(r) for r in conn.execute(
@@ -530,6 +537,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     def delete_logo():
         branding.reset()
         return {"ok": True}
+
+    @app.post("/api/ai/plan-searches")
+    def ai_plan_searches(body: PlanIn):
+        return ai.plan_searches(db.get_settings(), body.goal, body.history)
 
     @app.post("/api/ai/template")
     def ai_template(body: AIDraftIn):

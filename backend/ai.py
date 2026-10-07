@@ -1,6 +1,7 @@
 """AI writing help. Every provider here speaks the same OpenAI-style chat API, so one code path covers
 all of them (including free tiers). Providers with a key are tried in order, so when one hits its
 free limit the next one answers."""
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -179,3 +180,66 @@ def draft_for_lead(s: dict, lead: dict, channel: str, notes: str) -> dict:
         "Do not add an opt-out line; the app adds it.")))
     subject, body = _split_subject(text) if channel == "email" else ("", text)
     return {"subject": subject, "body": body}
+
+
+# ------------------------------------------------------------ search planning
+PLAN_SYSTEM = (
+    "You help a small business owner in Kenya decide which Google Maps searches will find good sales leads. "
+    "A search is a business type plus a town, for example category 'Pharmacy' and town 'Meru'. "
+    "Answer with ONLY a JSON object, no markdown and no text around it, shaped exactly like: "
+    '{"reply": "...", "searches": [{"category": "...", "town": "..."}]}. '
+    "reply: one or two friendly sentences (under 60 words) saying what you chose and why; if the goal is too vague "
+    "to choose, ask ONE short question and return an empty searches list. "
+    "category: a business type exactly as people type it into Google Maps, singular, 1 to 3 words. "
+    "town: a real Kenyan town or city. "
+    "Never list individual business names, never invent contact details, and return at most 40 searches. "
+    "Match the owner's wording: only use towns they named or clearly implied (a county means its main towns)."
+)
+MAX_PLAN = 40
+
+
+def _clean_search(item):
+    if not isinstance(item, dict):
+        return None
+    cat, town = (re.sub(r"\s+", " ", str(item.get(k) or "")).strip(" .,;:-") for k in ("category", "town"))
+    if not (2 <= len(cat) <= 40 and 2 <= len(town) <= 40):
+        return None
+    return cat[:1].upper() + cat[1:], town[:1].upper() + town[1:]
+
+
+def parse_plan(text: str) -> dict:
+    """Pull {reply, searches} out of the model's answer, tolerating code fences and stray text."""
+    raw = re.sub(r"```(?:json)?", "", text or "")
+    start, end = raw.find("{"), raw.rfind("}")
+    try:
+        data = json.loads(raw[start:end + 1]) if 0 <= start < end else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise AIError("The AI answered in a way I couldn't read. Please try again.")
+    seen, searches = set(), []
+    for item in data.get("searches") if isinstance(data.get("searches"), list) else []:
+        pair = _clean_search(item)
+        if pair and tuple(x.lower() for x in pair) not in seen:
+            seen.add(tuple(x.lower() for x in pair))
+            searches.append({"category": pair[0], "town": pair[1]})
+    return {"reply": re.sub(r"\s+", " ", str(data.get("reply") or "")).strip()[:600], "searches": searches[:MAX_PLAN]}
+
+
+def plan_searches(s: dict, goal: str, history: list) -> dict:
+    """Turn what the owner says (over several turns if they like) into searches the finder can run."""
+    goal = (goal or "").strip()
+    if not goal:
+        raise ValueError("Tell the AI what kind of customers you want")
+    turns = []
+    for m in (history or [])[-10:]:
+        if isinstance(m, dict) and str(m.get("text") or "").strip():
+            who = "Owner" if m.get("role") == "user" else "You"
+            turns.append(f"{who}: {str(m['text']).strip()[:600]}")
+    pitch = s["ai_pitch"].strip() or "not described"
+    prompt = (f"What the owner sells: {pitch}.\n"
+              + (f"Conversation so far:\n" + "\n".join(turns) + "\n" if turns else "")
+              + f"Owner's latest message: {goal[:800]}\n"
+              "Choose the searches now (or ask your one question).")
+    return parse_plan(ask(s, PLAN_SYSTEM, prompt, max_tokens=1500, temperature=0.3, budget=40))
+

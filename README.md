@@ -19,7 +19,11 @@ The workflow stops with a clear message if the key or public key is missing.
 ## Logo and slogan
 
 - **Inside the app:** Settings > Logo and slogan. Upload a new logo or change the slogan any time.
-- **Program icon (exe, installer, taskbar):** replace `backend/static/logo.png` with a square PNG, 512 px or larger, and push. The build makes every icon size from it. To see it in local runs too, double-click `set-logo.bat`.
+- **Program icon (exe, installer, taskbar):** replace `backend/static/logo.png` with a square PNG, 512 px or larger, and push. Every icon size is made from it automatically: on each release build and each time you run `dev.bat` or `build-installer.bat`.
+
+## Ask the AI (Find leads)
+
+On **Find leads**, describe who you want to reach in your own words, for example "pharmacies and clinics in Kisii and Migori that could use my billing software". The AI suggests business-type and town searches; you can talk it through over several messages, remove any you don't want, then **Add to my searches** or **Add and start finding leads**. Nothing runs until you press a start button. It only suggests what to search for: the leads themselves always come from the real finder, never from the AI. It uses the free AI key from Settings > AI writing help.
 
 ## AI writing help
 

@@ -58,6 +58,22 @@ try:
     call("PATCH", f"/leads/{ids[5]}", {"status": "meeting", "next_followup": "2020-01-01"})
     call("PUT", "/settings", {"at_username": "sandbox", "at_api_key": "k", "at_base_url": "http://127.0.0.1:9", "send_window_enabled": False})
 
+    # A stand-in AI server so the Find screen's planner can be driven end to end.
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    class FakeAI(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            plan = {"reply": "Pharmacies and a clinic in your two towns.", "searches": [
+                {"category": "Pharmacy", "town": "Kisii"}, {"category": "Pharmacy", "town": "Migori"}, {"category": "Clinic", "town": "Kisii"}]}
+            out = json.dumps({"choices": [{"message": {"content": json.dumps(plan)}}]}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+        def log_message(self, *a): pass
+    fake_ai = HTTPServer(("127.0.0.1", 0), FakeAI)
+    threading.Thread(target=fake_ai.serve_forever, daemon=True).start()
+    call("PUT", "/settings", {"ai_provider": "custom", "ai_custom_url": f"http://127.0.0.1:{fake_ai.server_port}", "ai_custom_model": "m"})
+
     from playwright.sync_api import sync_playwright
     problems = []
     with sync_playwright() as p:
@@ -159,6 +175,27 @@ try:
         assert "Searches to run" in page.inner_text("#queue")
         assert page.locator("#queue [data-rm]").count() >= 9
         shot("6-find")
+
+        # ---- the AI planner: talk, review the suggestions, add them to the list (nothing runs by itself)
+        before = page.locator("#queue [data-rm]").count()
+        page.fill("#plan-text", "pharmacies in Kisii <b>and</b> Migori")
+        page.press("#plan-text", "Enter")                                   # Enter sends
+        page.wait_for_selector("#plan-out .plan-msg.ai")
+        assert page.locator("#plan-out [data-plan-rm]").count() == 3
+        assert page.locator("#plan-chat b").count() == 0, "what you type must show as text, never as HTML"
+        assert "Pharmacies and a clinic" in page.inner_text("#plan-chat")
+        page.locator("#plan-out [data-plan-rm]").first.click()                 # drop the first suggestion
+        assert page.locator("#plan-out [data-plan-rm]").count() == 2
+        shot("6a-planner-suggestions")
+        page.click("#plan-add")
+        assert page.locator("#plan-out [data-plan-rm]").count() == 0
+        queue = page.inner_text("#queue")
+        assert "Clinic in Kisii" in queue and "Pharmacy in Migori" in queue and "Pharmacy in Kisii" not in queue, queue
+        assert page.locator("#queue [data-rm]").count() == before + 2
+        assert page.locator("#plan-new").is_visible()
+        page.click("#plan-new")
+        assert not page.locator("#plan-new").is_visible() and page.locator("#plan-chat").count() == 0
+        shot("6b-find-planner")
 
         # ---- settings
         page.click('#nav a[data-view="settings"]')

@@ -178,6 +178,19 @@ SORTS = {
 }
 
 
+def _national_digits(q: str) -> str:
+    """The digits of a phone-number-looking search, without 0 / 254 / +254 in front (else '')."""
+    s = q.strip()
+    if not re.fullmatch(r"[+\d][\d\s\-().]*", s):
+        return ""
+    d = re.sub(r"\D", "", s)
+    for prefix in ("00254", "254", "0"):
+        if d.startswith(prefix):
+            d = d[len(prefix):]
+            break
+    return d if len(d) >= 3 else ""
+
+
 def list_leads(conn, q="", sector="", town="", status="", grade="", has_phone=None, has_email=None,
                archived=False, dnc=None, page=1, page_size=50, sort="created_desc"):
     where, args = [], []
@@ -185,9 +198,14 @@ def list_leads(conn, q="", sector="", town="", status="", grade="", has_phone=No
     args.append(1 if archived else 0)
     if q:
         like = f"%{q.strip().lower()}%"
-        where.append("(lower(l.name) LIKE ? OR lower(l.address) LIKE ? OR l.phone LIKE ? OR l.phone_norm LIKE ? "
-                     "OR lower(ifnull(l.email,'')) LIKE ? OR lower(l.notes) LIKE ?)")
+        clause = ("lower(l.name) LIKE ? OR lower(l.address) LIKE ? OR l.phone LIKE ? OR l.phone_norm LIKE ? "
+                  "OR lower(ifnull(l.email,'')) LIKE ? OR lower(l.notes) LIKE ?")
         args += [like] * 6
+        nat = _national_digits(q)
+        if nat:   # "0712 345", "+254 712 345" and "712345" all find +254712345678
+            clause += " OR l.phone_norm LIKE ?"
+            args.append(f"%{nat}%")
+        where.append(f"({clause})")
     if sector:
         where.append("lower(l.sector) = ?"); args.append(sector.lower())
     if town:

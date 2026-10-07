@@ -86,12 +86,10 @@ jobs:
 
       - run: npm install
 
-      # A missing or unusable logo must never block a release: the committed icons are used instead.
+      # Icons are rebuilt from backend/static/logo.png on every release. If the logo cannot be
+      # converted this step fails loudly instead of quietly shipping an old icon.
       - name: Build the app icons from the logo
-        continue-on-error: true
-        run: |
-          Copy-Item backend/static/logo.png splash/logo.png
-          npx tauri icon backend/static/logo.png
+        run: npm run icons
 
       - name: Build and publish the installer
         uses: tauri-apps/tauri-action@v0

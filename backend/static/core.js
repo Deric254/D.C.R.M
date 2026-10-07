@@ -193,7 +193,9 @@
 
   // ----------------------------------------------------- branding + updates
   // A missing or unreadable logo just hides the image; it never gets in the way.
-  App.showLogo = (img) => { img.hidden = false; img.src = '/api/branding/logo?' + Date.now(); };
+  // The server revalidates the logo on every load, so only add a changing suffix right after the logo is replaced.
+  let logoRev = '';
+  App.showLogo = (img, changed) => { if (changed) logoRev = '?v=' + Date.now(); img.hidden = false; img.src = '/api/branding/logo' + logoRev; };
   App.loadBrand = async () => {
     const [s, h] = await Promise.all([api('/settings'), api('/health')]);
     const slogan = $('#slogan');

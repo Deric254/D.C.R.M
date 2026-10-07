@@ -21,6 +21,9 @@ def current():
         p = config.DATA_DIR / f"logo.{ext}"
         if p.is_file():
             return p, mime
+    small = config.static_dir() / "logo-small.png"   # 256 px copy for the screen; logo.png stays the icon source
+    if small.is_file():
+        return small, "image/png"
     return config.static_dir() / "logo.png", "image/png"
 
 

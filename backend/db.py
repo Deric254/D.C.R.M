@@ -45,6 +45,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_leads_phone ON leads(phone_norm) WHERE phon
 CREATE UNIQUE INDEX IF NOT EXISTS ux_leads_email ON leads(email) WHERE email IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_leads_name_key ON leads(name_key);
 CREATE INDEX IF NOT EXISTS ix_leads_status ON leads(status);
+CREATE INDEX IF NOT EXISTS ix_leads_archived_grade ON leads(archived, grade);
+CREATE INDEX IF NOT EXISTS ix_leads_followup ON leads(next_followup) WHERE next_followup != '';
 
 CREATE TABLE IF NOT EXISTS campaigns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +91,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_msg_inbound_id ON messages(message_id_heade
   WHERE direction = 'in' AND message_id_header IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_msg_lead ON messages(lead_id);
 CREATE INDEX IF NOT EXISTS ix_msg_queue ON messages(status, channel);
+-- the top bar asks "any unreviewed replies?" every few seconds, and the dashboard counts sent mail
+CREATE INDEX IF NOT EXISTS ix_msg_inbox ON messages(direction, handled, grade);
+CREATE INDEX IF NOT EXISTS ix_msg_sent ON messages(direction, status, sent_at);
 
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -636,6 +636,20 @@ def scraper_worker_dedupes_and_counts():
 
 
 @test
+def scraper_zero_listings_is_flagged_not_clean_success():
+    """A search that loads but finds nothing (typo, consent wall, changed page) must say so."""
+    fresh()
+    sp = {"searches": [{"category": "Zzz", "town": "Nowhere", "query": "Zzz in Nowhere"}]}
+    with db.db() as c:
+        jid = jobs.create_job(c, "scrape", sp)
+    final = scraper.run_scrape(jid, sp, driver_factory=lambda: FakeDriver({}, {}), sleep=lambda s: None)
+    assert final == "done"                    # an empty result is not a failure...
+    with db.db() as c:
+        j = jobs.get_job(c, jid)
+    assert "no listings were found" in j["progress"], j["progress"]   # ...but it is never reported as a plain success
+
+
+@test
 def scraper_stop_and_cap():
     fresh()
     listings = {"Shops in Thika": [{"name": f"Shop{i}", "href": href(100 + i)} for i in range(10)]}
@@ -761,9 +775,22 @@ def api_end_to_end():
         assert cl.post(f"/api/campaigns/{cid}/resume").json()["status"] == "running"
         det = cl.get(f"/api/campaigns/{cid}").json()
         assert len(det["messages"]) == 3
+        # a phone number typed in any common format finds the lead saved as +254744000001
+        for typed in ("0744000001", "0744 000 001", "+254 744 000 001", "254744000001", "744000001"):
+            hits = cl.get("/api/leads", params={"q": typed}).json()["leads"]
+            assert [h["name"] for h in hits] == ["Camp 1"], (typed, [h["name"] for h in hits])
+        assert cl.get("/api/leads", params={"q": "Camp"}).json()["total"] == 3      # text search still works
         # dashboard / status / facets
         dash = cl.get("/api/dashboard").json()
         assert dash["total"] >= 4 and "by_status" in dash
+        # reply rate counts only leads we actually sent to, so it can never pass 100%
+        with db.db() as c:
+            stray = c.execute("INSERT INTO leads(name, name_key, created_at, updated_at) VALUES('Never contacted','never contacted|',?,?)",
+                              (now(), now())).lastrowid
+            c.execute("INSERT INTO messages(lead_id, direction, channel, status, grade, created_at) VALUES(?,?,?,?,?,?)",
+                      (stray, "in", "email", "received", "warm", now()))
+        d2 = cl.get("/api/dashboard").json()
+        assert d2["replied"] == dash["replied"] and d2["reply_rate"] <= 100, (dash["replied"], d2["replied"], d2["reply_rate"])
         st = cl.get("/api/status").json()
         assert "sender" in st and st["email_ready"] is False or True
         assert "Embu" in cl.get("/api/facets").json()["towns"]
@@ -895,6 +922,56 @@ def _ai_server(answer):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, seen
 
+@test
+def ai_plans_searches_from_a_conversation():
+    """The owner describes who to reach; the AI answers with clean, de-duplicated searches the finder can run."""
+    import ai
+    from fastapi.testclient import TestClient
+    import server
+    # --- reading the model's answer: fences, chatter, junk entries, duplicates, a hard cap
+    ok = ai.parse_plan('Sure!\n```json\n{"reply": " Pharmacies  first. ", "searches": ['
+                       '{"category": "pharmacy", "town": "kisii"}, {"category": "Pharmacy", "town": "Kisii"},'
+                       '{"category": "Clinic", "town": ""}, {"category": "x", "town": "Migori"}, "junk", {"category": "Clinic", "town": "Migori"}]}\n```')
+    assert ok["reply"] == "Pharmacies first."
+    assert ok["searches"] == [{"category": "Pharmacy", "town": "Kisii"}, {"category": "Clinic", "town": "Migori"}], ok
+    many = json.dumps({"reply": "", "searches": [{"category": f"Shop {i}", "town": "Embu"} for i in range(80)]})
+    assert len(ai.parse_plan(many)["searches"]) == ai.MAX_PLAN
+    assert ai.parse_plan('{"reply": "Who do you want to reach?", "searches": []}')["searches"] == []
+    for bad in ("", "no json here", "{broken", "[1, 2]"):
+        try:
+            ai.parse_plan(bad)
+            assert False, bad
+        except ai.AIError:
+            pass
+    # --- through the API
+    fresh()
+    answer = {"text": json.dumps({"reply": "Pharmacies and clinics in both towns.", "searches": [
+        {"category": "Pharmacy", "town": "Kisii"}, {"category": "Pharmacy", "town": "Migori"},
+        {"category": "Clinic", "town": "Kisii"}]})}
+    srv, seen = _ai_server(answer)
+    try:
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            r = cl.post("/api/ai/plan-searches", json={"goal": "pharmacies in Kisii"})
+            assert r.status_code == 502 and "key" in r.json()["detail"].lower()     # no AI key yet: a readable message
+            cl.put("/api/settings", json={"ai_provider": "custom", "ai_custom_url": f"http://127.0.0.1:{srv.server_port}",
+                                          "ai_custom_model": "m1", "ai_pitch": "Pharmacy billing software"})
+            assert cl.post("/api/ai/plan-searches", json={"goal": "   "}).status_code == 400
+            hist = [{"role": "user", "text": "I sell to chemists"}, {"role": "ai", "text": "Which towns?"}]
+            r = cl.post("/api/ai/plan-searches", json={"goal": "Kisii and Migori, also clinics", "history": hist})
+            assert r.status_code == 200, r.text
+            assert [(x["category"], x["town"]) for x in r.json()["searches"]] == [("Pharmacy", "Kisii"), ("Pharmacy", "Migori"), ("Clinic", "Kisii")]
+            assert r.json()["reply"].startswith("Pharmacies and clinics")
+            prompt = seen[-1]["messages"][1]["content"]
+            assert "Pharmacy billing software" in prompt and "Owner: I sell to chemists" in prompt \
+                and "You: Which towns?" in prompt and "Kisii and Migori, also clinics" in prompt, prompt
+            answer["text"] = "I cannot help with that"
+            assert cl.post("/api/ai/plan-searches", json={"goal": "x"}).status_code == 502   # unreadable answer: clear error, no crash
+            answer["status"] = 429
+            assert cl.post("/api/ai/plan-searches", json={"goal": "x"}).status_code == 502
+    finally:
+        srv.shutdown()
+
+
 
 @test
 def ai_grades_unclear_replies_and_summarises():
@@ -975,7 +1052,10 @@ def worker_subprocess_runs_and_reports():
                        env=env, capture_output=True, text=True, timeout=120)
     with db.db() as c:
         j = jobs.get_job(c, jid)
-    assert j["status"] == "failed", (j, p.stdout[-500:], p.stderr[-500:])  # sandbox can't reach Google
+    # Offline it fails; online it finds nothing for "X in Y". Either way it must finish and say what happened.
+    assert j["status"] in ("failed", "done") and j["finished_at"], (j, p.stdout[-500:], p.stderr[-500:])
+    if j["status"] == "done":
+        assert "no listings were found" in j["progress"], j["progress"]
     print("   worker finished with status:", j["status"], "| progress:", j["progress"])
 
 

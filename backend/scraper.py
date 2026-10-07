@@ -295,7 +295,10 @@ def run_scrape(job_id: int, params: dict, driver_factory=None, sleep=time.sleep)
         failure_note = " - every search failed to load (check your internet connection, or Google may be blocking you)"
         log("Every search failed to load. Check your internet connection; Google may also be blocking the browser.")
     with db.db() as conn:
-        j = conn.execute("SELECT added, duplicates FROM jobs WHERE id=?", (job_id,)).fetchone()
+        j = conn.execute("SELECT added, duplicates, found FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if final == "done" and searches and not failure_note and j["found"] == 0:
+        failure_note = " - no listings were found. Check the category and town spelling; Google may also have changed its page"
+        log("No listings were found for any search. Check the category and town spelling; Google may also have changed its page.")
     msg = {"done": "Finished", "stopped": "Stopped", "failed": "Failed"}[final]
     jobs.update(job_id, status=final, finished_at=now(), progress=f"{msg}: {j['added']} new, {j['duplicates']} duplicates skipped{failure_note}")
     log(f"{msg}. {j['added']} new leads, {j['duplicates']} duplicates skipped.")

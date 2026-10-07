@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "description": "DericBI CRM desktop app (Tauri shell around the Python engine)",
+  "type": "module",
   "scripts": {
     "tauri": "tauri",
+    "icons": "node scripts/sync-logo.mjs",
+    "predev": "npm run icons",
     "dev": "tauri dev",
+    "prebuild": "npm run icons",
     "build": "tauri build --config src-tauri/tauri.release.conf.json"
   },
   "devDependencies": {
