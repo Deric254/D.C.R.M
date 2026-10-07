@@ -262,8 +262,10 @@ def run_scrape(job_id: int, params: dict, driver_factory=None, sleep=time.sleep)
                     "website": d.get("website", ""), "maps_url": d.get("maps_url", item["href"]),
                     "place_key": pk,
                 }
-                with db.db() as conn:
-                    res = L.add_lead(conn, data, source="maps")
+                def save():
+                    with db.db() as conn:
+                        return L.add_lead(conn, data, source="maps")
+                res = db.with_retry(save)
                 if res["created"]:
                     added_here += 1
                     jobs.bump(job_id, added=1)
@@ -277,7 +279,12 @@ def run_scrape(job_id: int, params: dict, driver_factory=None, sleep=time.sleep)
 
         if final == "done" and params.get("enrich") and not stopping():
             jobs.update(job_id, progress="Finding emails on websites…")
-            enrich.enrich_leads(log, stopping)
+            try:
+                enrich.enrich_leads(log, stopping)
+            except Exception as e:   # the leads are already saved: a problem finding emails must not turn the run into a failure
+                traceback.print_exc()
+                log(f"Email search stopped early ({type(e).__name__}: {e}). All the leads above were saved. "
+                    "Press 'Look for emails now' to continue.")
     except Exception as e:
         traceback.print_exc()
         log(f"Job crashed: {type(e).__name__}: {e}")

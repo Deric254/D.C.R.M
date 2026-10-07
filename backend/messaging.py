@@ -112,8 +112,19 @@ def send_email(to: str, subject: str, body: str, s: dict) -> str:
         kind = "permanent" if e.smtp_code >= 500 else "transient"
         raise SendError(f"SMTP {e.smtp_code}: {_smtp_text(e)}", kind)
     except (smtplib.SMTPException, OSError, ssl.SSLError) as e:
-        raise SendError(f"Couldn't reach the mail server: {e}", "transient")
+        raise SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "transient")
     return mid
+
+
+def _smtp_hint(s: dict) -> str:
+    """Why a timeout usually happens, in words, so it can be fixed without guessing."""
+    port, sec = int(s.get("smtp_port") or 0), s.get("smtp_security", "starttls")
+    if (port == 465 and sec != "ssl") or (port == 587 and sec == "ssl"):
+        return (f"Port {port} needs the Connection set to " + ("SSL" if port == 465 else "STARTTLS") +
+                ". Change Connection in Settings to match the port.")
+    return ("Check the internet connection first. If other sites work, something on this PC or network is blocking "
+            f"mail on port {port or 587}: try the other pair (SSL with port 465, or STARTTLS with port 587), turn off "
+            "any antivirus 'email shield' for a minute, or try a phone hotspot.")
 
 
 def _smtp_text(e) -> str:

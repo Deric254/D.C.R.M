@@ -27,22 +27,29 @@ def create_job(conn, kind: str, params: dict) -> int:
 
 def log(job_id: int, msg: str):
     print(f"[job {job_id}] {msg}", flush=True)
-    with db.db() as conn:
-        conn.execute("INSERT INTO job_logs(job_id, ts, msg) VALUES(?,?,?)", (job_id, now(), msg))
+
+    def write():
+        with db.db() as conn:
+            conn.execute("INSERT INTO job_logs(job_id, ts, msg) VALUES(?,?,?)", (job_id, now(), msg))
+    db.with_retry(write)
 
 
 def update(job_id: int, **fields):
     if not fields:
         return
     cols = ", ".join(f"{k}=?" for k in fields)
-    with db.db() as conn:
-        conn.execute(f"UPDATE jobs SET {cols} WHERE id=?", list(fields.values()) + [job_id])
+    def write():
+        with db.db() as conn:
+            conn.execute(f"UPDATE jobs SET {cols} WHERE id=?", list(fields.values()) + [job_id])
+    db.with_retry(write)
 
 
 def bump(job_id: int, **deltas):
     cols = ", ".join(f"{k}={k}+?" for k in deltas)
-    with db.db() as conn:
-        conn.execute(f"UPDATE jobs SET {cols} WHERE id=?", list(deltas.values()) + [job_id])
+    def write():
+        with db.db() as conn:
+            conn.execute(f"UPDATE jobs SET {cols} WHERE id=?", list(deltas.values()) + [job_id])
+    db.with_retry(write)
 
 
 def should_stop(job_id: int) -> bool:

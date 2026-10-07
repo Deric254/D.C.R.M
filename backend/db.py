@@ -6,6 +6,7 @@ archived) which is what guarantees a lead can never be re-imported as new.
 """
 import json
 import secrets
+import time
 import sqlite3
 from contextlib import contextmanager
 
@@ -182,7 +183,7 @@ SECRET_KEYS = {"smtp_pass", "imap_pass", "at_api_key", "ai_key_gemini", "ai_key_
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(config.db_path()), timeout=30)
+    conn = sqlite3.connect(str(config.db_path()), timeout=30, isolation_level="IMMEDIATE")   # take the write lock up front, honouring the wait
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -201,6 +202,17 @@ def db():
         raise
     finally:
         conn.close()
+
+
+def with_retry(fn, tries: int = 6):
+    """Run a small database action again if another part of the app held the database for too long ("database is locked")."""
+    for attempt in range(tries):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower() or attempt == tries - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
 
 
 def init_db():

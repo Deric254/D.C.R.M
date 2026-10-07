@@ -80,18 +80,24 @@ def enrich_leads(log, should_stop, limit=300, get=None) -> dict:
             stats["errors"] += 1
             emails = []
             log(f"  {r['name']}: error {type(e).__name__}")
-        with db.db() as conn:
-            saved = False
-            for e in emails[:3]:
-                try:
-                    L.update_lead(conn, r["id"], {"email": e})
-                    saved = True
-                    stats["found"] += 1
-                    log(f"  {r['name']}: {e}")
-                    break
-                except L.Conflict:
-                    continue
-            if not saved:
+        def save():
+            with db.db() as conn:
+                for e in emails[:3]:
+                    try:
+                        L.update_lead(conn, r["id"], {"email": e})
+                        return e
+                    except L.Conflict:
+                        continue
                 db.log_event(conn, r["id"], "enrich", "No email found on website")
+                return None
+        try:
+            saved = db.with_retry(save)
+        except Exception as ex:   # one busy moment must not abandon the other websites
+            stats["errors"] += 1
+            log(f"  {r['name']}: couldn't save ({type(ex).__name__}), skipped")
+            continue
+        if saved:
+            stats["found"] += 1
+            log(f"  {r['name']}: {saved}")
     log(f"Email search done: {stats['found']} found from {stats['checked']} sites.")
     return stats
