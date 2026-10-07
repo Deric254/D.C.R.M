@@ -85,6 +85,11 @@ class CampaignIn(BaseModel):
     body: str
     filters: dict = {}
     launch: bool = False
+    ai: bool = False   # body is a brief; the AI writes each lead's own message as it is sent
+
+
+class GoalIn(BaseModel):
+    goal: str
 
 
 class GradeIn(BaseModel):
@@ -393,12 +398,23 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     @app.post("/api/campaigns/preview")
     def preview_campaign(body: CampaignIn):
         with db.db() as conn:
-            return C.preview(conn, body.channel, body.subject, body.body, body.filters)
+            return C.preview(conn, body.channel, body.subject, body.body, body.filters, body.ai)
+
+    @app.post("/api/campaigns/ai-samples")
+    def campaign_ai_samples(body: CampaignIn):
+        with db.db() as conn:
+            return C.ai_samples(conn, body.channel, body.body, body.filters)
+
+    @app.post("/api/campaigns/ai-plan")
+    def campaign_ai_plan(body: GoalIn):
+        with db.db() as conn:
+            facets = L.facets(conn)
+        return ai.plan_campaign(db.get_settings(), body.goal, facets)
 
     @app.post("/api/campaigns")
     def create_campaign(body: CampaignIn):
         with db.db() as conn:
-            cid = C.create_campaign(conn, body.name, body.channel, body.subject, body.body, body.filters, body.launch)
+            cid = C.create_campaign(conn, body.name, body.channel, body.subject, body.body, body.filters, body.launch, body.ai)
             return C.campaign_stats(conn, cid)
 
     @app.get("/api/campaigns/{cid}")
@@ -408,7 +424,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             if not c:
                 raise KeyError("Campaign not found")
             msgs = [dict(r) for r in conn.execute(
-                "SELECT m.id, m.lead_id, l.name, m.to_addr, m.status, m.error, m.sent_at, m.attempts "
+                "SELECT m.id, m.lead_id, l.name, m.to_addr, m.subject, m.body, m.status, m.error, m.sent_at, m.attempts "
                 "FROM messages m JOIN leads l ON l.id=m.lead_id WHERE m.campaign_id=? AND m.direction='out' "
                 "ORDER BY m.id LIMIT 1000", (cid,))]
         c["messages"] = msgs

@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   body TEXT NOT NULL,
   filters TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'draft',
+  ai_personalize INTEGER NOT NULL DEFAULT 0,   -- 1: body is a brief and the AI writes each lead's message as it is sent
   total INTEGER NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -194,6 +195,8 @@ def init_db():
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        if "ai_personalize" not in {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}:
+            conn.execute("ALTER TABLE campaigns ADD COLUMN ai_personalize INTEGER NOT NULL DEFAULT 0")   # databases made before AI campaigns
         conn.commit()
     finally:
         conn.close()

@@ -8,20 +8,29 @@ Safety rules baked in:
   * Account problems (bad login, no SMS balance) pause the campaign instead of
     burning through the queue; five failures in a row also pauses it.
   * A crash mid-send marks the message failed rather than re-sending it.
+  * AI campaigns (ai_personalize): the message box is a brief and the AI writes each lead's own message just
+    before it is sent, using everything known about that lead. A message nearly identical to another one in
+    the campaign is reworded once, then held back rather than sent.
 """
 import json
 import random
+import re
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 
+import ai
 import db
+import leads as L
 import messaging
 from messaging import SendError
 from util import days_ago, now, today_start
 
 CHANNELS = ("email", "sms")
+SIMILAR = 0.9   # two messages in one campaign at least this alike count as the same message
 
 
 # ------------------------------------------------------------------- audience
@@ -68,11 +77,13 @@ def build_audience(conn, channel: str, filters: dict, s: dict, limit=None):
     return conn.execute(sql, args).fetchall()
 
 
-def validate_campaign(channel, subject, body):
+def validate_campaign(channel, subject, body, personalize=False):
     if channel not in CHANNELS:
         raise ValueError("Channel must be email or sms")
     if not (body or "").strip():
-        raise ValueError("Message text can't be empty")
+        raise ValueError("Tell the AI what the messages should say" if personalize else "Message text can't be empty")
+    if personalize:
+        return   # the AI writes the subject and text itself
     if channel == "email" and not (subject or "").strip():
         raise ValueError("Email subject can't be empty")
     bad = messaging.unknown_placeholders(subject, body)
@@ -81,14 +92,14 @@ def validate_campaign(channel, subject, body):
                          ". You can use {name}, {town}, {sector}, {sender}.")
 
 
-def preview(conn, channel, subject, body, filters):
-    validate_campaign(channel, subject, body)
+def preview(conn, channel, subject, body, filters, personalize=False):
+    validate_campaign(channel, subject, body, personalize)
     s = db.get_settings(conn)
     limit = (filters or {}).get("limit") or None
     full = build_audience(conn, channel, filters, s)
     rows = full[: int(limit)] if limit else full
     sample = None
-    if rows:
+    if rows and not personalize:
         lead = rows[0]
         rb = messaging.final_body(channel, messaging.render_template(body, lead, s), s)
         sample = {
@@ -99,15 +110,35 @@ def preview(conn, channel, subject, body, filters):
             "segments": messaging.sms_segments(rb) if channel == "sms" else 0,
         }
     setup_ok = bool(s["smtp_host"] and s["from_email"]) if channel == "email" else bool(s["at_username"] and s["at_api_key"])
-    return {"matching": len(full), "will_send": len(rows), "sample": sample, "channel_ready": setup_ok}
+    return {"matching": len(full), "will_send": len(rows), "sample": sample, "channel_ready": setup_ok,
+            "ai_ready": bool(ai.configured(s))}
 
 
-def create_campaign(conn, name, channel, subject, body, filters, launch=False):
-    validate_campaign(channel, subject, body)
+def ai_samples(conn, channel, brief, filters, count=3):
+    """Drafts for the first few people in the audience, so the owner can judge the AI before starting.
+    They are not kept: each real message is written fresh when it is sent."""
+    validate_campaign(channel, "", brief, personalize=True)
+    s = db.get_settings(conn)
+    limit = int((filters or {}).get("limit") or count)
+    rows = build_audience(conn, channel, filters, s, min(count, limit))
+    if not rows:
+        raise ValueError("Nobody matches this audience yet.")
+    leads = [L.lead_detail(conn, r["id"]) for r in rows]
+
+    def one(lead):
+        d = ai.draft_for_lead(s, lead, channel, brief)
+        return {"lead": lead["name"], "to": lead["email"] if channel == "email" else lead["phone_norm"],
+                "subject": d["subject"], "body": messaging.final_body(channel, d["body"], s)}
+    with ThreadPoolExecutor(max_workers=len(leads)) as pool:
+        return list(pool.map(one, leads))
+
+
+def create_campaign(conn, name, channel, subject, body, filters, launch=False, personalize=False):
+    validate_campaign(channel, subject, body, personalize)
     name = (name or "").strip() or f"{channel.upper()} campaign {now()}"
     cur = conn.execute(
-        "INSERT INTO campaigns(name, channel, subject, body, filters, status, created_at) VALUES(?,?,?,?,?,?,?)",
-        (name, channel, subject or "", body, json.dumps(filters or {}), "draft", now()))
+        "INSERT INTO campaigns(name, channel, subject, body, filters, status, ai_personalize, created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (name, channel, "" if personalize else subject or "", body, json.dumps(filters or {}), "draft", int(personalize), now()))
     cid = cur.lastrowid
     if launch:
         launch_campaign(conn, cid)
@@ -121,6 +152,8 @@ def launch_campaign(conn, cid: int):
     if c["status"] != "draft":
         raise ValueError("This campaign has already been launched")
     s = db.get_settings(conn)
+    if c["ai_personalize"] and not ai.configured(s):
+        raise ValueError("Add an AI key in Settings first. Gemini, Groq and NVIDIA all offer free keys.")
     filters = json.loads(c["filters"] or "{}")
     limit = filters.get("limit") or None
     rows = build_audience(conn, c["channel"], filters, s, limit)
@@ -128,8 +161,11 @@ def launch_campaign(conn, cid: int):
         raise ValueError("No leads match this audience right now.")
     n = 0
     for lead in rows:
-        body = messaging.final_body(c["channel"], messaging.render_template(c["body"], lead, s), s)
-        subject = messaging.render_template(c["subject"], lead, s) if c["channel"] == "email" else ""
+        if c["ai_personalize"]:
+            subject = body = ""   # the sender writes this lead's message just before it goes out
+        else:
+            body = messaging.final_body(c["channel"], messaging.render_template(c["body"], lead, s), s)
+            subject = messaging.render_template(c["subject"], lead, s) if c["channel"] == "email" else ""
         to = lead["email"] if c["channel"] == "email" else lead["phone_norm"]
         conn.execute(
             "INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, "
@@ -215,7 +251,6 @@ def send_now(lead_id: int, channel: str, subject: str, body: str) -> dict:
         with db.db() as conn:
             conn.execute("UPDATE messages SET status='failed', error=? WHERE id=?", (str(e), mid))
             if channel == "email" and "Recipient refused" in str(e):
-                import leads as L
                 L.mark_bounced(conn, lead_id, str(e))
         raise
     with db.db() as conn:
@@ -229,6 +264,46 @@ def _mark_sent(conn, mid, lead_id, provider_id, header):
     conn.execute("UPDATE leads SET last_contacted_at=?, updated_at=?, "
                  "status=CASE WHEN status='new' THEN 'contacted' ELSE status END WHERE id=?", (now(), now(), lead_id))
     db.log_event(conn, lead_id, "sent", "Message sent")
+
+
+# ------------------------------------------------------------ AI-written messages
+def _squash(text: str) -> str:
+    return re.sub(r"\W+", " ", text.lower()).strip()
+
+
+def _near_duplicate(row, body: str) -> bool:
+    """Is this text almost the same as one of the last messages in the same campaign?"""
+    mine = _squash(body)
+    with db.db() as conn:
+        others = conn.execute("SELECT body FROM messages WHERE campaign_id=? AND direction='out' AND id<>? AND body<>'' "
+                              "ORDER BY id DESC LIMIT 30", (row["campaign_id"], row["id"])).fetchall()
+    return any(SequenceMatcher(None, mine, _squash(o["body"]), autojunk=False).ratio() >= SIMILAR for o in others)
+
+
+def write_for_lead(row, lead: dict, s: dict):
+    """(subject, body) the AI writes for one queued message. Nothing with a leftover {blank} or a missing subject
+    is ever returned, and a near-copy of another message is reworded once, then refused."""
+    ch = row["channel"]
+    if not ai.configured(s):
+        raise SendError("AI isn't set up yet (Settings → AI writing help).", "pause")
+    avoid = ""
+    for _ in range(2):
+        try:
+            draft = ai.draft_for_lead(s, lead, ch, row["brief"], avoid)
+        except ai.AIError as e:
+            raise SendError(str(e), "transient")
+        subject = messaging.render_template(draft["subject"], lead, s) if ch == "email" else ""
+        text = messaging.render_template(draft["body"], lead, s)
+        if ch == "email" and not subject.strip():
+            raise SendError("The AI didn't write a subject line.", "transient")
+        if messaging.unknown_placeholders(subject, text):
+            raise SendError("The AI left a blank to fill in, like {name}, in the message.", "transient")
+        body = messaging.final_body(ch, text, s)
+        if not _near_duplicate(row, body):
+            return subject, body
+        avoid = text
+    raise SendError("Too much like another message in this campaign, so it was held back. Retry failed to have it rewritten.",
+                    "permanent")
 
 
 # -------------------------------------------------------------- sender thread
@@ -280,7 +355,7 @@ class Sender(threading.Thread):
         for ch in CHANNELS:
             with db.db() as conn:
                 row = conn.execute(
-                    "SELECT m.* FROM messages m JOIN campaigns c ON c.id = m.campaign_id "
+                    "SELECT m.*, c.ai_personalize, c.body AS brief FROM messages m JOIN campaigns c ON c.id = m.campaign_id "
                     "WHERE m.direction='out' AND m.status='queued' AND m.channel=? AND c.status='running' "
                     "AND (m.scheduled_at IS NULL OR m.scheduled_at <= ?) ORDER BY m.id LIMIT 1", (ch, now())).fetchone()
                 if not row:
@@ -336,13 +411,19 @@ class Sender(threading.Thread):
                 self._maybe_finish(conn, cid)
                 return
             to = lead["email"] if ch == "email" else lead["phone_norm"]
+            detail = L.lead_detail(conn, lead_id) if row["ai_personalize"] and not row["body"] else None
 
+        subject, body = row["subject"], row["body"]
         try:
+            if detail:
+                subject, body = write_for_lead(row, detail, s)
+                if not self._keep_draft(row, subject, body):
+                    return
             if ch == "email":
-                header = messaging.send_email(to, row["subject"], row["body"], s)
+                header = messaging.send_email(to, subject, body, s)
                 provider = header
             else:
-                header, provider = None, messaging.send_sms(to, row["body"], s)
+                header, provider = None, messaging.send_sms(to, body, s)
         except SendError as e:
             self._on_error(row, e)
             return
@@ -355,6 +436,21 @@ class Sender(threading.Thread):
         with db.db() as conn:
             _mark_sent(conn, mid, lead_id, provider, header)
             self._maybe_finish(conn, cid)
+
+    @staticmethod
+    def _keep_draft(row, subject, body) -> bool:
+        """Save what the AI wrote on the message, so the log shows exactly what went out. The AI can take a while:
+        if the campaign was paused or cancelled meanwhile, put the message back (or drop it) instead of sending."""
+        mid = row["id"]
+        with db.db() as conn:
+            state = conn.execute("SELECT status FROM campaigns WHERE id=?", (row["campaign_id"],)).fetchone()["status"]
+            if state == "running":
+                conn.execute("UPDATE messages SET subject=?, body=? WHERE id=?", (subject, body, mid))
+                return True
+            gone = state == "cancelled"
+            conn.execute("UPDATE messages SET status=?, error=?, attempts=attempts-? WHERE id=?",
+                         ("skipped" if gone else "queued", "Campaign cancelled" if gone else "", 0 if gone else 1, mid))
+        return False
 
     def _on_error(self, row, e: SendError):
         mid, lead_id, ch, cid = row["id"], row["lead_id"], row["channel"], row["campaign_id"]
@@ -373,7 +469,6 @@ class Sender(threading.Thread):
             else:
                 conn.execute("UPDATE messages SET status='failed', error=? WHERE id=?", (str(e), mid))
                 if ch == "email" and "Recipient refused" in str(e):
-                    import leads as L
                     L.mark_bounced(conn, lead_id, str(e))
             self.fails[cid] = self.fails.get(cid, 0) + 1
             if self.fails[cid] >= 5:

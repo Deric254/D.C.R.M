@@ -189,7 +189,7 @@
         <div class="bubble">${m.subject ? html`<strong>${m.subject}</strong><br>` : ''}${m.body}</div>
         ${m.reasons ? html`<div class="small muted">Matched: ${m.reasons}</div>` : ''}</div></div>` : html`
       <div class="tl out"><i></i><div><div class="small muted">${m.channel === 'email' ? 'Emailed' : 'Texted'}${m.campaign_name ? ' (' + m.campaign_name + ')' : ''} · ${when(t)} · ${m.status === 'sent' ? 'Sent' : m.status === 'queued' ? 'Waiting to send' : m.status === 'failed' ? 'Failed' : m.status}</div>
-        <div class="bubble">${m.subject ? html`<strong>${m.subject}</strong><br>` : ''}${m.body}</div>
+        <div class="bubble">${m.subject ? html`<strong>${m.subject}</strong><br>` : ''}${m.body || (m.status === 'queued' ? 'The AI writes this just before it is sent.' : '')}</div>
         ${m.error ? html`<div class="small" style="color:var(--bad)">${m.error}</div>` : ''}</div></div>`)
       : html`<div class="tl"><i></i><div><div class="small muted">${when(t)}</div><div>${e.detail}</div></div></div>`)
       : html`<div class="muted">No history yet.</div>`;

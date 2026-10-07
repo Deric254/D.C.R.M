@@ -908,13 +908,16 @@ def ai_drafts_providers_and_errors():
 
 
 def _ai_server(answer):
-    """Tiny OpenAI-style server. `answer` is a dict {"text": ..., "status": 200}; every request body is logged in `seen`."""
+    """Tiny OpenAI-style server. `answer` is a dict {"text": ..., "status": 200}; every request body is logged in `seen`.
+    `text` may be a function of the request body, to answer each request differently."""
     seen = []
 
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
-            seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            out = json.dumps({"choices": [{"message": {"content": answer["text"]}}]}).encode()
+            req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append(req)
+            text = answer["text"](req) if callable(answer["text"]) else answer["text"]
+            out = json.dumps({"choices": [{"message": {"content": text}}]}).encode()
             self.send_response(answer.get("status", 200)); self.send_header("Content-Length", str(len(out))); self.end_headers()
             self.wfile.write(out)
         def log_message(self, *a): pass
@@ -1057,6 +1060,275 @@ def worker_subprocess_runs_and_reports():
     if j["status"] == "done":
         assert "no listings were found" in j["progress"], j["progress"]
     print("   worker finished with status:", j["status"], "| progress:", j["progress"])
+
+
+
+# ================================================================ AI CAMPAIGNS
+def _use_ai(srv):
+    db.save_settings({"ai_provider": "custom", "ai_custom_url": f"http://127.0.0.1:{srv.server_port}",
+                      "ai_custom_model": "m1", "ai_pitch": "Pharmacy billing software", "sender_name": "Deric"})
+
+
+def _prompt(req):
+    return req["messages"][1]["content"]
+
+
+def _who(req):
+    import re
+    return re.search(r"Lead: (.+?) \(", _prompt(req)).group(1)
+
+
+def _mail(envelope):
+    """A mail the test SMTP server received, parsed (so the transfer encoding and line wrapping are undone)."""
+    import email
+    import email.policy
+    return email.message_from_bytes(envelope.content, policy=email.policy.default)
+
+
+def _wait(cond, timeout=20):
+    t0 = time.time()
+    while time.time() - t0 < timeout and not cond():
+        time.sleep(0.2)
+    return cond()
+
+
+DISTINCT = {
+    "Alpha Chemist": "Hello Alpha Chemist team, I help pharmacies on Kenyatta Street keep stock and expiry dates on one screen. Could I show you in ten minutes?",
+    "Beta Pharmacy": "Good morning Beta Pharmacy. Running a busy counter in Embu is hard enough without paper stock books, so I built a simple dashboard. Open to a short demo this week?",
+    "Gamma Drugs": "Hi from Deric. Gamma Drugs came up when I searched Kisii for chemists; my billing tool may save your evenings. Shall I send a price list?",
+}
+
+
+@test
+def ai_campaign_writes_each_lead_its_own_message_and_logs_it():
+    """The brief goes in, every lead gets its own AI-written email built from what we know about them, sent
+    through the normal sender, with the exact text kept on the message and nobody messaged twice."""
+    from fastapi.testclient import TestClient
+    import server
+    fresh(); SMTP_INBOX.clear(); configure()
+    srv, seen = _ai_server({"text": lambda req: f"Subject: About {_who(req)}\n\n{DISTINCT[_who(req)]}"})
+    _use_ai(srv)
+    try:
+        with db.db() as c:
+            for name, town, addr, note in (("Alpha Chemist", "Meru", "Kenyatta Street", "owner is called Mary"),
+                                           ("Beta Pharmacy", "Embu", "Market Road", "uses paper stock books"),
+                                           ("Gamma Drugs", "Kisii", "Hospital Lane", "")):
+                L.add_lead(c, {"name": name, "town": town, "sector": "Pharmacy", "address": addr, "notes": note,
+                               "email": name.split()[0].lower() + "@shop.test", "website": "https://" + name.split()[0].lower() + ".test"})
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            brief = "Offer our billing software and ask for a ten minute demo."
+            body = {"name": "AI test", "channel": "email", "body": brief, "filters": {"sectors": ["Pharmacy"]}, "ai": True}
+            pv = cl.post("/api/campaigns/preview", json=body).json()
+            assert pv["will_send"] == 3 and pv["sample"] is None and pv["ai_ready"] is True, pv
+            r = cl.post("/api/campaigns", json={**body, "launch": True}).json()
+            assert r["ai_personalize"] == 1 and r["subject"] == "" and r["total"] == 3, r
+            assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 3), "AI messages were not all sent"
+            assert len(SMTP_INBOX) == 3
+            sent = set()
+            for env in SMTP_INBOX:
+                mail = _mail(env)
+                text = mail.get_content().replace("\r\n", "\n")
+                name = next(n for n in DISTINCT if DISTINCT[n] in text)
+                assert mail["Subject"] == f"About {name}" and "reply STOP" in text, (mail["Subject"], text)
+                sent.add(name)
+            assert sent == set(DISTINCT)
+            # what the AI was told: facts about this lead, the brief, and the rules
+            by_lead = {_who(q): _prompt(q) for q in seen}
+            a = by_lead["Alpha Chemist"]
+            assert "Kenyatta Street" in a and "owner is called Mary" in a and "alpha.test" in a and "Meru" in a, a
+            assert "ten minute demo" in a and "Status: new" in a and "already sent them: 0" in a, a
+            assert "Kenyatta Street" not in by_lead["Beta Pharmacy"]
+            # the log: exact text on the message, visible in the campaign and on the lead
+            rows = cl.get(f"/api/campaigns/{r['id']}").json()
+            assert all(m["status"] == "sent" and m["body"] and m["subject"].startswith("About ") for m in rows["messages"]), rows
+            lid = next(m["lead_id"] for m in rows["messages"] if m["name"] == "Beta Pharmacy")
+            lead = cl.get(f"/api/leads/{lid}").json()
+            assert DISTINCT["Beta Pharmacy"] in lead["messages"][0]["body"] and lead["status"] == "contacted", lead
+            # nobody is picked a second time
+            again = cl.post("/api/campaigns", json={**body, "launch": True})
+            assert again.status_code == 400 and "No leads match" in again.json()["detail"], again.text
+    finally:
+        srv.shutdown()
+
+
+@test
+def ai_campaign_holds_back_near_copies_and_retry_rewrites_them():
+    """A message almost identical to another one in the campaign is reworded once; if it is still a copy it is
+    held back (not sent, nothing saved), and Retry failed writes it afresh."""
+    from fastapi.testclient import TestClient
+    import server
+    fresh(); SMTP_INBOX.clear(); configure()
+    same = "Subject: Quick idea\n\nHello there, we help pharmacies keep stock and expiry dates on one simple screen. Could we show you in ten minutes this week?"
+    answer = {"text": same}
+    srv, seen = _ai_server(answer)
+    _use_ai(srv)
+    try:
+        with db.db() as c:
+            for n in ("Alpha Chemist", "Beta Pharmacy"):
+                L.add_lead(c, {"name": n, "town": "Meru", "sector": "Pharmacy", "email": n.split()[0].lower() + "@shop.test"})
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            cid = cl.post("/api/campaigns", json={"name": "Dup", "channel": "email", "body": "Offer a demo", "ai": True,
+                                                  "filters": {}, "launch": True}).json()["id"]
+            assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 1)
+            assert count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 1 and len(SMTP_INBOX) == 1
+            with db.db() as c:
+                bad = c.execute("SELECT * FROM messages WHERE status='failed'").fetchone()
+            assert "Too much like another message" in bad["error"] and bad["body"] == "", dict(bad)
+            assert sum("Word it very differently" in _prompt(q) for q in seen) == 1, "it should be asked to reword exactly once"
+            answer["text"] = "Subject: For Beta\n\nGood morning Beta Pharmacy. Counting stock by hand takes your evenings, so I built a small dashboard that does it for you. Free for a month?"
+            cl.post(f"/api/campaigns/{cid}/retry")
+            assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 2)
+            assert len(SMTP_INBOX) == 2 and count("SELECT COUNT(DISTINCT body) FROM messages WHERE status='sent'") == 2
+    finally:
+        srv.shutdown()
+
+
+@test
+def ai_message_is_never_sent_with_blanks_no_subject_or_when_the_ai_is_down():
+    import campaigns as CM
+    from messaging import SendError
+    fresh(); configure()
+    answer = {"text": ""}
+    srv, seen = _ai_server(answer)
+    _use_ai(srv)
+    try:
+        with db.db() as c:
+            lid = L.add_lead(c, {"name": "Alpha Chemist", "town": "Meru", "email": "a@shop.test"})["id"]
+            lead = L.lead_detail(c, lid)
+        row = {"id": 1, "campaign_id": 1, "channel": "email", "brief": "Offer a demo"}
+
+        def kind(text, status=200, channel="email"):
+            answer.update(text=text, status=status)
+            try:
+                CM.write_for_lead({**row, "channel": channel}, lead, db.get_settings())
+            except SendError as e:
+                return e.kind, str(e)
+            return None, ""
+        assert kind("Subject: Hi\n\nHello {owner}, a quick idea.")[0] == "transient"          # a blank left in
+        k, msg = kind("Hello, a quick idea for you.")                                         # no subject line
+        assert k == "transient" and "subject" in msg
+        k, msg = kind("x", status=429)
+        assert k == "transient" and "limit" in msg
+        # known placeholders the AI used are filled in, not sent raw; an SMS needs no subject
+        answer.update(text="Subject: For {name}\n\nHi {name} in {town}.", status=200)
+        subj, body = CM.write_for_lead(row, lead, db.get_settings())
+        assert subj == "For Alpha Chemist" and body.startswith("Hi Alpha Chemist in Meru.") and "reply STOP" in body
+        answer["text"] = "Hi Alpha, a quick idea."
+        assert CM.write_for_lead({**row, "channel": "sms"}, lead, db.get_settings())[0] == ""
+        # no AI key at all: pause the campaign rather than burn the queue
+        db.save_settings({"ai_custom_url": ""})
+        k, msg = kind("anything")
+        assert k == "pause" and "AI isn't set up" in msg
+    finally:
+        srv.shutdown()
+
+
+@test
+def pausing_or_cancelling_while_the_ai_writes_stops_that_message():
+    from fastapi.testclient import TestClient
+    import server
+    fresh(); SMTP_INBOX.clear(); configure()
+    state = {"do": None, "cid": None}
+
+    def slow(req):
+        if state["do"]:
+            with db.db() as c:
+                C.set_campaign_status(c, state["cid"], state["do"])
+            state["do"] = None
+        return "Subject: Hello\n\nA short note for you about stock software."
+    srv, _ = _ai_server({"text": slow})
+    _use_ai(srv)
+    try:
+        with db.db() as c:
+            L.add_lead(c, {"name": "Alpha Chemist", "town": "Meru", "email": "a@shop.test"})
+            state["cid"] = C.create_campaign(c, "Stop", "email", "", "Offer a demo", {}, personalize=True)
+        state["do"] = "cancel"   # cancelled the moment the AI is asked, i.e. while it is "writing"
+        with db.db() as c:
+            C.launch_campaign(c, state["cid"])
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765"):
+            assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='skipped'") == 1)
+            assert not SMTP_INBOX and count("SELECT COUNT(*) FROM messages WHERE body<>''") == 0
+        fresh(); configure(); _use_ai(srv)
+        with db.db() as c:
+            L.add_lead(c, {"name": "Beta Pharmacy", "town": "Meru", "email": "b@shop.test"})
+            state["cid"] = C.create_campaign(c, "Pause", "email", "", "Offer a demo", {}, personalize=True)
+        state["do"] = "pause"
+        with db.db() as c:
+            C.launch_campaign(c, state["cid"])
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765"):
+            assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='queued' AND attempts=0") == 1)
+            time.sleep(1.5)
+            assert not SMTP_INBOX and count("SELECT COUNT(*) FROM campaigns WHERE status='paused'") == 1
+    finally:
+        srv.shutdown()
+
+
+@test
+def ai_plans_a_campaign_from_plain_words_and_shows_sample_drafts():
+    import ai
+    from fastapi.testclient import TestClient
+    import server
+    facets = {"sectors": ["Clinic", "Pharmacy"], "towns": ["Meru", "Embu"]}
+    ok = ai.parse_campaign('```json\n{"reply": " Done. ", "name": "Meru  pharmacies", "channel": "sms", "brief": "Offer a demo.", '
+                           '"sectors": ["pharmacy", "Pharmacy", "Bank"], "towns": ["MERU"], "limit": "25"}\n```', facets)
+    assert ok["sectors"] == ["Pharmacy"] and ok["towns"] == ["Meru"] and ok["channel"] == "sms" and ok["limit"] == 25, ok
+    assert ok["name"] == "Meru pharmacies" and ok["reply"].startswith("Done.") and "left them out" in ok["reply"], ok
+    odd = ai.parse_campaign('{"channel": "whatsapp", "brief": "x", "sectors": "all", "towns": [], "limit": -3}', facets)
+    assert odd["channel"] == "email" and odd["sectors"] == [] and odd["limit"] is None and odd["reply"] == "", odd
+    assert ai.parse_campaign('{"limit": 99999}', facets)["limit"] == ai.MAX_CAMPAIGN_LIMIT
+    try:
+        ai.parse_campaign("sorry, no", facets); assert False
+    except ai.AIError:
+        pass
+
+    fresh(); SMTP_INBOX.clear(); configure()
+    answer = {"text": '{"reply": "Set up.", "name": "Meru pharmacies", "channel": "email", "brief": "Offer a billing demo.", '
+                      '"sectors": ["Pharmacy"], "towns": ["Meru"], "limit": 2}'}
+    srv, seen = _ai_server(answer)
+    _use_ai(srv)
+    try:
+        with db.db() as c:
+            for i in range(4):
+                L.add_lead(c, {"name": f"Shop {i}", "town": "Meru", "sector": "Pharmacy", "email": f"s{i}@shop.test"})
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            r = cl.post("/api/campaigns/ai-plan", json={"goal": "email Meru pharmacies about billing"}).json()
+            assert r["sectors"] == ["Pharmacy"] and r["towns"] == ["Meru"] and r["limit"] == 2 and r["brief"], r
+            assert "Pharmacy" in _prompt(seen[-1]) and "Meru" in _prompt(seen[-1]) and "billing" in _prompt(seen[-1])
+            assert cl.post("/api/campaigns/ai-plan", json={"goal": "  "}).status_code == 400
+            # AI mode: a brief is all that is needed, and the preview never calls the AI
+            n = len(seen)
+            body = {"channel": "email", "body": "Offer a demo", "filters": {"limit": 2}, "ai": True}
+            pv = cl.post("/api/campaigns/preview", json=body).json()
+            assert pv["will_send"] == 2 and pv["matching"] == 4 and pv["sample"] is None and len(seen) == n, pv
+            assert cl.post("/api/campaigns/preview", json={**body, "body": " "}).status_code == 400
+            assert cl.post("/api/campaigns/preview", json={**body, "ai": False}).status_code == 400   # normal mode still wants a subject
+            # sample drafts: first people in the audience, nothing saved or queued
+            answer["text"] = "Subject: Hello\n\nA short note about stock software."
+            samples = cl.post("/api/campaigns/ai-samples", json=body).json()
+            assert len(samples) == 2 and all(x["body"].count("reply STOP") == 1 and x["to"].endswith("@shop.test") for x in samples)
+            assert count("SELECT COUNT(*) FROM messages") == 0
+            answer["status"] = 429
+            assert cl.post("/api/campaigns/ai-samples", json=body).status_code == 502
+            answer["status"] = 200
+            # starting an AI campaign needs an AI key
+            db.save_settings({"ai_custom_url": ""})
+            r = cl.post("/api/campaigns", json={**body, "launch": True})
+            assert r.status_code == 400 and "AI key" in r.json()["detail"] and count("SELECT COUNT(*) FROM messages") == 0, r.text
+    finally:
+        srv.shutdown()
+
+
+@test
+def database_from_before_ai_campaigns_gains_the_column():
+    fresh()
+    with db.db() as c:
+        c.execute("ALTER TABLE campaigns DROP COLUMN ai_personalize")
+    db.init_db()
+    db.init_db()   # and running it again is harmless
+    with db.db() as c:
+        assert "ai_personalize" in {r["name"] for r in c.execute("PRAGMA table_info(campaigns)")}
+        cid = C.create_campaign(c, "Old style", "sms", "", "Hi {name}", {})
+        assert c.execute("SELECT ai_personalize FROM campaigns WHERE id=?", (cid,)).fetchone()[0] == 0
 
 
 if __name__ == "__main__":

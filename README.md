@@ -29,6 +29,16 @@ On **Find leads**, describe who you want to reach in your own words, for example
 
 Settings > AI writing help takes free keys from Google Gemini, Groq, NVIDIA, OpenRouter, Mistral, or any OpenAI-compatible server (such as Ollama). Keys are tried in order, so when one hits its free limit the next one answers. **Write with AI** appears when you write a campaign and when you message one lead (it replies to their latest message). Free-tier model names change now and then: if **Test the keys** says a model isn't found, type a current model name in the model field.
 
+## AI campaigns (Outreach)
+
+On **Outreach**, tick **Let the AI write each message for each person**. The message box becomes a brief (the goal, the offer, what you want them to do) and the AI writes every lead's own message just before it is sent, from everything you know about that lead: business, town, address, website, status, your notes and the conversation so far. Emails and texts go out through the same sender as any campaign, with the same daily limits, sending hours, opt-out line and do-not-contact rules.
+
+- **Set up with AI** at the top of the form turns a sentence like "email the pharmacies in Meru about my billing software" into a filled-in campaign (channel, audience, brief). You check it, then press Start. Nothing is sent until you do.
+- **Show example messages** drafts the first few so you can judge the writing before starting. They aren't kept; each real message is written fresh.
+- **No repeats:** nobody is messaged twice in a campaign or again within your skip-days, and a message that comes out nearly identical to another in the campaign is reworded once, then held back (shown as Failed; **Retry failed** writes it again).
+- **Never half-written:** a message with a leftover `{blank}` or no email subject is not sent. If the AI is busy or out of free limit the message waits and retries; if no AI key is set the campaign pauses.
+- **The log:** the exact text of every message is kept. Open a campaign's **Details** to read what each lead got, or open the lead to see it in their history.
+
 ## Local use
 
 Building the installer on your own PC needs Python, Node.js, Rust and the **Visual Studio Build Tools** (workload “Desktop development with C++”). GitHub builds it for you on every push, so you only need these to build locally.
