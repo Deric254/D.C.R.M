@@ -512,6 +512,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         for k in db.SECRET_KEYS:
             out[k + "_set"] = bool(out.get(k))
             out[k] = ""
+        out["ai_defaults"] = ai.default_models()   # shown as the grey hint in the model box
         return out
 
     @app.get("/api/settings")
@@ -555,6 +556,12 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise ValueError("The AI server address must start with http:// or https://")
         if len(clean.get("slogan", "")) > 80:
             raise ValueError("The slogan is too long (80 characters at most)")
+        # Fill the obvious blanks: the sender address is normally the login, and so is the inbox login.
+        merged = {**db.get_settings(), **clean}
+        if not merged["from_email"] and "@" in merged["smtp_user"]:
+            clean["from_email"] = merged["smtp_user"]
+        if not merged["imap_user"] and merged["imap_host"] and merged["smtp_user"]:
+            clean["imap_user"] = merged["smtp_user"]
         db.save_settings(clean)
         s = db.get_settings()
         if s["imap_host"] and s["imap_user"] and db.get_internal("imap_last_uid") is None:

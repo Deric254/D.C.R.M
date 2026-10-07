@@ -27,7 +27,7 @@ On **Find leads**, describe who you want to reach in your own words, for example
 
 ## AI writing help
 
-Settings > AI writing help takes free keys from Google Gemini, Groq, NVIDIA, OpenRouter, Mistral, or any OpenAI-compatible server (such as Ollama). Keys are tried in order, so when one hits its free limit the next one answers. **Write with AI** appears when you write a campaign and when you message one lead (it replies to their latest message). Free-tier model names change now and then: if **Test the keys** says a model isn't found, type a current model name in the model field.
+Settings > AI writing help takes free keys from Google Gemini, Groq, NVIDIA, OpenRouter, Mistral, or any OpenAI-compatible server (such as Ollama). Keys are tried in order, so when one hits its free limit the next one answers. **Write with AI** appears when you write a campaign and when you message one lead (it replies to their latest message). Free-tier model names get retired every few months. The app tries a list of current models for each provider and, if they are all gone, asks the provider which models it offers today and uses one that works (**Test the keys** shows which). You can still type a model name of your own. Settings also has one-click presets for Gmail/Outlook/Zoho/Yahoo and the Africa's Talking sandbox, plus step-by-step guides for getting the passwords and keys.
 
 ## WhatsApp, email and text from one lead
 

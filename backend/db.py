@@ -5,6 +5,7 @@ WAL mode with a generous busy timeout. Leads are never hard-deleted (only
 archived) which is what guarantees a lead can never be re-imported as new.
 """
 import json
+import secrets
 import sqlite3
 from contextlib import contextmanager
 
@@ -219,6 +220,9 @@ def init_db():
         # Settings still on the old built-in defaults move to the current ones (anything the owner wrote is kept).
         for key, old in (("sender_name", "DericBI"), ("ai_pitch", "")):
             conn.execute("DELETE FROM settings WHERE key=? AND value=?", (key, json.dumps(old)))
+        # A secret for the incoming-SMS callback is made once, so nobody has to invent one.
+        if not conn.execute("SELECT 1 FROM settings WHERE key='webhook_token'").fetchone():
+            conn.execute("INSERT INTO settings(key, value) VALUES('webhook_token', ?)", (json.dumps(secrets.token_hex(16)),))
         conn.commit()
     finally:
         conn.close()

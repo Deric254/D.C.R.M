@@ -11,6 +11,17 @@
     ['nvidia', 'NVIDIA', 'https://build.nvidia.com/'], ['openrouter', 'OpenRouter', 'https://openrouter.ai/keys'], ['mistral', 'Mistral', 'https://console.mistral.ai/api-keys']];
   const check = (s, key, label) => html`<label class="check"><input type="checkbox" name="${key}" ${s[key] ? 'checked' : ''}>${label}</label>`;
 
+  // Step-by-step help for the things only you can get (passwords, keys, accounts).
+  const guide = (title, steps, note = '') => html`<details class="guide"><summary class="small" style="cursor:pointer;color:var(--brand,#0a6)">${title}</summary>
+    <ol class="small" style="margin:8px 0 0;padding-left:20px;display:grid;gap:4px">${steps.map((x) => html`<li>${x}</li>`)}</ol>${note ? html`<p class="muted small" style="margin:8px 0 0">${note}</p>` : ''}</details>`;
+  // Ready-made server values, so nobody has to know what an SMTP port is.
+  const MAIL = {
+    gmail: { smtp: ['smtp.gmail.com', 587, 'starttls'], imap: ['imap.gmail.com', 993, 'ssl'] },
+    outlook: { smtp: ['smtp.office365.com', 587, 'starttls'], imap: ['outlook.office365.com', 993, 'ssl'] },
+    zoho: { smtp: ['smtp.zoho.com', 587, 'starttls'], imap: ['imap.zoho.com', 993, 'ssl'] },
+    yahoo: { smtp: ['smtp.mail.yahoo.com', 587, 'starttls'], imap: ['imap.mail.yahoo.com', 993, 'ssl'] },
+  };
+
   function collect(form) {
     const out = {};
     [...form.elements].forEach((e) => {
@@ -37,6 +48,14 @@
 
         <section class="panel"><div class="panel-head"><h2>Sending email</h2><button type="button" class="btn small right" id="gmail-smtp">Fill in Gmail settings</button></div>
           <div class="panel-body stack" style="gap:14px">
+            <label class="field">Email provider (fills in the server, port and connection for sending and reading replies)
+              <select id="mail-preset"><option value="">Choose your provider…</option><option value="gmail">Gmail / Google Workspace</option><option value="outlook">Outlook / Microsoft 365</option><option value="zoho">Zoho Mail</option><option value="yahoo">Yahoo Mail</option></select></label>
+            ${guide('Where do I get the Gmail password? (step by step)', [
+              html`Turn on 2-Step Verification for your Google account: <a href="https://myaccount.google.com/signinoptions/two-step-verification">myaccount.google.com/signinoptions/two-step-verification</a>.`,
+              html`Open <a href="https://myaccount.google.com/apppasswords">myaccount.google.com/apppasswords</a>, type the name <b>DericBI CRM</b> and press Create.`,
+              'Copy the 16-letter password Google shows you and paste it in Password below (spaces don\'t matter). Your normal Gmail password will not work.',
+              'Put your full Gmail address in Username and in Send from, then press Send test email.'],
+              'If the app-passwords page says it is not available, 2-Step Verification is off, or your Google Workspace admin has blocked it. Outlook and Yahoo also need an app password; Zoho needs one when two-factor is on.')}
             <div class="grid2">${field(s, 'smtp_host', 'Mail server', { placeholder: 'smtp.gmail.com' })}${field(s, 'smtp_port', 'Port', { type: 'number', min: 1 })}
               ${select(s, 'smtp_security', 'Connection', [['starttls', 'STARTTLS (port 587)'], ['ssl', 'SSL (port 465)'], ['none', 'None (only for testing)']])}
               ${field(s, 'from_email', 'Send from', { placeholder: 'you@yourdomain.com' })}
@@ -48,6 +67,7 @@
         <section class="panel"><div class="panel-head"><h2>Reading replies</h2><button type="button" class="btn small right" id="gmail-imap">Fill in Gmail settings</button></div>
           <div class="panel-body stack" style="gap:14px">
             <p class="muted small">Connect the inbox your leads reply to so their answers are matched, graded and bounces are caught. Only mail that arrives after you connect is tracked.</p>
+            <div><button type="button" class="btn small" id="copy-mail-login">Use the same address and password as sending</button></div>
             <div class="grid2">${field(s, 'imap_host', 'Inbox server', { placeholder: 'imap.gmail.com' })}${field(s, 'imap_port', 'Port', { type: 'number', min: 1 })}
               ${select(s, 'imap_security', 'Connection', [['ssl', 'SSL (port 993)'], ['starttls', 'STARTTLS (port 143)'], ['none', 'None (only for testing)']])}
               ${field(s, 'imap_poll_minutes', 'Check every (minutes)', { type: 'number', min: 1 })}
@@ -55,8 +75,14 @@
             <div><button type="button" class="btn" id="test-imap">Test connection</button></div>
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Text messages (Africa's Talking)</h2></div>
+        <section class="panel"><div class="panel-head"><h2>Text messages (Africa's Talking)</h2><button type="button" class="btn small right" id="at-sandbox">Fill in the free test (sandbox) settings</button></div>
           <div class="panel-body stack" style="gap:14px">
+            ${guide('Where do I get the SMS username and API key? (step by step)', [
+              html`Make a free account at <a href="https://account.africastalking.com/auth/register">account.africastalking.com</a>.`,
+              'To try it for free: press the button above (username becomes sandbox), open the Sandbox app, go to Settings > API Key, generate a key and paste it below. Sandbox texts are not delivered to real phones; you see them in the simulator.',
+              'To text real people: create your own app (its name is your Username), top up your balance with M-Pesa under Billing, generate that app\'s API key, and paste both here. Change the Username from sandbox to your app name.',
+              'Optional: ask Africa\'s Talking to approve a Sender ID (your business name). Until then leave it blank.'],
+              'Safaricom SMS to Kenyan numbers costs a few shillings per text. The test-text button below tells you straight away if the username or key is wrong.')}
             <div class="grid2">${field(s, 'at_username', 'Username', { hint: 'Use “sandbox” to try it without sending real texts.' })}${field(s, 'at_api_key', 'API key', { secret: true })}
               ${field(s, 'at_sender_id', 'Sender ID (optional)', { hint: 'Needs approval from Africa\'s Talking. Leave blank to use their default.' })}</div>
             <details><summary class="small muted" style="cursor:pointer">Advanced</summary><div style="margin-top:10px">${field(s, 'at_base_url', 'API address')}</div></details>
@@ -88,9 +114,14 @@
         <section class="panel"><div class="panel-head"><h2>AI writing help</h2></div>
           <div class="panel-body stack" style="gap:14px">
             <p class="muted small">Paste a free key from any provider below. Keys are tried in order, so when one reaches its free limit the next one answers. Use “Write with AI” when writing a campaign or a message to one lead.</p>
+            ${guide('Where do I get a free AI key? (2 minutes)', [
+              html`Easiest: <a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a>. Sign in with Google, press <b>Create API key</b>, copy it into the Google Gemini box.`,
+              html`A second key means the AI keeps working when the first hits its daily free limit. <a href="https://console.groq.com/keys">console.groq.com/keys</a> is also free and very fast: sign up, press <b>Create API key</b>, copy it into the Groq box.`,
+              'Press Test the keys. Each key shows “works” and the model it is using, or a plain reason it failed (key rejected, limit reached, model not found).',
+              'Free keys may use what you send to improve the provider\'s models, so the AI is only given the lead\'s business details and your notes, never passwords.'])}
             <label class="field">Who you are and what you sell<textarea name="ai_pitch" rows="3">${s.ai_pitch}</textarea><span class="hint">Your name, your profession, your offer and your ready-made tools. Every AI message is written from this, so keep it true.</span></label>
             <div class="grid2">${select(s, 'ai_provider', 'Try first', [...AI_KEYS.map(([id, label]) => [id, label]), ['custom', 'Your own server']])}
-              ${field(s, 'ai_model', 'Model for that provider (optional)', { hint: 'Leave blank to use the default.' })}
+              ${field(s, 'ai_model', 'Model for that provider (optional)', { placeholder: (s.ai_defaults || {})[s.ai_provider] || '', hint: 'Leave blank: the app uses ' + ((s.ai_defaults || {})[s.ai_provider] || 'its default') + ' and automatically switches to a model that works if that one is retired.' })}
               ${AI_KEYS.map(([id, label, url]) => field(s, 'ai_key_' + id, label + ' key', { secret: true, hint: html`Free key: <a href="${url}">${url.replace('https://', '')}</a>` }))}</div>
             <details><summary class="small muted" style="cursor:pointer">Your own server (any OpenAI-compatible address, such as Ollama)</summary>
               <div class="grid2" style="margin-top:10px">${field(s, 'ai_custom_url', 'Address', { placeholder: 'http://localhost:11434/v1' })}${field(s, 'ai_custom_model', 'Model')}${field(s, 'ai_key_custom', 'Key (if it needs one)', { secret: true })}</div></details>
@@ -104,7 +135,8 @@
             <div><button type="button" class="btn" id="backup">Download a backup</button></div>
             <details><summary class="small muted" style="cursor:pointer">Advanced: incoming SMS webhook</summary><div class="stack" style="gap:10px;margin-top:10px">
               <p class="muted small">Only useful if you expose this app to the internet (for example with a tunnel) and point Africa's Talking's incoming-message callback at it. Most people just use “Log a reply”.</p>
-              ${field(s, 'webhook_token', 'Secret token')}
+              ${field(s, 'webhook_token', 'Secret token', { hint: 'Made for you automatically. Press the button to make a new one.' })}
+              <div><button type="button" class="btn small" id="new-token">Make a new secret token</button></div>
               <div class="small muted">Callback address: <code>http://127.0.0.1:8765/api/webhooks/sms?token=YOUR_TOKEN</code> (replace the host with your public address)</div>
             </div></details>
           </div></section>
@@ -128,6 +160,12 @@
       });
       const refreshLogo = () => { App.showLogo($('#logo-preview'), true); return App.loadBrand(); };
       el.addEventListener('change', async (e) => {
+        if (e.target.id === 'mail-preset' && MAIL[e.target.value]) {
+          const m = MAIL[e.target.value], f = $('#sform').elements;
+          [f.smtp_host.value, f.smtp_port.value, f.smtp_security.value] = m.smtp;
+          [f.imap_host.value, f.imap_port.value, f.imap_security.value] = m.imap;
+          toast('Servers filled in. Add your email address and app password, then save.'); return;
+        }
         const file = e.target.id === 'logo-file' && e.target.files[0]; if (!file) return;
         try { await api('/branding/logo', { method: 'PUT', body: file }); await refreshLogo(); toast('Logo updated'); } catch (err) { fail(err); }
         e.target.value = '';
@@ -137,6 +175,12 @@
         const set = (name, v) => { $('#sform').elements[name].value = v; };
         try {
           if (id === 'gmail-smtp') { set('smtp_host', 'smtp.gmail.com'); set('smtp_port', 587); set('smtp_security', 'starttls'); toast('Add your Gmail address and an app password, then save.'); }
+          else if (id === 'at-sandbox') { set('at_username', 'sandbox'); set('at_base_url', 'https://api.sandbox.africastalking.com'); toast('Now paste your sandbox API key (Sandbox app > Settings > API Key).'); }
+          else if (id === 'copy-mail-login') {
+            const f = $('#sform').elements; if (f.smtp_user.value) f.imap_user.value = f.smtp_user.value; else if (f.from_email.value) f.imap_user.value = f.from_email.value;
+            if (f.smtp_pass.value) f.imap_pass.value = f.smtp_pass.value;
+            toast(f.smtp_pass.value ? 'Copied. Press Save settings.' : 'Address copied. Type the same app password in the Password box.');
+          } else if (id === 'new-token') { const a = new Uint8Array(16); crypto.getRandomValues(a); set('webhook_token', [...a].map((b) => b.toString(16).padStart(2, '0')).join('')); toast('New token made. Save settings to keep it.'); }
           else if (id === 'gmail-imap') { set('imap_host', 'imap.gmail.com'); set('imap_port', 993); set('imap_security', 'ssl'); }
           else if (id === 'test-email') {
             const to = $('#t-email').value.trim(); if (!to) return toast('Enter an address to send the test to', true);

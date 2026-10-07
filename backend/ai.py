@@ -10,16 +10,32 @@ import requests
 
 TIMEOUT = (5, 25)   # connect, read
 BUDGET = 45         # seconds for one request across all providers
-# id: (label, base address, default model). The model can be overridden in Settings.
+# id: (label, base address, models to try, best first). Free-tier model names are retired every few months
+# (Groq's llama-3.3-70b ended on 16 Aug 2026, Gemini 2.5 Flash ends on 16 Oct 2026), so a name that stops working
+# is never fatal: the next one is tried, then the provider's own model list is asked for one that works today.
 PROVIDERS = {
-    "gemini": ("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash"),
-    "groq": ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
-    "nvidia": ("NVIDIA", "https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct"),
-    "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct:free"),
-    "mistral": ("Mistral", "https://api.mistral.ai/v1", "mistral-small-latest"),
-    "custom": ("Your own", "", ""),
+    "gemini": ("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai",
+               ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]),
+    "groq": ("Groq", "https://api.groq.com/openai/v1",
+             ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]),
+    "nvidia": ("NVIDIA", "https://integrate.api.nvidia.com/v1", ["meta/llama-3.3-70b-instruct"]),
+    "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", ["meta-llama/llama-3.3-70b-instruct:free"]),
+    "mistral": ("Mistral", "https://api.mistral.ai/v1", ["mistral-small-latest"]),
+    "custom": ("Your own", "", []),
 }
 KEY_SETTINGS = {pid: f"ai_key_{pid}" for pid in PROVIDERS}
+_WORKING = {}   # provider -> the model that last answered, so the next request starts with it
+
+# Words that mark a model as not a chat model, and what to prefer when asking a provider what it offers today.
+_NOT_CHAT = ("whisper", "guard", "tts", "embed", "orpheus", "playai", "safeguard", "image", "imagen", "veo", "lyria",
+             "moderation", "rerank", "transcribe", "audio", "aqa", "ocr", "vision", "live", "robotics", "computer-use")
+_PREFER = {
+    "gemini": ("3.5-flash", "3.1-flash-lite", "3-flash", "flash-lite", "flash"),
+    "groq": ("gpt-oss-120b", "qwen3.6", "gpt-oss-20b", "llama-3.3", "llama-3.1"),
+    "nvidia": ("llama-3.3-70b", "llama-3.1-70b", "nemotron", "llama-3.1-8b", "mistral", "gemma"),
+    "openrouter": ("llama-3.3-70b", "gpt-oss-120b", "qwen", "gemma", "mistral", "llama"),
+    "mistral": ("mistral-small-latest", "small", "medium", "ministral"),
+}
 
 GRADES = ("hot", "warm", "cold", "optout")
 SYSTEM = (
@@ -34,11 +50,20 @@ class AIError(Exception):
     pass
 
 
-def _target(pid: str, s: dict):
-    label, base, model = PROVIDERS[pid]
+def default_models() -> dict:
+    """The model each provider uses unless you type another one (shown in Settings)."""
+    return {pid: (_WORKING.get(pid) or (v[2][0] if v[2] else "")) for pid, v in PROVIDERS.items()}
+
+
+def _candidates(pid: str, s: dict) -> list:
+    """Models to try for this provider, in order: the one you typed, the last one that worked, then the built-in list."""
     if pid == "custom":
-        return label, s["ai_custom_url"].rstrip("/"), s["ai_custom_model"]
-    return label, base, (s["ai_model"] if pid == s["ai_provider"] and s["ai_model"] else model)
+        return [s["ai_custom_model"]] if s["ai_custom_model"] else []
+    out = []
+    if pid == s["ai_provider"] and s["ai_model"]:
+        out.append(s["ai_model"])
+    out += [_WORKING.get(pid)] + list(PROVIDERS[pid][2])
+    return list(dict.fromkeys(m for m in out if m))
 
 
 def configured(s: dict) -> list:
@@ -48,31 +73,80 @@ def configured(s: dict) -> list:
 
 
 def _reason(r) -> str:
-    return {401: "key rejected", 403: "key rejected", 404: "model or address not found",
+    base = {401: "key rejected", 403: "key rejected or this model needs a paid plan", 404: "model or address not found",
             429: "free limit reached, try again shortly"}.get(r.status_code, f"error {r.status_code}")
+    try:
+        detail = r.json()
+        detail = detail.get("error", detail) if isinstance(detail, dict) else detail
+        detail = (detail.get("message") if isinstance(detail, dict) else str(detail)) or ""
+    except (ValueError, AttributeError):
+        detail = ""
+    detail = re.sub(r"\s+", " ", str(detail)).strip()[:110]
+    return f"{base} ({detail})" if detail and r.status_code not in (429,) else base
 
 
-def _call(pid: str, s: dict, system: str, user: str, max_tokens: int, temperature: float) -> str:
-    label, base, model = _target(pid, s)
-    if not model:
-        raise AIError("no model set")
+def _discover(pid: str, s: dict, tried: list) -> list:
+    """Ask the provider which models it offers today and return up to three chat models worth trying."""
+    base = PROVIDERS[pid][1] or s["ai_custom_url"].rstrip("/")
+    key = s[KEY_SETTINGS[pid]]
+    try:
+        r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"} if key else {}, timeout=TIMEOUT)
+        ids = [str(m.get("id", "")).removeprefix("models/") for m in r.json().get("data", [])] if r.status_code == 200 else []
+    except (requests.RequestException, ValueError, AttributeError, TypeError):
+        return []
+    prefs = _PREFER.get(pid, ())
+    ids = [i for i in dict.fromkeys(ids) if i and i not in tried and not any(w in i.lower() for w in _NOT_CHAT)]
+    if pid == "openrouter":
+        ids = [i for i in ids if i.endswith(":free")]
+
+    def rank(i):
+        low = i.lower()
+        return next((n for n, p in enumerate(prefs) if p in low), len(prefs))
+    return sorted(ids, key=rank)[:3]
+
+
+def _post(pid: str, s: dict, base: str, model: str, system: str, user: str, max_tokens: int, temperature: float):
     headers = {"Authorization": f"Bearer {s[KEY_SETTINGS[pid]]}"} if s[KEY_SETTINGS[pid]] else {}
     try:
-        r = requests.post(f"{base}/chat/completions", headers=headers, timeout=TIMEOUT, json={
+        return requests.post(f"{base}/chat/completions", headers=headers, timeout=TIMEOUT, json={
             "model": model, "temperature": temperature, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
     except requests.RequestException:
         raise AIError("can't connect")
-    if r.status_code != 200:
-        raise AIError(_reason(r))
-    try:
-        text = r.json()["choices"][0]["message"]["content"] or ""
-    except (ValueError, KeyError, IndexError, TypeError):
-        raise AIError("unexpected answer")
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
-    if not text:
-        raise AIError("empty answer")
-    return text
+
+
+def _call(pid: str, s: dict, system: str, user: str, max_tokens: int, temperature: float) -> str:
+    base = PROVIDERS[pid][1] or s["ai_custom_url"].rstrip("/")
+    models = _candidates(pid, s)
+    if not models and pid == "custom":
+        raise AIError("no model set")
+    tried, last, discovered, model_problem = [], None, False, False
+    while True:
+        for model in models:
+            tried.append(model)
+            r = _post(pid, s, base, model, system, user, max_tokens, temperature)
+            if r.status_code == 200:
+                try:
+                    text = r.json()["choices"][0]["message"]["content"] or ""
+                except (ValueError, KeyError, IndexError, TypeError):
+                    last = AIError("unexpected answer")
+                    continue
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+                if not text:
+                    last = AIError("empty answer")
+                    continue
+                _WORKING[pid] = model
+                return text
+            last = AIError(_reason(r))
+            model_problem = model_problem or r.status_code in (400, 403, 404)
+            if r.status_code == 401 or r.status_code >= 500:
+                raise last          # a bad key or a provider outage is the same for every model
+        if discovered or pid == "custom" or not model_problem:
+            raise last or AIError("no model available")
+        discovered = True           # the built-in names are all retired or off-limits: ask what is offered today
+        models = _discover(pid, s, tried)
+        if not models:
+            raise last or AIError("no model available")
 
 
 def ask(s: dict, system: str, user: str, max_tokens=1000, temperature=0.7, budget=BUDGET) -> str:
@@ -96,7 +170,7 @@ def check(s: dict) -> list:
     def one(pid):
         try:
             _call(pid, s, "Reply with the single word: ok", "ok", 200, 0)
-            return PROVIDERS[pid][0], True, "works"
+            return PROVIDERS[pid][0], True, f"works (model {_WORKING.get(pid) or s['ai_custom_model']})"
         except AIError as e:
             return PROVIDERS[pid][0], False, str(e)
     ids = configured(s)

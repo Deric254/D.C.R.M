@@ -907,6 +907,61 @@ def ai_drafts_providers_and_errors():
         srv.shutdown()
 
 
+@test
+def retired_ai_model_is_replaced_automatically_and_settings_fill_their_own_blanks():
+    """A model name the provider has retired must not silently kill the AI: the next name, then the provider's own list, is used."""
+    from fastapi.testclient import TestClient
+    import ai, server
+    fresh()
+    asked = []
+    live = {"model": "brand-new-chat-1"}
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            out = json.dumps({"data": [{"id": "whisper-large"}, {"id": "retired-old"}] + ([{"id": live["model"]}] if live["model"] else [])}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            asked.append(req["model"])
+            ok = req["model"] == live["model"]
+            out = json.dumps({"choices": [{"message": {"content": "ok"}}]} if ok else {"error": {"message": "model has been decommissioned"}}).encode()
+            self.send_response(200 if ok else 404); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+        def log_message(self, *a): pass
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    old = ai.PROVIDERS["groq"]
+    ai._WORKING.clear()
+    ai.PROVIDERS["groq"] = (old[0], base, ["retired-1", "retired-2"])
+    try:
+        s = dict(db.get_settings(), ai_provider="groq", ai_key_groq="k")
+        assert ai.ask(s, "sys", "hi") == "ok"
+        assert asked == ["retired-1", "retired-2", "retired-old", "brand-new-chat-1"], asked   # built-in names, then the live list (whisper skipped)
+        asked.clear()
+        assert ai.ask(s, "sys", "hi") == "ok" and asked == ["brand-new-chat-1"]        # the one that worked is remembered
+        assert ai.default_models()["groq"] == "brand-new-chat-1"
+        # when nothing works any more the reason from the provider is shown, not a silent failure
+        asked.clear(); ai._WORKING.clear(); live["model"] = None
+        try:
+            ai.ask(s, "sys", "hi"); assert False
+        except ai.AIError as e:
+            assert "decommissioned" in str(e) or "not found" in str(e), e
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            got = cl.get("/api/settings").json()
+            assert got["ai_defaults"]["gemini"] and got["ai_defaults"]["groq"]
+            assert len(got["webhook_token"]) >= 16                                       # made automatically
+            cl.put("/api/settings", json={"smtp_host": "smtp.gmail.com", "smtp_user": "me@gmail.com", "imap_host": "imap.gmail.com"})
+            got = cl.get("/api/settings").json()
+            assert got["from_email"] == "me@gmail.com" and got["imap_user"] == "me@gmail.com"
+            cl.put("/api/settings", json={"from_email": "sales@mine.co.ke"})
+            cl.put("/api/settings", json={"smtp_user": "other@gmail.com"})
+            assert cl.get("/api/settings").json()["from_email"] == "sales@mine.co.ke"   # what you typed is never overwritten
+    finally:
+        ai.PROVIDERS["groq"] = old
+        ai._WORKING.clear()
+        srv.shutdown()
+
+
 def _ai_server(answer):
     """Tiny OpenAI-style server. `answer` is a dict {"text": ..., "status": 200}; every request body is logged in `seen`.
     `text` may be a function of the request body, to answer each request differently."""
