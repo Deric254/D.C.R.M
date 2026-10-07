@@ -3,6 +3,6 @@
   "identifier": "crm-pages",
   "description": "Lets the CRM pages (served from the local engine) check for and install updates",
   "windows": ["main"],
-  "remote": { "urls": ["http://127.0.0.1:*"] },
-  "permissions": []
+  "remote": { "urls": ["http://127.0.0.1:*", "http://localhost:*"] },
+  "permissions": ["allow-check-update", "allow-install-update", "allow-backend-status"]
 }
