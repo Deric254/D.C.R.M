@@ -22,6 +22,12 @@
     yahoo: { smtp: ['smtp.mail.yahoo.com', 587, 'starttls'], imap: ['imap.mail.yahoo.com', 993, 'ssl'] },
   };
 
+  // The steps of a check, each ticked or crossed, so a failure says exactly where and what to change.
+  const steps = (r) => html`<ul class="small" style="list-style:none;margin:0;padding:0;display:grid;gap:4px">
+    ${(r.steps || []).map((st) => html`<li style="color:${st.ok ? 'var(--accent)' : 'var(--bad)'}"><b>${st.ok ? '✓' : '✗'} ${st.label}</b>${st.detail ? html`<span style="color:var(--ink)"> ${st.detail}</span>` : ''}</li>`)}
+  </ul>`;
+  const showResult = (id, r, headline) => render($('#' + id), html`<div class="notice ${r.ok ? '' : 'bad'}" style="margin:0"><b>${headline || r.message}</b>${steps(r)}</div>`);
+
   function collect(form) {
     const out = {};
     [...form.elements].forEach((e) => {
@@ -34,10 +40,12 @@
   App.views.settings = {
     title: 'Settings',
     async render(el) {
-      let [s, health] = await Promise.all([api('/settings'), api('/health')]);
+      let [s, health, st] = await Promise.all([api('/settings'), api('/health'), api('/status')]);
       const form = () => html`<form id="sform" class="stack" style="max-width:860px">
         <section class="panel"><div class="panel-head"><h2>Your business</h2></div><div class="panel-body">
-          ${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}</div></section>
+          ${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}
+          <div class="grid2" style="margin-top:14px">${field(s, 'contact_website', 'Your website', { hint: 'Written into messages as {website}.' })}${field(s, 'contact_whatsapp', 'Your WhatsApp number', { hint: 'Written into messages as {whatsapp}.' })}
+            ${field(s, 'contact_email', 'Your email', { hint: 'Written into messages as {email}.' })}</div></div></section>
 
         <section class="panel"><div class="panel-head"><h2>Logo and slogan</h2></div><div class="panel-body stack" style="gap:14px">
           <div class="row"><img id="logo-preview" class="logo-preview" src="/api/branding/logo" alt="Current logo" onerror="this.hidden=true">
@@ -46,63 +54,74 @@
           <p class="muted small">The logo changes straight away inside the app. The program icon itself is set when the app is built: replace <code>backend/static/logo.png</code> (square PNG, 512 px or larger) and push.</p>
         </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Sending email</h2><button type="button" class="btn small right" id="gmail-smtp">Fill in Gmail settings</button></div>
+        <section class="panel"><div class="panel-head"><h2>Email</h2><span class="chip right ${st.email_ready ? 'ok' : ''}">${st.email_ready ? (st.replies_ready ? 'Sending and replies set up' : 'Sending set up') : 'Not connected'}</span></div>
           <div class="panel-body stack" style="gap:14px">
-            <label class="field">Email provider (fills in the server, port and connection for sending and reading replies)
-              <select id="mail-preset"><option value="">Choose your provider…</option><option value="gmail">Gmail / Google Workspace</option><option value="outlook">Outlook / Microsoft 365</option><option value="zoho">Zoho Mail</option><option value="yahoo">Yahoo Mail</option></select></label>
-            ${guide('Where do I get the Gmail password? (step by step)', [
+            <p class="muted small">Connect your Gmail once and the app can send, and read the replies that come back. If anything fails you'll see exactly which step and what to change.</p>
+            ${guide('Where do I get the Gmail App Password? (step by step)', [
               html`Turn on 2-Step Verification for your Google account: <a href="https://myaccount.google.com/signinoptions/two-step-verification">myaccount.google.com/signinoptions/two-step-verification</a>.`,
               html`Open <a href="https://myaccount.google.com/apppasswords">myaccount.google.com/apppasswords</a>, type the name <b>DericBI CRM</b> and press Create.`,
-              'Copy the 16-letter password Google shows you and paste it in Password below (spaces don\'t matter). Your normal Gmail password will not work.',
-              'Put your full Gmail address in Username and in Send from, then press Send test email.'],
-              'If the app-passwords page says it is not available, 2-Step Verification is off, or your Google Workspace admin has blocked it. Outlook and Yahoo also need an app password; Zoho needs one when two-factor is on.')}
-            <div class="grid2">${field(s, 'smtp_host', 'Mail server', { placeholder: 'smtp.gmail.com' })}${field(s, 'smtp_port', 'Port', { type: 'number', min: 1 })}
-              ${select(s, 'smtp_security', 'Connection', [['starttls', 'STARTTLS (port 587)'], ['ssl', 'SSL (port 465)'], ['none', 'None (only for testing)']])}
-              ${field(s, 'from_email', 'Send from', { placeholder: 'you@yourdomain.com' })}
-              ${field(s, 'smtp_user', 'Username', { hint: 'Usually your full email address.' })}${field(s, 'smtp_pass', 'Password', { secret: true, hint: 'For Gmail use an app password, not your normal one.' })}</div>
-            ${field(s, 'reply_to', 'Reply-to address (optional)')}
+              'Copy the 16-letter password Google shows you and paste it below. Spaces don\'t matter. Your normal Gmail password never works here.',
+              'Press Connect Gmail. It sets up sending and reading replies, then tests both.'],
+              'If the app-passwords page says it is not available, 2-Step Verification is off, or your Google Workspace admin has blocked it. Also make sure IMAP is on: Gmail > Settings > See all settings > Forwarding and POP/IMAP > Enable IMAP.')}
+            <div class="grid2"><label class="field">Gmail address<input type="email" id="gm-addr" value="${/@(gmail|googlemail)\./i.test(s.from_email || '') ? s.from_email : ''}" placeholder="you@gmail.com"></label>
+              <label class="field">App Password<input type="password" id="gm-pass" placeholder="${s.smtp_pass_set ? 'Saved. Type to replace' : 'abcd efgh ijkl mnop'}" autocomplete="off"></label></div>
+            <div class="row"><button type="button" class="btn primary" id="gm-connect">Connect Gmail</button></div>
+            <div id="mail-result"></div>
             <div class="row"><input type="email" id="t-email" placeholder="Send a test email to…" style="max-width:280px" value=""><button type="button" class="btn" id="test-email">Send test email</button></div>
+            <details><summary class="small muted" style="cursor:pointer">Other email provider, or change the servers by hand</summary><div class="stack" style="gap:14px;margin-top:12px">
+              <label class="field">Email provider (fills in the server, port and connection for sending and reading replies)
+                <select id="mail-preset"><option value="">Choose your provider…</option><option value="gmail">Gmail / Google Workspace</option><option value="outlook">Outlook / Microsoft 365</option><option value="zoho">Zoho Mail</option><option value="yahoo">Yahoo</option></select></label>
+              <div class="grid2">${field(s, 'smtp_host', 'Mail server', { placeholder: 'smtp.gmail.com' })}${field(s, 'smtp_port', 'Port', { type: 'number', min: 1 })}
+                ${select(s, 'smtp_security', 'Connection', [['starttls', 'STARTTLS (port 587)'], ['ssl', 'SSL (port 465)'], ['none', 'None (only for testing)']])}
+                ${field(s, 'from_email', 'Send from', { placeholder: 'you@yourdomain.com' })}
+                ${field(s, 'smtp_user', 'Username', { hint: 'Your full email address. Left blank, Send from is used.' })}${field(s, 'smtp_pass', 'Password', { secret: true, hint: 'For Gmail use an app password, not your normal one.' })}</div>
+              ${field(s, 'reply_to', 'Reply-to address (optional)')}
+              <div class="grid2">${field(s, 'imap_host', 'Reply inbox server', { placeholder: 'imap.gmail.com' })}${field(s, 'imap_port', 'Port', { type: 'number', min: 1 })}
+                ${select(s, 'imap_security', 'Connection', [['ssl', 'SSL (port 993)'], ['starttls', 'STARTTLS (port 143)'], ['none', 'None (only for testing)']])}
+                ${field(s, 'imap_poll_minutes', 'Check every (minutes)', { type: 'number', min: 1 })}
+                ${field(s, 'imap_user', 'Inbox username', { hint: 'Left blank, the sending login is used.' })}${field(s, 'imap_pass', 'Inbox password', { secret: true, hint: 'Left blank, the sending password is used.' })}</div>
+              <div><button type="button" class="btn" id="test-imap">Test reading replies</button></div>
+            </div></details>
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Reading replies</h2><button type="button" class="btn small right" id="gmail-imap">Fill in Gmail settings</button></div>
+        <section class="panel"><div class="panel-head"><h2>Text messages (your Android phone)</h2><span class="chip right ${st.sms_ready ? 'ok' : ''}">${st.sms_ready ? 'Phone set up' : 'Not connected'}</span></div>
           <div class="panel-body stack" style="gap:14px">
-            <p class="muted small">Connect the inbox your leads reply to so their answers are matched, graded and bounces are caught. Only mail that arrives after you connect is tracked.</p>
-            <div><button type="button" class="btn small" id="copy-mail-login">Use the same address and password as sending</button></div>
-            <div class="grid2">${field(s, 'imap_host', 'Inbox server', { placeholder: 'imap.gmail.com' })}${field(s, 'imap_port', 'Port', { type: 'number', min: 1 })}
-              ${select(s, 'imap_security', 'Connection', [['ssl', 'SSL (port 993)'], ['starttls', 'STARTTLS (port 143)'], ['none', 'None (only for testing)']])}
-              ${field(s, 'imap_poll_minutes', 'Check every (minutes)', { type: 'number', min: 1 })}
-              ${field(s, 'imap_user', 'Username')}${field(s, 'imap_pass', 'Password', { secret: true })}</div>
-            <div><button type="button" class="btn" id="test-imap">Test connection</button></div>
+            <p class="muted small">Texts are sent by your own phone and SIM, over your home or office Wi-Fi (or the phone's hotspot). No sign-up and no per-text fee from this app; your normal SMS bundle or airtime applies.</p>
+            ${guide('How do I connect my phone? (step by step)', [
+              html`On the phone, install the free, open-source app <b>SMS Gateway for Android</b> (search that name on Google Play, or get it from <a href="https://github.com/capcom6/android-sms-gateway/releases">github.com/capcom6/android-sms-gateway</a>) and allow it to send SMS.`,
+              'Open the app and switch on Local server, then start it. It shows the phone\'s address (like 192.168.43.1:8080), a username and a password.',
+              'Put the phone and this computer on the same network: the same Wi-Fi or router, or connect this computer to the phone\'s hotspot.',
+              'Type the address, username and password below, press Save settings, then Check phone, then send a test text to your own number.'],
+              'If texts stop working later, the phone\'s address has probably changed after it reconnected: open the app, read the address again and update it here. Android only lets an app send about 30 texts in 30 minutes, so the app waits at least 30 seconds between texts.')}
+            <div class="grid2">${field(s, 'sms_gateway_url', 'Phone address', { placeholder: '192.168.43.1:8080', hint: 'Exactly as the app shows it.' })}${field(s, 'sms_sim', 'SIM to use (optional)', { type: 'number', min: 0, hint: '0 = the phone\'s default. 1 or 2 picks a SIM on a dual-SIM phone.' })}
+              ${field(s, 'sms_gateway_user', 'Username')}${field(s, 'sms_gateway_pass', 'Password', { secret: true })}</div>
+            <div class="row"><button type="button" class="btn" id="check-phone">Check phone</button><input type="text" id="t-sms" placeholder="Your number, 07…" style="max-width:200px"><button type="button" class="btn" id="test-sms">Send test text</button></div>
+            <div id="sms-result"></div>
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Text messages (Africa's Talking)</h2><button type="button" class="btn small right" id="at-sandbox">Fill in the free test (sandbox) settings</button></div>
+        <section class="panel"><div class="panel-head"><h2>WhatsApp</h2><span class="chip right ${st.whatsapp_linked ? 'ok' : ''}" id="wa-chip">${st.whatsapp_linked ? 'Connected' : 'Not connected'}</span></div>
           <div class="panel-body stack" style="gap:14px">
-            ${guide('Where do I get the SMS username and API key? (step by step)', [
-              html`Make a free account at <a href="https://account.africastalking.com/auth/register">account.africastalking.com</a>.`,
-              'To try it for free: press the button above (username becomes sandbox), open the Sandbox app, go to Settings > API Key, generate a key and paste it below. Sandbox texts are not delivered to real phones; you see them in the simulator.',
-              'To text real people: create your own app (its name is your Username), top up your balance with M-Pesa under Billing, generate that app\'s API key, and paste both here. Change the Username from sandbox to your app name.',
-              'Optional: ask Africa\'s Talking to approve a Sender ID (your business name). Until then leave it blank.'],
-              'Safaricom SMS to Kenyan numbers costs a few shillings per text. The test-text button below tells you straight away if the username or key is wrong.')}
-            <div class="grid2">${field(s, 'at_username', 'Username', { hint: 'Use “sandbox” to try it without sending real texts.' })}${field(s, 'at_api_key', 'API key', { secret: true })}
-              ${field(s, 'at_sender_id', 'Sender ID (optional)', { hint: 'Needs approval from Africa\'s Talking. Leave blank to use their default.' })}</div>
-            <details><summary class="small muted" style="cursor:pointer">Advanced</summary><div style="margin-top:10px">${field(s, 'at_base_url', 'API address')}</div></details>
-            <div class="row"><input type="text" id="t-sms" placeholder="Send a test text to 07…" style="max-width:240px"><button type="button" class="btn" id="test-sms">Send test text</button></div>
+            <p class="muted small">Connect once by scanning a code with your phone (WhatsApp &gt; Linked devices), the same as linking WhatsApp Web. After that, campaigns send by themselves, one at a time, and every message is recorded automatically once WhatsApp shows it as sent. Until it is connected you press send yourself for each lead.</p>
+            <div class="notice" style="margin:0"><b>Protect your number.</b> WhatsApp can ban a number that sends many messages to people who never chatted with it. Use a number you can afford to lose (not the one your customers already know), keep the daily limit low, and keep messages relevant.</div>
+            <div class="row"><button type="button" class="btn primary" id="wa-link">${st.whatsapp_linked ? 'Connect again' : 'Connect WhatsApp'}</button>${st.whatsapp_linked ? html`<button type="button" class="btn" id="wa-unlink">Disconnect</button>` : ''}</div>
+            <div id="wa-result" class="small muted"></div>
+            <div class="grid2">${field(s, 'whatsapp_daily_cap', 'WhatsApp messages per day', { type: 'number', min: 0, hint: 'Start with 20 to 40.' })}${field(s, 'whatsapp_delay_sec', 'Seconds between messages', { type: 'number', min: 20, hint: 'At least 20. A random extra wait is added.' })}</div>
           </div></section>
 
         <section class="panel"><div class="panel-head"><h2>Limits and sending hours</h2></div>
           <div class="panel-body stack" style="gap:14px">
             <div class="grid2">${field(s, 'email_daily_cap', 'Emails per day', { type: 'number', min: 0, hint: 'Gmail allows about 500. Start low while your address builds a reputation.' })}${field(s, 'sms_daily_cap', 'Texts per day', { type: 'number', min: 0 })}
-              ${field(s, 'email_delay_sec', 'Seconds between emails', { type: 'number', min: 0, hint: 'A little random variation is added.' })}${field(s, 'sms_delay_sec', 'Seconds between texts', { type: 'number', min: 0 })}</div>
+              ${field(s, 'email_delay_sec', 'Seconds between emails', { type: 'number', min: 0, hint: 'A little random variation is added.' })}${field(s, 'sms_delay_sec', 'Seconds between texts', { type: 'number', min: 30, hint: 'At least 30: Android blocks apps that send faster.' })}</div>
             ${check(s, 'send_window_enabled', 'Only send during these hours')}
             <div class="grid2">${field(s, 'send_window_start', 'From', { type: 'time' })}${field(s, 'send_window_end', 'Until', { type: 'time' })}</div>
-            ${field(s, 'skip_recent_days', 'Don\'t message anyone contacted in the last (days)', { type: 'number', min: 0 })}
+            ${field(s, 'followup_wait_days', 'Days before a follow-up can be sent', { type: 'number', min: 0, hint: 'A lead gets one message at a time. After this many days with no reply it can be followed up.' })}
           </div></section>
 
         <section class="panel"><div class="panel-head"><h2>Opting out</h2></div>
           <div class="panel-body stack" style="gap:14px">
             ${check(s, 'append_optout', 'Add an opt-out line to every message')}
             <label class="field">Line added to emails<textarea name="optout_footer_email" rows="2">${s.optout_footer_email}</textarea></label>
-            ${field(s, 'optout_suffix_sms', 'Text added to SMS')}
+            ${field(s, 'optout_suffix_sms', 'Text added to SMS', { hint: 'Keep it short: a text must fit in 160 characters.' })}
             <p class="muted small">Anyone who replies STOP, unsubscribe or similar (in English or Swahili) is marked do-not-contact and never messaged again. Keeping an opt-out line in place is good practice and helps with Kenya's Data Protection Act.</p>
           </div></section>
 
@@ -133,12 +152,6 @@
           <div class="panel-body stack" style="gap:12px">
             <div class="small muted">Everything is stored on this computer in <code>${health.data_dir}</code>. Passwords are stored there too, so keep backups private.</div>
             <div><button type="button" class="btn" id="backup">Download a backup</button></div>
-            <details><summary class="small muted" style="cursor:pointer">Advanced: incoming SMS webhook</summary><div class="stack" style="gap:10px;margin-top:10px">
-              <p class="muted small">Only useful if you expose this app to the internet (for example with a tunnel) and point Africa's Talking's incoming-message callback at it. Most people just use “Log a reply”.</p>
-              ${field(s, 'webhook_token', 'Secret token', { hint: 'Made for you automatically. Press the button to make a new one.' })}
-              <div><button type="button" class="btn small" id="new-token">Make a new secret token</button></div>
-              <div class="small muted">Callback address: <code>http://127.0.0.1:8765/api/webhooks/sms?token=YOUR_TOKEN</code> (replace the host with your public address)</div>
-            </div></details>
           </div></section>
 
         <div class="row"><button class="btn primary" type="submit">Save settings</button><span class="muted small" id="saved"></span></div>
@@ -172,26 +185,45 @@
       });
       el.addEventListener('click', async (e) => {
         const id = e.target.id; if (!id) return;
-        const set = (name, v) => { $('#sform').elements[name].value = v; };
-        try {
-          if (id === 'gmail-smtp') { set('smtp_host', 'smtp.gmail.com'); set('smtp_port', 587); set('smtp_security', 'starttls'); toast('Add your Gmail address and an app password, then save.'); }
-          else if (id === 'at-sandbox') { set('at_username', 'sandbox'); set('at_base_url', 'https://api.sandbox.africastalking.com'); toast('Now paste your sandbox API key (Sandbox app > Settings > API Key).'); }
-          else if (id === 'copy-mail-login') {
-            const f = $('#sform').elements; if (f.smtp_user.value) f.imap_user.value = f.smtp_user.value; else if (f.from_email.value) f.imap_user.value = f.from_email.value;
-            if (f.smtp_pass.value) f.imap_pass.value = f.smtp_pass.value;
-            toast(f.smtp_pass.value ? 'Copied. Press Save settings.' : 'Address copied. Type the same app password in the Password box.');
-          } else if (id === 'new-token') { const a = new Uint8Array(16); crypto.getRandomValues(a); set('webhook_token', [...a].map((b) => b.toString(16).padStart(2, '0')).join('')); toast('New token made. Save settings to keep it.'); }
-          else if (id === 'gmail-imap') { set('imap_host', 'imap.gmail.com'); set('imap_port', 993); set('imap_security', 'ssl'); }
-          else if (id === 'test-email') {
+                try {
+          if (id === 'gm-connect') {
+            const address = $('#gm-addr').value.trim(), pw = $('#gm-pass').value;
+            if (!address || !pw) return toast('Enter your Gmail address and the App Password', true);
+            e.target.disabled = true;
+            render($('#mail-result'), html`<p class="muted small">Connecting to Gmail. This can take up to half a minute…</p>`);
+            const r = await api('/settings/connect-gmail', { method: 'POST', body: { address, app_password: pw }, timeout: 120000 });
+            [s, st] = await Promise.all([api('/settings'), api('/status')]); draw(); App.refreshStatus && App.refreshStatus();
+            showResult('mail-result', { ok: r.ok, message: r.message, steps: [...r.sending.steps, ...r.reading.steps.filter((x) => x.label !== 'Settings').map((x) => ({ ...x, label: 'Replies: ' + x.label }))] });
+          } else if (id === 'test-email') {
             const to = $('#t-email').value.trim(); if (!to) return toast('Enter an address to send the test to', true);
-            e.target.disabled = true; await save(); const r = await api('/settings/test-email', { method: 'POST', body: { to } }); toast(r.message);
+            e.target.disabled = true; await save(); render($('#mail-result'), html`<p class="muted small">Testing…</p>`);
+            showResult('mail-result', await api('/settings/test-email', { method: 'POST', body: { to }, timeout: 120000 }));
+          } else if (id === 'test-imap') {
+            e.target.disabled = true; await save(); render($('#mail-result'), html`<p class="muted small">Testing…</p>`);
+            showResult('mail-result', await api('/settings/test-imap', { method: 'POST', timeout: 120000 }));
+          } else if (id === 'check-phone') {
+            e.target.disabled = true; await save(); render($('#sms-result'), html`<p class="muted small">Looking for the phone…</p>`);
+            showResult('sms-result', await api('/settings/check-phone', { method: 'POST', timeout: 60000 }));
           } else if (id === 'test-sms') {
-            const to = $('#t-sms').value.trim(); if (!to) return toast('Enter a mobile number to send the test to', true);
-            e.target.disabled = true; await save(); const r = await api('/settings/test-sms', { method: 'POST', body: { to } }); toast(r.message);
+            const to = $('#t-sms').value.trim(); if (!to) return toast('Enter your own mobile number to send the test to', true);
+            e.target.disabled = true; await save(); render($('#sms-result'), html`<p class="muted small">Sending a test text through the phone…</p>`);
+            showResult('sms-result', await api('/settings/test-sms', { method: 'POST', body: { to }, timeout: 120000 }));
+          } else if (id === 'wa-link') {
+            e.target.disabled = true; await save(); await api('/whatsapp/link', { method: 'POST' });
+            toast('A WhatsApp window is opening. Scan the code with your phone.', false, 7000);
+            for (let i = 0; i < 180; i++) {
+              await new Promise((r) => setTimeout(r, 2000));
+              if (!$('#wa-result')) return;   // left this page
+              const w = await api('/whatsapp/status');
+              render($('#wa-result'), html`${w.link_log.map((l) => html`<div>${l}</div>`)}`);
+              if (w.linked && !w.linking) { st = await api('/status'); draw(); toast('WhatsApp is connected'); return; }
+              if (!w.linking) { toast('WhatsApp was not connected. Press Connect WhatsApp to try again.', true, 7000); return; }
+            }
+          } else if (id === 'wa-unlink') {
+            if (!(await App.confirm('Disconnect WhatsApp? WhatsApp campaigns will wait until you connect again.', 'Disconnect'))) return;
+            await api('/whatsapp/unlink', { method: 'POST' }); st = await api('/status'); draw(); toast('WhatsApp disconnected');
           } else if (id === 'test-ai') {
             e.target.disabled = true; await save(); const r = await api('/settings/test-ai', { method: 'POST', timeout: 60000 }); toast(r.message, !r.ok, 8000);
-          } else if (id === 'test-imap') {
-            e.target.disabled = true; await save(); const r = await api('/settings/test-imap', { method: 'POST' }); toast(r.message);
           } else if (id === 'backup') App.download('/api/backup');
           else if (id === 'logo-reset') { await api('/branding/logo', { method: 'DELETE' }); await refreshLogo(); toast('Default logo restored'); }
           else if (id === 'check-update') {

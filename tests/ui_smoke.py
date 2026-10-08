@@ -55,7 +55,7 @@ try:
     call("POST", f"/leads/{ids[3]}/reply", {"text": "STOP", "channel": "sms"})
     call("POST", f"/leads/{ids[4]}/reply", {"text": "who is this?", "channel": "sms"})
     call("PATCH", f"/leads/{ids[5]}", {"status": "meeting", "next_followup": "2020-01-01"})
-    call("PUT", "/settings", {"at_username": "sandbox", "at_api_key": "k", "at_base_url": "http://127.0.0.1:9", "send_window_enabled": False})
+    call("PUT", "/settings", {"sms_gateway_url": "127.0.0.1:9", "sms_gateway_user": "u", "sms_gateway_pass": "p", "send_window_enabled": False})
 
     # A stand-in AI server so the Find screen's planner can be driven end to end.
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -147,13 +147,22 @@ try:
         # ---- outreach preview
         page.click('#nav a[data-view="outreach"]')
         page.wait_for_selector("#cform")
-        page.fill("#cform textarea[name=body]", "Hi {name}, DericBI helps pharmacies in {town} track stock. Free demo?")
+        page.click('#cform label:has(input[name=channel][value=sms])')
         page.click('#cform label.opt:has(input[name=sectors][value="Pharmacy"])')
         page.wait_for_selector("#preview .sample")
         txt = page.inner_text("#preview")
-        assert "will get this" in txt and "Reply STOP" in txt, txt
+        assert "will get a message" in txt and "of 160 characters" in txt and "Meru" not in txt.split("Example")[0], txt   # ready-made text, one SMS
         assert not page.is_disabled("#go")
+        picked = page.locator("#pick input[type=checkbox]:checked").count()
+        assert picked > 3 and f"{picked} of" in page.inner_text("#pickhead")
         shot("5-outreach")
+        page.click("#pick-none")                                    # nobody ticked: cannot start
+        page.wait_for_selector("#preview .notice")
+        assert page.is_disabled("#go")
+        page.locator("#pick input[type=checkbox]").first.check()    # tick one lead by hand
+        page.wait_for_selector("#preview .sample")
+        assert "1</strong> lead " in page.inner_html("#preview") and not page.is_disabled("#go")
+        page.click('#cform label.opt:has(input[name=mode][value=own])')
         page.fill("#cform textarea[name=body]", "Hi {nmae}")
         page.wait_for_selector("#preview .notice")
         assert "nmae" in page.inner_text("#preview")
@@ -220,7 +229,7 @@ try:
         page.locator('[data-ch="whatsapp"]').first.click()
         page.wait_for_selector("#send-form")
         page.wait_for_function("document.querySelector('#send-form textarea').value.length > 0")   # the AI wrote it
-        assert "Open WhatsApp" in page.inner_text("#send-form") and "Free" in page.inner_text("#send-form")
+        assert "Open WhatsApp" in page.inner_text("#send-form") and "press send" in page.inner_text("#send-form")
         page.keyboard.press("Escape")
         page.wait_for_selector(".drawer", state="detached")
         # deal value and the offer are saved from the lead

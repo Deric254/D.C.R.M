@@ -26,7 +26,10 @@ def create_job(conn, kind: str, params: dict) -> int:
 
 
 def log(job_id: int, msg: str):
-    print(f"[job {job_id}] {msg}", flush=True)
+    try:
+        print(f"[job {job_id}] {msg}", flush=True)
+    except (UnicodeError, OSError, ValueError):
+        pass   # a console that can't show a character (or has closed) must never stop the job; the line is kept below
 
     def write():
         with db.db() as conn:
@@ -68,11 +71,15 @@ def get_job(conn, job_id: int):
 
 
 def active_job(conn, kind=None):
+    """The running job of this kind, or (no kind) of the lead-finding kinds. The WhatsApp worker can run for hours,
+    so it never blocks finding leads."""
     sql = "SELECT * FROM jobs WHERE status IN ('queued','running')"
     args = []
     if kind:
         sql += " AND kind=?"
         args.append(kind)
+    else:
+        sql += " AND kind NOT LIKE 'whatsapp%'"
     sql += " ORDER BY id DESC LIMIT 1"
     r = conn.execute(sql, args).fetchone()
     return dict(r) if r else None

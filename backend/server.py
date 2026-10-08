@@ -7,7 +7,6 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
-from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -47,6 +46,28 @@ class ReplyIn(BaseModel):
 
 class WhatsAppIn(BaseModel):
     body: str
+
+
+class WaActIn(BaseModel):
+    action: str
+    body: Optional[str] = None
+
+
+class GmailIn(BaseModel):
+    address: str
+    app_password: str
+
+
+class FollowupIn(BaseModel):
+    days: Optional[int] = None
+    channel: Optional[str] = None
+    ai: bool = False
+
+
+class AudienceIn(BaseModel):
+    channel: str
+    filters: dict = {}
+    limit: int = 1000
 
 
 class SendIn(BaseModel):
@@ -90,7 +111,8 @@ class CampaignIn(BaseModel):
     filters: dict = {}
     launch: bool = False
     ai: bool = False   # body is a brief; the AI writes each lead's own message as it is sent
-    followups: list = []   # days to wait before each AI-written follow-up to people who have not replied, e.g. [3, 4]
+    followups: list = []   # days to wait before each follow-up to people who have not replied, e.g. [3, 4]
+    style: str = ""        # "ready": a ready-made message written for each kind of business
 
 
 class GoalIn(BaseModel):
@@ -201,9 +223,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             "campaigns_running": running,
             "campaigns_paused": paused,
             "inbox_unhandled": unreviewed,
-            "email_ready": bool(s["smtp_host"] and s["from_email"]),
-            "sms_ready": bool(s["at_username"] and s["at_api_key"]),
-            "replies_ready": bool(s["imap_host"] and s["imap_user"]),
+            "email_ready": C.channel_ready("email", s),
+            "sms_ready": C.channel_ready("sms", s),
+            "whatsapp_linked": bool(db.get_internal("whatsapp_linked")),
+            "replies_ready": bool(s["imap_host"] and messaging.inbox_login(s)[0]),
         }
 
     @app.get("/api/dashboard")
@@ -329,6 +352,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     def get_lead(lead_id: int):
         with db.db() as conn:
             d = L.lead_detail(conn, lead_id)
+            if d:
+                d["outreach"] = C.outreach_state(conn, lead_id)   # whether they may be messaged by hand right now
         if not d:
             raise KeyError("Lead not found")
         return d
@@ -350,7 +375,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
 
     @app.post("/api/leads/{lead_id}/whatsapp")
     def whatsapp_one(lead_id: int, body: WhatsAppIn):
-        return C.log_whatsapp(lead_id, body.body)
+        return C.whatsapp_one(lead_id, body.body)
 
     @app.post("/api/leads/{lead_id}/send")
     def send_one(lead_id: int, body: SendIn):
@@ -421,7 +446,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     @app.post("/api/campaigns/preview")
     def preview_campaign(body: CampaignIn):
         with db.db() as conn:
-            return C.preview(conn, body.channel, body.subject, body.body, body.filters, body.ai)
+            return C.preview(conn, body.channel, body.subject, body.body, body.filters, body.ai, body.style)
 
     @app.post("/api/campaigns/ai-samples")
     def campaign_ai_samples(body: CampaignIn):
@@ -438,8 +463,20 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     def create_campaign(body: CampaignIn):
         with db.db() as conn:
             cid = C.create_campaign(conn, body.name, body.channel, body.subject, body.body, body.filters, body.launch, body.ai,
-                                  body.followups)
+                                  body.followups, body.style)
             return C.campaign_stats(conn, cid)
+
+    @app.get("/api/campaigns/reach")
+    def campaign_reach():
+        with db.db() as conn:
+            return C.reach_counts(conn)
+
+    @app.post("/api/campaigns/audience")
+    def campaign_audience(body: AudienceIn):
+        if body.channel not in C.CHANNELS:
+            raise ValueError("Channel must be email, text or WhatsApp")
+        with db.db() as conn:
+            return C.audience_list(conn, body.channel, body.filters, min(max(body.limit, 1), 1000))
 
     @app.get("/api/campaigns/{cid}")
     def get_campaign(cid: int):
@@ -453,6 +490,20 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 "ORDER BY m.id LIMIT 1000", (cid,))]
         c["messages"] = msgs
         return c
+
+    @app.get("/api/campaigns/{cid}/whatsapp/next")
+    def whatsapp_next(cid: int):
+        return {"item": C.wa_next(cid)}
+
+    @app.post("/api/messages/{mid}/whatsapp")
+    def whatsapp_act(mid: int, body: WaActIn):
+        return C.wa_act(mid, body.action, body.body)
+
+    @app.post("/api/campaigns/{cid}/followup")
+    def campaign_followup(cid: int, body: FollowupIn):
+        with db.db() as conn:
+            C.create_followup(conn, cid, body.days, body.channel, body.ai)
+            return C.campaign_stats(conn, cid)
 
     @app.post("/api/campaigns/{cid}/{action}")
     def campaign_action(cid: int, action: str):
@@ -528,6 +579,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             default = db.SETTING_DEFAULTS[k]
             if k in db.SECRET_KEYS and v in ("", None):
                 continue  # blank = leave unchanged
+            if k in ("smtp_pass", "imap_pass", "sms_gateway_pass"):
+                clean[k] = messaging.clean_secret(v)   # app passwords are copied with spaces; none belong in them
+                continue
             if isinstance(default, bool):
                 v = bool(v)
             elif isinstance(default, int):
@@ -538,7 +592,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 if v < 0:
                     raise ValueError(f"{k} can't be negative")
             else:
-                v = str(v or "").strip()
+                v = messaging.clean_text(v)
+                if k == "optout_suffix_sms" and v:
+                    v = " " + v   # it is glued to the end of the text, so it needs its space (stripping removed it)
             clean[k] = v
         for k in ("send_window_start", "send_window_end"):
             if k in clean:
@@ -546,6 +602,17 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                     datetime.strptime(clean[k], "%H:%M")
                 except ValueError:
                     raise ValueError("Sending hours must look like 08:00")
+        if "sms_delay_sec" in clean and clean["sms_delay_sec"] < 30:
+            raise ValueError("Wait at least 30 seconds between texts. Android stops an app that sends faster than about "
+                             "30 texts in 30 minutes.")
+        if "whatsapp_delay_sec" in clean and clean["whatsapp_delay_sec"] < 20:
+            raise ValueError("Wait at least 20 seconds between WhatsApp messages. Faster than that gets numbers banned.")
+        if "sms_sim" in clean and clean["sms_sim"] > 3:
+            raise ValueError("SIM number must be 0 (phone's default), 1, 2 or 3")
+        if "followup_wait_days" in clean and not 0 <= clean["followup_wait_days"] <= 30:
+            raise ValueError("Follow-up wait must be between 0 and 30 days")
+        if clean.get("contact_website") and not clean["contact_website"].startswith(("http://", "https://")):
+            raise ValueError("Your website address must start with https://")
         if clean.get("smtp_security") not in (None, "starttls", "ssl", "none"):
             raise ValueError("Email security must be starttls, ssl or none")
         if clean.get("imap_security") not in (None, "ssl", "starttls", "none"):
@@ -599,7 +666,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             lead = L.lead_detail(conn, lead_id)
         if not lead:
             raise KeyError("Lead not found")
-        return ai.draft_for_lead(db.get_settings(), lead, body.channel, body.notes)
+        s = db.get_settings()
+        room = messaging.SMS_LIMIT - len(messaging.final_body("sms", "", s)) if body.channel == "sms" else 0
+        return ai.draft_for_lead(s, lead, body.channel, body.notes, limit=room)
 
     @app.post("/api/leads/{lead_id}/ai-summary")
     def ai_summary(lead_id: int):
@@ -620,9 +689,41 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     @app.post("/api/settings/test-email")
     def test_email(body: TestSend):
         s = db.get_settings()
-        messaging.send_email(body.to.strip(), "DericBI CRM test email",
-                             "If you're reading this, your email settings work.\n\nSent from DericBI CRM.", s)
-        return {"ok": True, "message": f"Test email sent to {body.to.strip()}"}
+        to = body.to.strip()
+        res = messaging.diagnose_email(s)
+        if res["ok"]:
+            try:
+                messaging.send_email(to, "DericBI CRM test email",
+                                     "If you're reading this, your email settings work.\n\nSent from DericBI CRM.", s)
+                res["steps"].append({"label": "Send", "ok": True, "detail": f"sent to {to}"})
+                res["message"] = f"Test email sent to {to}. If you don't see it, check Spam."
+            except SendError as e:
+                res["steps"].append({"label": "Send", "ok": False, "detail": str(e)})
+                res.update(ok=False, message=f"Send: {e}")
+        return res
+
+    @app.post("/api/settings/connect-gmail")
+    def connect_gmail(body: GmailIn):
+        """Everything Gmail needs from two boxes: sending and reading replies are both set up and then both tested."""
+        address = messaging.clean_text(body.address).lower()
+        password = messaging.clean_secret(body.app_password)
+        if "@" not in address or " " in address:
+            raise ValueError("Enter your full Gmail address, like you@gmail.com")
+        if len(password) < 8:
+            raise ValueError("Paste the app password Google gave you (16 letters). Your normal password won't work.")
+        db.save_settings({"smtp_host": "smtp.gmail.com", "smtp_port": 587, "smtp_security": "starttls", "smtp_user": address,
+                          "from_email": address, "smtp_pass": password, "imap_host": "imap.gmail.com", "imap_port": 993,
+                          "imap_security": "ssl", "imap_user": address, "imap_pass": password})
+        s = db.get_settings()
+        sending, reading = messaging.diagnose_email(s), messaging.test_imap(s)
+        msg = ("Gmail is connected: sending and reply tracking both work." if sending["ok"] and reading["ok"]
+               else ("Sending works, but reading replies didn't: " + reading["message"]) if sending["ok"]
+               else "Gmail didn't accept it: " + sending["message"])
+        return {"ok": sending["ok"] and reading["ok"], "message": msg, "sending": sending, "reading": reading}
+
+    @app.post("/api/settings/check-phone")
+    def check_phone():
+        return messaging.diagnose_sms(db.get_settings())
 
     @app.post("/api/settings/test-sms")
     def test_sms(body: TestSend):
@@ -630,8 +731,49 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         norm, mob = normalize_phone(body.to)
         if not norm or not mob:
             raise ValueError("Enter a Kenyan mobile number like 0712 345 678")
-        messaging.send_sms(norm, "DericBI CRM test: your SMS settings work.", db.get_settings())
-        return {"ok": True, "message": f"Test SMS sent to {norm}"}
+        s = db.get_settings()
+        res = messaging.diagnose_sms(s)
+        if res["ok"]:
+            try:
+                messaging.send_sms(norm, "DericBI CRM test: your phone is connected and can send texts.", s)
+                res["steps"].append({"label": "Send", "ok": True, "detail": f"the phone sent a text to {norm}"})
+                res["message"] = f"Test text sent to {norm}."
+            except SendError as e:
+                res["steps"].append({"label": "Send", "ok": False, "detail": str(e)})
+                res.update(ok=False, message=f"Send: {e}")
+        return res
+
+    # ---------------------------------------------------------------- WhatsApp
+    @app.get("/api/whatsapp/status")
+    def whatsapp_status():
+        with db.db() as conn:
+            link, worker = jobs.active_job(conn, "whatsapp_link"), jobs.active_job(conn, "whatsapp")
+            last = conn.execute("SELECT id FROM jobs WHERE kind='whatsapp_link' ORDER BY id DESC LIMIT 1").fetchone()
+            logs = ([r["msg"] for r in conn.execute("SELECT msg FROM job_logs WHERE job_id=? ORDER BY id DESC LIMIT 4",
+                                                    (last["id"],))][::-1] if last else [])
+        return {"linked": bool(db.get_internal("whatsapp_linked")), "linked_at": db.get_internal("whatsapp_linked_at"),
+                "linking": bool(link), "sending": bool(worker), "link_log": logs}
+
+    @app.post("/api/whatsapp/link")
+    def whatsapp_link():
+        with db.db() as conn:
+            if jobs.active_job(conn, "whatsapp") or jobs.active_job(conn, "whatsapp_link"):
+                raise ValueError("WhatsApp is busy right now. Wait a moment, or pause your WhatsApp campaigns first.")
+            jid = jobs.create_job(conn, "whatsapp_link", {})
+        jobs.spawn(jid, "whatsapp_link")
+        return {"job": jid}
+
+    @app.post("/api/whatsapp/unlink")
+    def whatsapp_unlink():
+        import shutil
+        import whatsapp
+        with db.db() as conn:
+            worker = jobs.active_job(conn, "whatsapp")
+        if worker:
+            jobs.request_stop(worker["id"])
+        whatsapp.set_linked(False)
+        shutil.rmtree(whatsapp.profile_dir(), ignore_errors=True)   # forget the login completely
+        return {"linked": False}
 
     @app.post("/api/settings/test-imap")
     def test_imap():
@@ -663,16 +805,6 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         name = f"dericbi-crm-backup-{datetime.now():%Y%m%d-%H%M}.sqlite3"
         return FileResponse(tmp, filename=name, media_type="application/octet-stream",
                             background=_Cleanup(tmp))
-
-    @app.post("/api/webhooks/sms")
-    async def sms_webhook(request: Request, token: str = ""):
-        s = db.get_settings()
-        if not s["webhook_token"] or token != s["webhook_token"]:
-            return JSONResponse({"detail": "Forbidden"}, status_code=403)
-        form = parse_qs((await request.body()).decode("utf-8", "replace"))
-        number = (form.get("from") or [""])[0]
-        text = (form.get("text") or [""])[0]
-        return messaging.handle_sms_inbound(number, text)
 
     # ---------------------------------------------------------------- front end
     static = config.static_dir()

@@ -181,7 +181,7 @@
       }
       if (s.job) pills.push(html`<a class="pill" href="#/find"><i class="dot on"></i>${s.job.kind === 'enrich' ? 'Finding emails' : 'Finding leads'}${s.job.progress ? ': ' + s.job.progress : ''}</a>`);
       if (App.state.update) pills.push(html`<a class="pill" href="#/settings"><i class="dot on"></i>Update ${App.state.update.version} ready</a>`);
-      if (!s.email_ready && !s.sms_ready) pills.push(html`<a class="pill" href="#/settings"><i class="dot warn"></i>Set up email or SMS</a>`);
+      if (!s.email_ready && !s.sms_ready && !s.whatsapp_linked) pills.push(html`<a class="pill" href="#/settings"><i class="dot warn"></i>Connect email, WhatsApp or your phone</a>`);
       render($('#pills'), html`${pills}`);
       const b = $('#badge-replies');
       b.textContent = s.inbox_unhandled; b.classList.toggle('hidden', !s.inbox_unhandled);

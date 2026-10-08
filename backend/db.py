@@ -5,7 +5,6 @@ WAL mode with a generous busy timeout. Leads are never hard-deleted (only
 archived) which is what guarantees a lead can never be re-imported as new.
 """
 import json
-import secrets
 import time
 import sqlite3
 from contextlib import contextmanager
@@ -153,32 +152,34 @@ SETTING_DEFAULTS = {
     # identity
     "sender_name": "Deric Marangu",
     "slogan": "",
+    # where every message tells people to find you (placeholders {website} {email} {whatsapp})
+    "contact_website": "https://dericbi.vercel.app", "contact_email": "dericmarangu@gmail.com",
+    "contact_whatsapp": "+254791360805",
     # outgoing email
     "smtp_host": "", "smtp_port": 587, "smtp_security": "starttls",  # starttls | ssl | none
     "smtp_user": "", "smtp_pass": "", "from_email": "", "reply_to": "",
     # incoming email (reply tracking)
     "imap_host": "", "imap_port": 993, "imap_security": "ssl",
     "imap_user": "", "imap_pass": "", "imap_poll_minutes": 5,
-    # SMS (Africa's Talking)
-    "at_username": "", "at_api_key": "", "at_sender_id": "",
-    "at_base_url": "https://api.africastalking.com",
+    # SMS through your own Android phone (the "SMS Gateway for Android" app in Local server mode)
+    "sms_gateway_url": "", "sms_gateway_user": "", "sms_gateway_pass": "", "sms_sim": 0,
+    # WhatsApp is sent from WhatsApp Web on this PC (linked once by scanning a code)
     # sending limits
-    "email_daily_cap": 80, "sms_daily_cap": 150,
-    "email_delay_sec": 25, "sms_delay_sec": 4,
+    "email_daily_cap": 80, "sms_daily_cap": 150, "whatsapp_daily_cap": 40,
+    "email_delay_sec": 25, "sms_delay_sec": 65, "whatsapp_delay_sec": 60,
     "send_window_enabled": True, "send_window_start": "08:00", "send_window_end": "18:00",
-    "skip_recent_days": 14,
+    # a lead who got a message is only messaged again as a follow-up, and only after this many days (or if they reply)
+    "followup_wait_days": 3,
     # opt-out wording
     "append_optout": True,
     "optout_footer_email": "If you'd rather not hear from us, reply STOP and we won't contact you again.",
-    "optout_suffix_sms": " Reply STOP to opt out.",
+    "optout_suffix_sms": " STOP to opt out",
     # AI writing help (free keys from Google Gemini, Groq, NVIDIA, OpenRouter, Mistral, or your own server)
     "ai_provider": "gemini", "ai_model": "", "ai_pitch": DEFAULT_PITCH, "ai_grade_replies": True,
     "ai_key_gemini": "", "ai_key_groq": "", "ai_key_nvidia": "", "ai_key_openrouter": "", "ai_key_mistral": "",
     "ai_custom_url": "", "ai_custom_model": "", "ai_key_custom": "",
-    # optional webhook for inbound SMS (needs the app reachable from the internet)
-    "webhook_token": "",
 }
-SECRET_KEYS = {"smtp_pass", "imap_pass", "at_api_key", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
+SECRET_KEYS = {"smtp_pass", "imap_pass", "sms_gateway_pass", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
                "ai_key_openrouter", "ai_key_mistral", "ai_key_custom"}
 
 
@@ -226,15 +227,15 @@ def init_db():
                 ("leads", "deal_value", "INTEGER NOT NULL DEFAULT 0"),
                 ("campaigns", "ai_personalize", "INTEGER NOT NULL DEFAULT 0"),
                 ("campaigns", "followup_of", "INTEGER"),
-                ("campaigns", "followup_days", "INTEGER NOT NULL DEFAULT 0")):
+                ("campaigns", "followup_days", "INTEGER NOT NULL DEFAULT 0"),
+                ("campaigns", "style", "TEXT NOT NULL DEFAULT ''"),          # 'ready' = ready-made message per kind of business
+                ("campaigns", "followup_step", "INTEGER NOT NULL DEFAULT 0")):
             if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         # Settings still on the old built-in defaults move to the current ones (anything the owner wrote is kept).
-        for key, old in (("sender_name", "DericBI"), ("ai_pitch", "")):
+        for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("sms_delay_sec", 4),
+                         ("optout_suffix_sms", " Reply STOP to opt out.")):
             conn.execute("DELETE FROM settings WHERE key=? AND value=?", (key, json.dumps(old)))
-        # A secret for the incoming-SMS callback is made once, so nobody has to invent one.
-        if not conn.execute("SELECT 1 FROM settings WHERE key='webhook_token'").fetchone():
-            conn.execute("INSERT INTO settings(key, value) VALUES('webhook_token', ?)", (json.dumps(secrets.token_hex(16)),))
         conn.commit()
     finally:
         conn.close()

@@ -29,8 +29,17 @@ def setup_logging():
 
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "worker":
-        import scraper
-        scraper.worker_main(sys.argv[2], int(sys.argv[3]))
+        for stream in (sys.stdout, sys.stderr):   # Windows consoles default to cp1252: business names are not all Western
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        if sys.argv[2].startswith("whatsapp"):
+            import whatsapp
+            whatsapp.worker_main(sys.argv[2], int(sys.argv[3]))
+        else:
+            import scraper
+            scraper.worker_main(sys.argv[2], int(sys.argv[3]))
         return
 
     ap = argparse.ArgumentParser(description="DericBI CRM backend")

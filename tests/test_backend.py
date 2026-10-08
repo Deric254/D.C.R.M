@@ -1,6 +1,7 @@
 """End-to-end backend tests. Run:  python tests/test_backend.py"""
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -28,7 +29,7 @@ import campaigns as C  # noqa: E402
 import jobs  # noqa: E402
 import scraper  # noqa: E402
 import enrich  # noqa: E402
-from util import normalize_phone, now  # noqa: E402
+from util import days_ago, normalize_phone, now  # noqa: E402
 
 RESULTS = []
 
@@ -46,8 +47,9 @@ def test(fn):
 
 # ----------------------------------------------------------------- mock servers
 SMTP_INBOX = []
-SMS_CALLS = []
-SMS_MODE = {"status": 101}
+PHONE_CALLS = []   # every text the fake phone was asked to send
+PHONE_POLLS = {}
+PHONE_MODE = {"mode": "ok"}   # ok | slow | failed | busy | legacy
 
 
 def start_smtp(auth=False):
@@ -81,27 +83,53 @@ def start_smtp(auth=False):
     return c
 
 
-def start_at():
+def start_phone():
+    """A stand-in for the SMS Gateway app running on an Android phone in Local server mode."""
+    import base64
+    good = "Basic " + base64.b64encode(b"phoneuser:phonepass").decode()
+
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
-        def do_POST(self):
-            n = int(self.headers.get("Content-Length", 0))
-            form = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode()).items()}
-            SMS_CALLS.append((dict(self.headers), form))
-            if self.headers.get("apiKey") != "atkey":
-                self.send_response(401)
-                self.end_headers()
-                return
-            code = SMS_MODE["status"]
-            status = {101: "Success", 403: "InvalidPhoneNumber", 405: "InsufficientBalance"}.get(code, "Failed")
-            body = json.dumps({"SMSMessageData": {"Message": "Sent to 1/1", "Recipients": [
-                {"statusCode": code, "number": form["to"], "status": status, "messageId": "ATPid_123"}]}}).encode()
-            self.send_response(201)
+        def _json(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/health":
+                return self._json(200, {"status": "pass"})
+            if self.headers.get("Authorization") != good:
+                return self._json(401, {"message": "Unauthorized"})
+            m = re.match(r"^/(messages?)/(\w+)$", self.path)
+            if not m:
+                return self._json(404, {})
+            PHONE_POLLS[m.group(2)] = PHONE_POLLS.get(m.group(2), 0) + 1
+            mode = PHONE_MODE["mode"]
+            if mode == "failed":
+                return self._json(200, {"id": m.group(2), "state": "Failed", "recipients": [{"state": "Failed", "error": "No airtime"}]})
+            if mode == "slow" and PHONE_POLLS[m.group(2)] < 2:
+                return self._json(200, {"id": m.group(2), "state": "Processed"})
+            return self._json(200, {"id": m.group(2), "state": "Sent"})
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if self.headers.get("Authorization") != good:
+                return self._json(401, {"message": "Unauthorized"})
+            mode = PHONE_MODE["mode"]
+            modern = self.path == "/messages"
+            if (modern and mode == "legacy") or (self.path == "/message" and mode != "legacy") or self.path not in ("/messages", "/message"):
+                return self._json(404, {})
+            if mode == "busy":
+                return self._json(503, {"message": "busy"})
+            text = req["textMessage"]["text"] if modern else req["message"]
+            PHONE_CALLS.append({"path": self.path, "text": text, "to": req["phoneNumbers"][0]})
+            self._json(202, {"id": f"g{len(PHONE_CALLS)}", "state": "Pending", "recipients": [{"phoneNumber": req["phoneNumbers"][0], "state": "Pending"}]})
 
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -296,14 +324,15 @@ def reply_flow_updates_lead():
 
 # ============================================================= SENDING (mocked)
 SMTP = start_smtp()
-AT = start_at()
+PHONE = start_phone()
+messaging.SMS_POLL = 0.05
 
 
 def configure(**over):
     base = {"smtp_host": "127.0.0.1", "smtp_port": SMTP.port, "smtp_security": "none",
             "from_email": "deric@dericbi.test", "sender_name": "Deric @ DericBI",
-            "at_username": "me", "at_api_key": "atkey", "at_base_url": f"http://127.0.0.1:{AT.server_port}",
-            "send_window_enabled": False, "email_delay_sec": 0, "sms_delay_sec": 0, "skip_recent_days": 14}
+            "sms_gateway_url": f"127.0.0.1:{PHONE.server_port}", "sms_gateway_user": "phoneuser", "sms_gateway_pass": "phonepass",
+            "send_window_enabled": False, "email_delay_sec": 0, "sms_delay_sec": 0}
     base.update(over)
     db.save_settings(base)
 
@@ -357,42 +386,71 @@ def email_campaign_sends_and_dedupes():
 
 
 @test
-def sms_campaign_and_errors():
-    fresh(); SMS_CALLS.clear(); SMS_MODE["status"] = 101; configure()
+def sms_goes_through_the_phone_as_one_plain_160_character_text():
+    fresh(); PHONE_CALLS.clear(); PHONE_MODE["mode"] = "ok"; configure()
     with db.db() as c:
         for i in range(3):
             L.add_lead(c, {"name": f"Agro {i}", "town": "Chuka", "sector": "Agrovet", "phone": f"07000000{i:02d}"})
         L.add_lead(c, {"name": "Landline", "town": "Chuka", "sector": "Agrovet", "phone": "064 30123"})
-        cid = C.create_campaign(c, "SMS", "sms", "", "Hi {name}, DericBI helps agrovets track stock.", {"sectors": ["Agrovet"]}, launch=True)
+        cid = C.create_campaign(c, "SMS", "sms", "", "Hi {name} \u2014 DericBI helps agrovets track stock. \U0001F600 {website}",
+                                {"sectors": ["Agrovet"]}, launch=True)
         assert c.execute("SELECT total FROM campaigns WHERE id=?", (cid,)).fetchone()[0] == 3
     run_sender(lambda: count("SELECT COUNT(*) FROM messages WHERE status='sent'") >= 3)
-    assert len(SMS_CALLS) == 3
-    hdr, form = SMS_CALLS[0]
-    assert hdr.get("apiKey") == "atkey" and form["username"] == "me" and form["to"].startswith("+2547")
-    assert "Reply STOP" in form["message"]
-
-    # insufficient balance pauses the campaign and keeps the message queued
-    fresh(); SMS_MODE["status"] = 405; configure()
-    with db.db() as c:
-        for i in range(3):
-            L.add_lead(c, {"name": f"B {i}", "town": "T", "phone": f"07111111{i:02d}"})
-        cid = C.create_campaign(c, "Bal", "sms", "", "Hello {name}", {}, launch=True)
-    run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", timeout=10)
-    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused"
-    assert "InsufficientBalance" in count("SELECT last_error FROM campaigns WHERE id=?", cid)
-    assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 3
-    assert count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 0
-    SMS_MODE["status"] = 101
+    assert len(PHONE_CALLS) == 3 and PHONE_CALLS[0]["path"] == "/messages" and PHONE_CALLS[0]["to"].startswith("+2547")
+    for call in PHONE_CALLS:
+        t = call["text"]
+        assert len(t) <= 160 and t.isascii(), t                  # one SMS: no emoji, no curly dash, nothing that splits it
+        assert "dericbi.vercel.app" in t and "https://" not in t   # {website} is the short form in a text
+        assert t.endswith("STOP to opt out")
 
 
 @test
-def bad_sms_key_pauses():
-    fresh(); configure(at_api_key="wrong")
+def an_older_phone_app_and_slow_delivery_both_work_and_a_failed_text_is_never_recorded_as_sent():
+    fresh(); PHONE_CALLS.clear(); configure()
     with db.db() as c:
-        L.add_lead(c, {"name": "A", "town": "T", "phone": "0700000001"})
-        cid = C.create_campaign(c, "K", "sms", "", "Hello", {}, launch=True)
-    run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", timeout=10)
-    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused"
+        a = L.add_lead(c, {"name": "Slow", "town": "T", "phone": "0700000011"})["id"]
+        b = L.add_lead(c, {"name": "Old app", "town": "T", "phone": "0700000012"})["id"]
+        d = L.add_lead(c, {"name": "No airtime", "town": "T", "phone": "0700000013"})["id"]
+    PHONE_MODE["mode"] = "slow"
+    C.send_now(a, "sms", "", "Hi {name}")                       # 'Processed' first, then 'Sent': it waits for the real answer
+    assert PHONE_POLLS and count("SELECT status FROM messages WHERE lead_id=?", a) == "sent"
+    PHONE_MODE["mode"] = "legacy"
+    C.send_now(b, "sms", "", "Hi {name}")                       # an app version that only knows /message
+    assert PHONE_CALLS[-1]["path"] == "/message"
+    PHONE_MODE["mode"] = "failed"
+    try:
+        C.send_now(d, "sms", "", "Hi {name}"); raise AssertionError("the phone said Failed")
+    except messaging.SendError as e:
+        assert e.kind == "permanent" and "airtime" in str(e).lower()
+    assert count("SELECT status FROM messages WHERE lead_id=?", d) == "failed" and count("SELECT status FROM leads WHERE id=?", d) == "new"
+    PHONE_MODE["mode"] = "ok"
+
+
+@test
+def phone_problems_pause_the_campaign_instead_of_burning_the_queue():
+    fresh(); PHONE_MODE["mode"] = "ok"
+    for label, over in (("wrong password", {"sms_gateway_pass": "wrong"}), ("phone not reachable", {"sms_gateway_url": "127.0.0.1:9"})):
+        fresh(); configure(**over)
+        with db.db() as c:
+            L.add_lead(c, {"name": "A", "town": "T", "phone": "0700000001"})
+            cid = C.create_campaign(c, "K", "sms", "", "Hello", {}, launch=True)
+        run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", timeout=10)
+        assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", label
+        assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 1, label     # still waiting, not failed
+        assert count("SELECT last_error FROM campaigns WHERE id=?", cid), label
+    configure()
+
+
+@test
+def phone_diagnosis_names_the_step_that_fails():
+    fresh(); configure()
+    assert messaging.diagnose_sms(db.get_settings())["ok"]
+    bad = messaging.diagnose_sms(dict(db.get_settings(), sms_gateway_url="127.0.0.1:9"))
+    assert not bad["ok"] and "same Wi-Fi" in bad["message"]
+    assert not messaging.diagnose_sms(dict(db.get_settings(), sms_gateway_url=""))["ok"]
+    # address typed any common way
+    for typed in ("192.168.43.1", "http://192.168.43.1:8080/", "192.168.43.1:8080"):
+        assert messaging.gateway_base({"sms_gateway_url": typed}) == "http://192.168.43.1:8080"
 
 
 @test
@@ -470,9 +528,15 @@ def smtp_auth_and_one_off_send():
         a = L.add_lead(c, {"name": "One Off", "town": "T", "email": "one@shop.test"})["id"]
     C.send_now(a, "email", "Quick hello {name}", "Hi {name}!")
     assert len(SMTP_INBOX) == 1 and b"Quick hello One Off" in SMTP_INBOX[0].content
+    try:
+        C.send_now(a, "email", "again", "again"); raise AssertionError("a lead gets one message at a time")
+    except ValueError as e:
+        assert "follow-up unlocks" in str(e)
+    with db.db() as c:
+        other = L.add_lead(c, {"name": "Other", "town": "T", "email": "other@shop.test"})["id"]
     configure(smtp_port=port, smtp_user="me", smtp_pass="WRONG")
     try:
-        C.send_now(a, "email", "x", "y")
+        C.send_now(other, "email", "x", "y")
         raise AssertionError("expected login failure")
     except messaging.SendError as e:
         assert e.kind == "pause", e
@@ -794,14 +858,6 @@ def api_end_to_end():
         st = cl.get("/api/status").json()
         assert "sender" in st and st["email_ready"] is False or True
         assert "Embu" in cl.get("/api/facets").json()["towns"]
-        # webhook
-        db.save_settings({"webhook_token": "tok"})
-        assert cl.post("/api/webhooks/sms?token=bad", content="from=%2B254744000000&text=STOP").status_code == 403
-        r = cl.post("/api/webhooks/sms?token=tok", content="from=%2B254744000000&text=STOP",
-                    headers={"Content-Type": "application/x-www-form-urlencoded"})
-        assert r.json()["matched"]
-        with db.db() as c:
-            assert c.execute("SELECT do_not_contact FROM leads WHERE phone_norm='+254744000000'").fetchone()[0] == 1
         # backup is a valid sqlite file
         r = cl.get("/api/backup")
         assert r.status_code == 200 and r.content[:15] == b"SQLite format 3"
@@ -949,7 +1005,6 @@ def retired_ai_model_is_replaced_automatically_and_settings_fill_their_own_blank
         with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             got = cl.get("/api/settings").json()
             assert got["ai_defaults"]["gemini"] and got["ai_defaults"]["groq"]
-            assert len(got["webhook_token"]) >= 16                                       # made automatically
             cl.put("/api/settings", json={"smtp_host": "smtp.gmail.com", "smtp_user": "me@gmail.com", "imap_host": "imap.gmail.com"})
             got = cl.get("/api/settings").json()
             assert got["from_email"] == "me@gmail.com" and got["imap_user"] == "me@gmail.com"
@@ -1428,7 +1483,7 @@ def whatsapp_is_logged_and_replies_are_matched_to_the_message_they_answer():
             ai.ask = real_ask
         p = seen["prompt"]
         assert d["subject"] == "" and "Deric Marangu" in p and "data analyst" in p and "medicines" in p
-        assert "Us by WhatsApp" in p and "Them by WhatsApp" in p and "under 90 words" in p
+        assert "Us by WhatsApp" in p and "Them by WhatsApp" in p and "300 characters" in p and "dericbi.vercel.app" in p
         try:
             ai.draft_for_lead(s, L.lead_detail(c, a), "fax", "")
             raise AssertionError("fax is not a channel")
@@ -1439,7 +1494,7 @@ def whatsapp_is_logged_and_replies_are_matched_to_the_message_they_answer():
         C.log_whatsapp(a, "again"); raise AssertionError("should refuse do-not-contact")
     except ValueError:
         pass
-    # a WhatsApp sent by hand keeps campaigns from messaging the same lead again within the skip days
+    # a WhatsApp sent by hand means campaigns never message that lead again, however long ago
     with db.db() as c:
         c.execute("UPDATE leads SET do_not_contact=0, status='contacted' WHERE id=?", (a,))
         c.execute("DELETE FROM messages WHERE direction='in' AND lead_id=?", (a,))
@@ -1447,7 +1502,7 @@ def whatsapp_is_logged_and_replies_are_matched_to_the_message_they_answer():
         assert a not in [r["id"] for r in C.build_audience(c, "sms", {"statuses": ["contacted"]}, s2)]
         assert a not in [r["id"] for r in C.build_audience(c, "email", {"statuses": ["contacted"]}, s2)]
         c.execute("UPDATE messages SET sent_at=? WHERE lead_id=?", ("2020-01-01 00:00:00", a))
-        assert a in [r["id"] for r in C.build_audience(c, "sms", {"statuses": ["contacted"]}, s2)]
+        assert a not in [r["id"] for r in C.build_audience(c, "sms", {"statuses": ["contacted"]}, s2)]   # not even years later
     assert "medicines" in ai._angle("Pharmacy") and "selling" in ai._angle("")
     assert "customers" in ai._angle("Barber shop") and "reorder" in ai._angle("Grocery store") and "season" in ai._angle("Hardware store")
 
@@ -1522,10 +1577,13 @@ def follow_ups_go_only_to_people_who_have_not_replied_when_they_fall_due():
             assert cl.post(f"/api/campaigns/{again['id']}/cancel").status_code == 200
             tail = [r for r in cl.get("/api/campaigns").json() if r["name"].startswith("Seq") and r["id"] > kids[1]["id"]]
             assert len(tail) == 3 and all(r["status"] == "cancelled" for r in tail), tail
-            # without an AI key follow-ups are refused with a clear message
+            # without an AI key follow-ups still work: the ready-made nudge, useful tip and last note are used
             db.save_settings({"ai_custom_url": "", "ai_custom_model": ""})
-            r = cl.post("/api/campaigns", json={**body, "ai": False, "subject": "Hello {name}", "followups": [3]})
-            assert r.status_code == 400 and "AI key" in r.json()["detail"], r.text
+            r = cl.post("/api/campaigns", json={**body, "ai": False, "subject": "Hello {name}", "followups": [3, 4, 5]})
+            assert r.status_code == 200, r.text
+            ready = sorted((k for k in cl.get("/api/campaigns").json() if k["followup_of"] is not None and k["id"] > r.json()["id"]),
+                           key=lambda k: k["id"])
+            assert [(k["style"], k["ai_personalize"], k["followup_step"]) for k in ready] == [("ready", 0, 1), ("ready", 0, 2), ("ready", 0, 3)]
     finally:
         srv.shutdown()
 
@@ -1582,9 +1640,596 @@ def deal_value_and_offer_are_saved_validated_and_totalled():
         assert d["won_value"] == 45000 and d["open_value"] == 12000 and set(d["channels"]) == {"email", "sms", "whatsapp"}
 
 
+@test
+def a_console_that_cannot_show_a_name_never_fails_the_job_or_skips_the_email_search():
+    import io
+    fresh()
+    names = ["MAMA WANGESHI AGROVET", "Farm \u2b50\u2b50\u2b50 Agrovet \u0915\u093f\u0938\u093e\u0928", "Plain Agrovet"]
+    listings = {"Agrovet in Kisii": [{"name": n, "href": href(9000 + i)} for i, n in enumerate(names)]}
+    det = {n: {"phone": f"0712 00000{i}", "address": "Kisii", "website": ""} for i, n in enumerate(names)}
+    with db.db() as c:
+        jid = jobs.create_job(c, "scrape", {})
+    real = sys.stdout
+    sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict", write_through=True)   # a Windows pipe
+    try:
+        final = scraper.run_scrape(jid, {"searches": [{"category": "Agrovet", "town": "Kisii", "query": "Agrovet in Kisii"}],
+                                         "max_per_search": 50}, driver_factory=lambda: FakeDriver(listings, det), sleep=lambda s: None)
+    finally:
+        sys.stdout = real
+    with db.db() as c:
+        assert final == "done" and c.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 3
+        logs = [r["msg"] for r in c.execute("SELECT msg FROM job_logs WHERE job_id=?", (jid,))]
+    assert any("\u2b50" in m for m in logs) and not any("crashed" in m for m in logs)
+
+
+def _wa_setup():
+    fresh()
+    with db.db() as c:
+        ids = {}
+        for key, name, phone, mail in (("a", "Meru Chemist", "0700000501", ""), ("b", "Kisii Agrovet", "0700000502", "kisii@agro.co.ke"),
+                                       ("c", "Landline Only", "064 30123", "landline@shop.co.ke")):
+            ids[key] = L.add_lead(c, {"name": name, "town": "Meru" if key == "a" else "Kisii", "sector": "Pharmacy", "phone": phone,
+                                      "email": mail})["id"]
+    return ids
+
+
+@test
+def whatsapp_campaign_queues_personal_messages_and_only_counts_what_you_confirm_sent():
+    ids = _wa_setup()
+    with db.db() as c:
+        p = C.preview(c, "whatsapp", "", "Hi {name} in {town}, {sender} here.", {})
+        assert p["matching"] == 2 and p["channel_ready"] and "Meru Chemist" in p["sample"]["body"]
+        assert "--" not in p["sample"]["body"]          # no email-style footer on WhatsApp
+        cid = C.create_campaign(c, "Wa test", "whatsapp", "", "Hi {name} in {town}, {sender} here.", {}, launch=True)
+    run_sender(until=lambda: False, timeout=2)           # the background sender must leave WhatsApp alone
+    with db.db() as c:
+        assert [r["status"] for r in c.execute("SELECT status FROM messages WHERE campaign_id=?", (cid,))] == ["queued", "queued"]
+    it = C.wa_next(cid)
+    assert it["name"] == "Meru Chemist" and it["body"].startswith("Hi Meru Chemist in Meru,") and it["total"] == 2
+    assert it["url"].startswith("https://wa.me/254700000501?text=Hi%20Meru%20Chemist")
+    r = C.wa_act(it["id"], "link", it["body"] + " Edited.")                # opening is NOT sending
+    assert "Edited" in r["url"]
+    with db.db() as c:
+        m = c.execute("SELECT status, body FROM messages WHERE id=?", (it["id"],)).fetchone()
+        assert m["status"] == "queued" and m["body"].endswith("Edited.") and L.get_lead(c, ids["a"])["status"] == "new"
+    C.wa_act(it["id"], "sent")
+    with db.db() as c:
+        lead = L.lead_detail(c, ids["a"])
+        assert lead["status"] == "contacted" and [(m["channel"], m["status"]) for m in lead["messages"]] == [("whatsapp", "sent")]
+        st = C.campaign_stats(c, cid)
+        assert st["sent"] == 1 and st["queued"] == 1 and st["status"] == "running"
+        res = L.record_reply(c, ids["a"], "whatsapp", "Yes, interested")          # the reply is matched to this campaign's message
+        assert c.execute("SELECT campaign_id FROM messages WHERE id=?", (res["id"],)).fetchone()["campaign_id"] == cid
+    try:
+        C.wa_act(it["id"], "sent"); raise AssertionError("must not count twice")
+    except ValueError:
+        pass
+    it2 = C.wa_next(cid)
+    assert it2["name"] == "Kisii Agrovet"
+    C.wa_act(it2["id"], "no_whatsapp")
+    assert C.wa_next(cid) is None
+    with db.db() as c:
+        st = C.campaign_stats(c, cid)
+        assert st["status"] == "done" and st["sent"] == 1 and st["skipped"] == 1
+        assert "not on WhatsApp" in " ".join(e["detail"] for e in L.lead_detail(c, ids["b"])["events"])
+        # not on WhatsApp: never offered WhatsApp again, but an email campaign still reaches them
+        assert [r["name"] for r in C.build_audience(c, "whatsapp", {"statuses": ["new"]}, db.get_settings(c))] == []
+        assert ids["b"] in [r["id"] for r in C.build_audience(c, "email", {"statuses": ["new"]}, db.get_settings(c))]
+
+
+@test
+def whatsapp_queue_refuses_unsendable_leads_paused_campaigns_and_ai_messages_are_written_and_kept():
+    import ai
+    ids = _wa_setup()
+    real_conf, real_draft = ai.configured, ai.draft_for_lead
+    ai.configured = lambda s: True
+    n = {"i": 0}
+    def draft(s_, lead, ch, notes, avoid="", limit=0):
+        n["i"] += 1
+        assert ch == "whatsapp"
+        return {"subject": "", "body": f"Habari {lead['name']}, number {n['i']} for the {lead['sector']} owner in {lead['town']}."}
+    ai.draft_for_lead = draft
+    try:
+        with db.db() as c:
+            cid = C.create_campaign(c, "Wa AI", "whatsapp", "", "Offer a demo", {}, launch=True, personalize=True)
+        it = C.wa_next(cid)
+        assert it["body"].startswith("Habari Meru Chemist") and C.wa_next(cid)["body"] == it["body"] and n["i"] == 1   # kept, not rewritten
+        with db.db() as c:
+            C.set_campaign_status(c, cid, "pause")
+        try:
+            C.wa_next(cid); raise AssertionError("paused")
+        except ValueError:
+            pass
+        with db.db() as c:
+            C.set_campaign_status(c, cid, "resume")
+            c.execute("UPDATE leads SET do_not_contact=1 WHERE id=?", (ids["a"],))
+        try:
+            C.wa_act(it["id"], "link"); raise AssertionError("do-not-contact must be refused")
+        except ValueError:
+            pass
+        assert C.wa_next(cid)["name"] == "Kisii Agrovet"          # the do-not-contact lead is skipped, not offered
+        with db.db() as c:
+            assert c.execute("SELECT status, error FROM messages WHERE id=?", (it["id"],)).fetchone()["status"] == "skipped"
+    finally:
+        ai.configured, ai.draft_for_lead = real_conf, real_draft
+
+
+@test
+def whatsapp_queue_works_through_the_api():
+    import server
+    from fastapi.testclient import TestClient
+    ids = _wa_setup()
+    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        r = cl.post("/api/campaigns", json={"name": "api", "channel": "whatsapp", "body": "Hi {name}", "launch": True,
+                                            "filters": {"statuses": ["new"]}})
+        assert r.status_code == 200, r.text
+        cid = r.json()["id"]
+        item = cl.get(f"/api/campaigns/{cid}/whatsapp/next").json()["item"]
+        assert item["body"] == "Hi Meru Chemist"
+        assert cl.post(f"/api/messages/{item['id']}/whatsapp", json={"action": "sent"}).status_code == 200
+        assert cl.post(f"/api/messages/{item['id']}/whatsapp", json={"action": "sent"}).status_code == 400
+        assert cl.post(f"/api/messages/{item['id']}/whatsapp", json={"action": "bogus"}).status_code == 400
+        assert cl.get("/api/dashboard").json()["sent_today"]["whatsapp"] == 1
+        assert cl.post(f"/api/leads/{ids['a']}/send", json={"channel": "whatsapp", "body": "x"}).status_code == 400
+
+
+# ======================================================== EMAIL: Gmail-style problems
+def _auth_smtp(user=b"me@gmail.com", pw=b"abcdefghijklmnop"):
+    from aiosmtpd.controller import Controller
+    from aiosmtpd.smtp import AuthResult, LoginPassword
+    import socket
+
+    class H:
+        async def handle_DATA(self, server, session, envelope):
+            SMTP_INBOX.append(envelope)
+            return "250 OK"
+
+    def auth(server, session, envelope, mechanism, data):
+        ok = isinstance(data, LoginPassword) and data.login == user and data.password == pw
+        return AuthResult(success=ok, handled=False if not ok else True)
+    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+    ctl = Controller(H(), hostname="127.0.0.1", port=port, authenticator=auth, auth_required=True, auth_require_tls=False)
+    ctl.start()
+    return ctl, port
+
+
+@test
+def gmail_style_password_and_username_slips_no_longer_break_sending():
+    fresh(); SMTP_INBOX.clear()
+    ctl, port = _auth_smtp()
+    base = dict(db.SETTING_DEFAULTS, smtp_host="127.0.0.1", smtp_port=port, smtp_security="none", sender_name="Deric",
+                from_email="me@gmail.com", smtp_user="me@gmail.com", smtp_pass="abcdefghijklmnop")
+    try:
+        messaging.send_email("lead@shop.co.ke", "hi", "body", base)
+        # the app password as Google shows it, with spaces, and as copied from a web page, with non-breaking spaces
+        messaging.send_email("lead@shop.co.ke", "hi", "body", dict(base, smtp_pass="abcd efgh ijkl mnop"))
+        messaging.send_email("lead@shop.co.ke", "hi", "body", dict(base, smtp_pass="abcd\u00a0efgh\u00a0ijkl\u00a0mnop"))
+        # username left blank: the 'Send from' address is the login (it used to skip the login: "530 Authentication required")
+        messaging.send_email("lead@shop.co.ke", "hi", "body", dict(base, smtp_user=""))
+        assert len(SMTP_INBOX) == 4
+        # a wrong password pauses the campaign and, for Gmail, says what to do about it
+        try:
+            messaging.send_email("lead@shop.co.ke", "hi", "body", dict(base, smtp_host="127.0.0.1", smtp_pass="wrong"))
+            raise AssertionError("wrong password")
+        except messaging.SendError as e:
+            assert e.kind == "pause" and "refused" in str(e)
+        gm = messaging._login_help("smtp.gmail.com", "535 bad")
+        assert "App Password" in gm and "2-Step Verification" in gm
+        # the diagnosis names the step that fails
+        good = messaging.diagnose_email(base)
+        assert good["ok"] and [st["label"] for st in good["steps"]] == ["Settings", "Find the server", "Connect", "Secure connection", "Login"]
+        bad = messaging.diagnose_email(dict(base, smtp_pass="wrong"))
+        assert not bad["ok"] and bad["message"].startswith("Login")
+        closed = messaging.diagnose_email(dict(base, smtp_port=9))
+        assert not closed["ok"] and closed["message"].startswith("Connect") and "blocked" in closed["message"]
+        assert messaging.diagnose_email(dict(base, smtp_host=""))["message"].startswith("Settings")
+        nohost = messaging.diagnose_email(dict(base, smtp_host="no-such-host.invalid"))
+        assert nohost["message"].startswith("Find the server")
+    finally:
+        ctl.stop()
+
+
+@test
+def reading_replies_uses_the_sending_login_and_settings_clean_pasted_passwords():
+    from fastapi.testclient import TestClient
+    import server
+    fresh()
+    assert messaging.inbox_login({"imap_user": "", "smtp_user": "", "from_email": "me@gmail.com", "imap_pass": "", "smtp_pass": "abcd efgh"}) == \
+        ("me@gmail.com", "abcdefgh")
+    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        r = cl.put("/api/settings", json={"smtp_pass": "abcd\u00a0efgh ijkl", "sms_gateway_pass": "pa ss", "optout_suffix_sms": "STOP to opt out"})
+        assert r.status_code == 200 and db.get_settings()["smtp_pass"] == "abcdefghijkl" and db.get_settings()["sms_gateway_pass"] == "pass"
+        assert db.get_settings()["optout_suffix_sms"] == " STOP to opt out"        # keeps the space that joins it to the text
+        assert cl.put("/api/settings", json={"sms_delay_sec": 5}).status_code == 400
+        assert cl.put("/api/settings", json={"whatsapp_delay_sec": 5}).status_code == 400
+        assert cl.put("/api/settings", json={"contact_website": "dericbi.vercel.app"}).status_code == 400
+        assert cl.post("/api/settings/connect-gmail", json={"address": "nope", "app_password": "x" * 16}).status_code == 400
+        assert cl.post("/api/settings/connect-gmail", json={"address": "me@gmail.com", "app_password": "short"}).status_code == 400
+        real = (messaging.diagnose_email, messaging.test_imap)
+        messaging.diagnose_email = lambda s: {"ok": True, "steps": [], "message": "ok"}
+        messaging.test_imap = lambda s: {"ok": True, "steps": [], "message": "ok"}
+        try:
+            r = cl.post("/api/settings/connect-gmail", json={"address": " Me@Gmail.com ", "app_password": "abcd efgh ijkl mnop"}).json()
+        finally:
+            messaging.diagnose_email, messaging.test_imap = real
+        s = db.get_settings()
+        assert r["ok"] and (s["smtp_host"], s["smtp_port"], s["smtp_security"]) == ("smtp.gmail.com", 587, "starttls")
+        assert (s["imap_host"], s["imap_port"], s["imap_user"], s["smtp_user"], s["from_email"]) == \
+            ("imap.gmail.com", 993, "me@gmail.com", "me@gmail.com", "me@gmail.com") and s["smtp_pass"] == s["imap_pass"] == "abcdefghijklmnop"
+
+
+# ======================================================== ONE FIRST MESSAGE PER LEAD
+@test
+def a_lead_who_has_a_message_is_never_picked_again_until_it_is_a_follow_up():
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); PHONE_MODE["mode"] = "ok"; configure()
+    with db.db() as c:
+        both = L.add_lead(c, {"name": "Both Ways", "town": "T", "sector": "Pharmacy", "phone": "0700000201", "email": "both@shop.test"})["id"]
+        mail = L.add_lead(c, {"name": "Mail Only", "town": "T", "sector": "Pharmacy", "email": "mail@shop.test"})["id"]
+        cid = C.create_campaign(c, "First", "email", "Hi {name}", "Hello {name}", {"lead_ids": [both]}, launch=True)
+        s = db.get_settings(c)
+        # queued counts: not offered to a text campaign while the email is waiting
+        assert both not in [r["id"] for r in C.build_audience(c, "sms", {}, s)] and mail in [r["id"] for r in C.build_audience(c, "email", {}, s)]
+    run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "done")
+    with db.db() as c:
+        c.execute("UPDATE messages SET sent_at='2020-01-01 00:00:00' WHERE lead_id=?", (both,))   # however long ago
+        s = db.get_settings(c)
+        for ch in ("email", "sms", "whatsapp"):
+            assert both not in [r["id"] for r in C.build_audience(c, ch, {"statuses": ["new", "contacted"]}, s)], ch
+        try:
+            C.create_campaign(c, "Again", "sms", "", "Hi", {"lead_ids": [both]}, launch=True); raise AssertionError("nobody to message")
+        except ValueError as e:
+            assert "No leads match" in str(e)
+    # nor by hand, on any channel, until the follow-up wait has passed
+    with db.db() as c:
+        c.execute("UPDATE messages SET sent_at=? WHERE lead_id=?", (now(), both))
+    for fn in (lambda: C.send_now(both, "sms", "", "Hi"), lambda: C.send_now(both, "email", "x", "y"), lambda: C.log_whatsapp(both, "Hi")):
+        try:
+            fn(); raise AssertionError("must wait")
+        except ValueError as e:
+            assert "unlocks" in str(e) or "waiting" in str(e), e
+    with db.db() as c:
+        st = C.outreach_state(c, mail)
+        assert st["allowed"] and st["kind"] == "first"
+        c.execute("UPDATE messages SET sent_at=? WHERE lead_id=?", (now(), both))
+        assert C.outreach_state(c, both)["kind"] == "too_soon"
+        c.execute("UPDATE messages SET sent_at=? WHERE lead_id=?", (days_ago(4), both))
+        assert C.outreach_state(c, both) == {"allowed": True, "kind": "followup", "reason": ""}
+        L.record_reply(c, both, "email", "Interested")
+        c.execute("UPDATE messages SET sent_at=? WHERE lead_id=? AND direction='out'", (now(), both))
+        assert C.outreach_state(c, both)["kind"] == "reply"        # they answered: talking to them is a conversation
+    assert C.send_now(both, "sms", "", "Thanks {name}, here is more.")["status"] == "sent"
+
+
+@test
+def a_message_queued_in_one_campaign_is_dropped_if_the_lead_was_messaged_another_way_meanwhile():
+    fresh(); SMTP_INBOX.clear(); configure()
+    with db.db() as c:
+        a = L.add_lead(c, {"name": "Raced", "town": "T", "email": "raced@shop.test"})["id"]
+        b = L.add_lead(c, {"name": "Clear", "town": "T", "email": "clear@shop.test"})["id"]
+        cid = C.create_campaign(c, "Race", "email", "Hi", "Hello {name}", {}, launch=True)
+        c.execute("INSERT INTO messages(lead_id, direction, channel, body, status, sent_at, created_at) VALUES(?,?,?,?,?,?,?)",
+                  (a, "out", "whatsapp", "by hand", "sent", now(), now()))      # sent by hand after the campaign was queued
+    run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "done")
+    assert count("SELECT status FROM messages WHERE campaign_id=? AND lead_id=?", cid, a) == "skipped"
+    assert "another way" in count("SELECT error FROM messages WHERE campaign_id=? AND lead_id=?", cid, a)
+    assert count("SELECT status FROM messages WHERE campaign_id=? AND lead_id=?", cid, b) == "sent" and len(SMTP_INBOX) == 1
+
+
+# ======================================================== READY-MADE MESSAGES
+@test
+def every_ready_made_text_fits_one_sms_with_a_long_name_and_the_opt_out_line():
+    import library
+    s = dict(db.SETTING_DEFAULTS)
+    assert s["contact_website"] == "https://dericbi.vercel.app" and s["contact_whatsapp"] == "+254791360805" and s["contact_email"] == "dericmarangu@gmail.com"
+    names = ["MAMA WANGESHI AGROVET", "Boresha Agrovet & Hardware Supplies Ltd", "Dr. Kamau Dental Clinic and Laboratory Services", "Z"]
+    for sector in ("Pharmacy", "Agrovet", "Hardware store", "Salon", "Restaurant", "School", "Garage", "Supermarket", "Whatever", ""):
+        for name in names:
+            lead = {"name": name, "town": "Kisii", "sector": sector}
+            for i in range(2):
+                subj, body, problem = C.compose("sms", "ready", "", "", lead, s, i)
+                assert not problem and len(body) <= 160 and body.isascii(), (sector, name, len(body), body)
+                assert "dericbi.vercel.app" in body or "+254791360805" in body or "{" not in body
+            for step in (1, 2, 3):
+                _, body, problem = C.compose("sms", "ready", "", "", lead, s, 0, step)
+                assert not problem and len(body) <= 160 and "{" not in body, (sector, name, step, body)
+    # a name cut down only as far as needed, never the whole message dropped
+    lead = {"name": "Boresha Agrovet & Hardware Supplies Ltd", "town": "Kisii", "sector": "Agrovet"}
+    _, body, _ = C.compose("sms", "ready", "", "", lead, s, 0)
+    assert body.startswith("Boresha") and len(body) <= 160
+    # the owner's own text that cannot fit even with a short name is held back, not split into two texts
+    _, _, problem = C.compose("sms", "", "", "x" * 200, lead, s)
+    assert problem and "160" in problem
+    assert messaging.sms_clean("It\u2019s \u201cgood\u201d \u2014 caf\u00e9 \U0001F600") == 'It\'s "good" - cafe'
+    # email and WhatsApp versions carry every contact way and no leftover blanks
+    for ch in ("email", "whatsapp"):
+        for step in (0, 1, 2, 3):
+            subj, body, problem = C.compose(ch, "ready", "", "", {"name": "Meru Chemist", "town": "Meru", "sector": "Pharmacy"}, s, 0, step)
+            assert not problem and "{" not in body + subj and "Meru Chemist" in body and "dericbi.vercel.app" in body or step in (2, 3), (ch, step, body)
+            if ch == "email":
+                assert subj and "+254791360805" in body
+
+
+@test
+def ready_made_campaign_follow_ups_and_cross_channel_follow_up_work_without_any_ai_key():
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); PHONE_MODE["mode"] = "ok"; configure()
+    with db.db() as c:
+        ids = [L.add_lead(c, {"name": n, "town": "Meru", "sector": "Pharmacy", "phone": p, "email": e})["id"]
+               for n, p, e in (("Alpha Chemist", "0700000301", "a@shop.test"), ("Beta Chemist", "0700000302", "b@shop.test"))]
+        cid = C.create_campaign(c, "Ready", "email", "", "", {"lead_ids": ids}, launch=True, style="ready", followups=[3, 5])
+        rows = c.execute("SELECT * FROM campaigns ORDER BY id").fetchall()
+        assert [(r["style"], r["ai_personalize"], r["followup_of"] is not None, r["followup_step"]) for r in rows] == \
+            [("ready", 0, False, 0), ("ready", 0, True, 1), ("ready", 0, True, 2)]
+        first = c.execute("SELECT subject, body FROM messages WHERE campaign_id=? ORDER BY id", (cid,)).fetchall()
+        assert all("Chemist" in m["body"] and "dericbi.vercel.app" in m["body"] and "expired or missing medicines" in m["subject"] + m["body"] for m in first)
+    run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "done")
+    assert C.release_followups() == 0                                    # not due yet
+    with db.db() as c:
+        L.record_reply(c, ids[0], "email", "Not now")
+        c.execute("UPDATE leads SET last_contacted_at=?", (days_ago(4),))
+    assert C.release_followups() == 1                                    # only the one who did not reply
+    body = count("SELECT body FROM messages WHERE campaign_id=(SELECT id FROM campaigns WHERE followup_step=1) AND status='queued'")
+    assert "Beta Chemist" in body and "reached you" in body
+    with db.db() as c:
+        try:
+            C.create_followup(c, cid, days=0); raise AssertionError("this campaign already has a follow-up waiting")
+        except ValueError as e:
+            assert "already waiting" in str(e)
+    # one tap on a finished campaign: follow up on another channel they can be reached on
+    with db.db() as c:
+        x = L.add_lead(c, {"name": "Gamma Chemist", "town": "Meru", "sector": "Pharmacy", "phone": "0700000303", "email": "g@shop.test"})["id"]
+        plain = C.create_campaign(c, "Plain", "email", "Hi {name}", "Hello {name}", {"lead_ids": [x]}, launch=True)
+    run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", plain) == "done")
+    with db.db() as c:
+        wa = C.create_followup(c, plain, days=0, channel="sms")
+        row = c.execute("SELECT status, channel, followup_of FROM campaigns WHERE id=?", (wa,)).fetchone()
+        assert row["channel"] == "sms" and row["status"] == "running" and row["followup_of"] == plain      # due at once, goes by text
+        assert "Gamma Chemist" in c.execute("SELECT body FROM messages WHERE campaign_id=?", (wa,)).fetchone()["body"]
+        draft = C.create_campaign(c, "D", "email", "x", "y", {"lead_ids": ids})
+        try:
+            C.create_followup(c, draft); raise AssertionError("not started yet")
+        except ValueError:
+            pass
+
+
+@test
+def campaign_screen_api_reach_audience_followup_and_ready_preview():
+    from fastapi.testclient import TestClient
+    import server
+    fresh(); SMTP_INBOX.clear(); configure()
+    with db.db() as c:
+        ids = {n: L.add_lead(c, {"name": n, "town": "Embu", "sector": "Chemist", "phone": p, "email": e})["id"]
+               for n, p, e in (("One", "0711000001", "one@shop.test"), ("Two", "0711000002", ""), ("Three", "", "three@shop.test"))}
+    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        reach = cl.get("/api/campaigns/reach").json()
+        assert reach["email"]["leads"] == 2 and reach["sms"]["leads"] == 2 and reach["whatsapp"]["leads"] == 2
+        assert reach["email"]["ready"] and reach["sms"]["ready"] and reach["whatsapp"]["ready"]
+        aud = cl.post("/api/campaigns/audience", json={"channel": "email", "filters": {"q": "thr"}}).json()
+        assert aud["total"] == 1 and aud["leads"][0]["name"] == "Three" and aud["leads"][0]["contact"] == "three@shop.test"
+        pv = cl.post("/api/campaigns/preview", json={"channel": "sms", "style": "ready", "body": "", "filters": {"lead_ids": [ids["One"]]}}).json()
+        assert pv["matching"] == 1 and pv["sample"]["length"] <= 160 and "One" in pv["sample"]["body"] and pv["too_long"] == 0
+        assert cl.post("/api/campaigns/preview", json={"channel": "sms", "body": "", "filters": {}}).status_code == 400
+        r = cl.post("/api/campaigns", json={"name": "Picked", "channel": "email", "style": "ready", "body": "", "launch": True,
+                                            "filters": {"lead_ids": [ids["One"]]}, "followups": [3]})
+        assert r.status_code == 200 and r.json()["total"] == 1 and r.json()["followups_waiting"] == 1
+        assert count("SELECT COUNT(*) FROM messages WHERE campaign_id=?", r.json()["id"]) == 1       # only the lead that was ticked
+        run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", r.json()["id"]) == "done")
+        assert cl.post(f"/api/campaigns/{r.json()['id']}/followup", json={"days": 2, "channel": "sms"}).status_code == 400   # one already waits
+        d = cl.get(f"/api/leads/{ids['One']}").json()
+        assert d["outreach"]["kind"] == "too_soon" and "unlocks" in d["outreach"]["reason"]
+        assert cl.post(f"/api/leads/{ids['One']}/send", json={"channel": "sms", "body": "again"}).status_code == 400
+        assert cl.get(f"/api/leads/{ids['Two']}").json()["outreach"]["kind"] == "first"
+        assert cl.post(f"/api/leads/{ids['Two']}/send", json={"channel": "sms", "body": "x" * 170}).status_code == 400   # over 160
+
+
+# ======================================================== WHATSAPP (automatic)
+import whatsapp  # noqa: E402
+
+
+class FakeWA:
+    """Stands in for WhatsApp Web: plan maps a phone number to what happens when it is messaged."""
+    def __init__(self, plan=None, ready=True):
+        self.plan, self.ready, self.sent, self.closed = plan or {}, ready, [], False
+        self.should_stop = lambda: False
+
+    def open(self): pass
+    def close(self): self.closed = True
+    def pause(self, ms): pass
+    def wait_ready(self, seconds): return "ready" if self.ready else "qr"
+    def state(self): return "ready" if self.ready else "qr"
+
+    def send(self, phone, text):
+        what = self.plan.get(phone, "sent")
+        if what == "logout": raise whatsapp.LoggedOut()
+        if what == "unconfirmed": raise whatsapp.SendUnconfirmed("Send was pressed but WhatsApp never showed the message as sent.")
+        if what == "boom": raise RuntimeError("page changed")
+        if what == "not_on": return "not_on_whatsapp"
+        self.sent.append((phone, text))
+        return "sent"
+
+
+def _wa_leads(n=4, prefix="07000000"):
+    with db.db() as c:
+        return [L.add_lead(c, {"name": f"Shop {i}", "town": "Kisii", "sector": "Agrovet", "phone": f"{prefix}{40 + i}"})["id"] for i in range(n)]
+
+
+def _run_wa(fake, **kw):
+    with db.db() as c:
+        jid = jobs.create_job(c, "whatsapp", {})
+    return whatsapp.run_worker(jid, driver_factory=lambda: fake, sleep=lambda s: None, **kw), jid
+
+
+@test
+def whatsapp_worker_sends_and_records_everything_by_itself_with_nothing_logged_by_hand():
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
+    ids = _wa_leads(4)
+    with db.db() as c:
+        cid = C.create_campaign(c, "WA", "whatsapp", "", "", {}, launch=True, style="ready")
+        c.execute("UPDATE leads SET town='Kisii'")
+    try:
+        C.wa_next(cid); raise AssertionError("no queue by hand once WhatsApp is linked")
+    except ValueError as e:
+        assert "sent for you" in str(e)
+    fake = FakeWA({"+254700000041": "not_on"})
+    final, jid = _run_wa(fake)
+    assert final == "done" and fake.closed
+    assert len(fake.sent) == 3 and all(len(t) > 40 and "Shop" in t and "{" not in t for _, t in fake.sent)
+    with db.db() as c:
+        st = C.campaign_stats(c, cid)
+        assert st["sent"] == 3 and st["skipped"] == 1 and st["status"] == "done" and st["queued"] == 0
+        for i in (0, 2, 3):
+            d = L.lead_detail(c, ids[i])
+            assert d["status"] == "contacted" and [(m["channel"], m["status"]) for m in d["messages"]] == [("whatsapp", "sent")]
+        assert "not on WhatsApp" in " ".join(e["detail"] for e in L.lead_detail(c, ids[1])["events"])
+        L.record_reply(c, ids[0], "whatsapp", "Yes please")                      # the reply is matched to what was sent
+    assert count("SELECT campaign_id FROM messages WHERE lead_id=? AND direction='in'", ids[0]) == cid
+    assert count("SELECT COUNT(*) FROM events WHERE kind='no_whatsapp'") == 1
+
+
+@test
+def whatsapp_worker_stops_safely_when_logged_out_failing_unconfirmed_or_over_the_limit():
+    # logged out mid-way: unlinked, campaigns paused, the message not lost
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
+    _wa_leads(3)
+    with db.db() as c:
+        cid = C.create_campaign(c, "Out", "whatsapp", "", "", {}, launch=True, style="ready")
+    final, _ = _run_wa(FakeWA({"+254700000040": "logout"}))
+    assert final == "failed" and not whatsapp.is_linked()
+    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused" and "logged out" in count("SELECT last_error FROM campaigns WHERE id=?", cid)
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 3 and count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 0
+    # the link code shown at start-up is the same thing
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True); _wa_leads(1)
+    with db.db() as c:
+        cid = C.create_campaign(c, "Out2", "whatsapp", "", "", {}, launch=True, style="ready")
+    assert _run_wa(FakeWA(ready=False))[0] == "failed" and not whatsapp.is_linked()
+    # three failures in a row pause everything; an unconfirmed send is failed (never re-sent), a crash is retried later
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True); _wa_leads(5)
+    with db.db() as c:
+        cid = C.create_campaign(c, "Bad", "whatsapp", "", "", {}, launch=True, style="ready")
+    final, _ = _run_wa(FakeWA({"+254700000040": "unconfirmed", "+254700000041": "boom", "+254700000042": "boom"}))
+    assert final == "failed" and count("SELECT status FROM campaigns WHERE id=?", cid) == "paused"
+    assert count("SELECT status FROM messages WHERE to_addr='+254700000040'") == "failed"
+    assert "check WhatsApp" in count("SELECT error FROM messages WHERE to_addr='+254700000040'")
+    assert count("SELECT status FROM messages WHERE to_addr='+254700000041'") == "queued"      # will be tried again later
+    assert count("SELECT scheduled_at > ? FROM messages WHERE to_addr='+254700000041'", now()) == 1
+    # the daily limit and the sending hours
+    fresh(); configure(whatsapp_delay_sec=20, whatsapp_daily_cap=2); db.set_internal("whatsapp_linked", True); _wa_leads(5)
+    with db.db() as c:
+        C.create_campaign(c, "Cap", "whatsapp", "", "", {}, launch=True, style="ready")
+    fake = FakeWA(); _run_wa(fake)
+    assert len(fake.sent) == 2 and count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 3
+    configure(whatsapp_delay_sec=20, send_window_enabled=True, send_window_start="00:00", send_window_end="00:00")
+    fake = FakeWA(); _run_wa(fake)
+    assert fake.sent == [] or len(fake.sent) <= 2
+
+
+@test
+def whatsapp_one_lead_button_queues_and_sends_itself_once_linked_otherwise_it_is_logged_for_you():
+    fresh(); configure()
+    ids = _wa_leads(2)
+    r = C.whatsapp_one(ids[0], "Hello Shop 0")                   # not linked: logged now, link returned to press send
+    assert r["status"] == "sent" and r["url"].startswith("https://wa.me/254700000040")
+    db.set_internal("whatsapp_linked", True)
+    try:
+        C.whatsapp_one(ids[0], "again"); raise AssertionError("one message at a time")
+    except ValueError as e:
+        assert "unlocks" in str(e)
+    r = C.whatsapp_one(ids[1], "Hello Shop 1")                   # linked: queued, the worker sends and records it
+    assert r["queued"] and count("SELECT status FROM messages WHERE id=?", r["id"]) == "queued"
+    fake = FakeWA(); _run_wa(fake)
+    assert fake.sent == [("+254700000041", "Hello Shop 1")] and count("SELECT status FROM messages WHERE id=?", r["id"]) == "sent"
+    assert count("SELECT status FROM leads WHERE id=?", ids[1]) == "contacted"
+    # a manual follow-up after the wait is allowed and is not blocked as 'already messaged another way'
+    with db.db() as c:
+        c.execute("UPDATE messages SET sent_at=? WHERE lead_id=?", (days_ago(5), ids[1]))
+    r = C.whatsapp_one(ids[1], "Following up")
+    fake = FakeWA(); _run_wa(fake)
+    assert fake.sent == [("+254700000041", "Following up")]
+
+
+@test
+def sender_starts_the_whatsapp_worker_only_when_linked_in_hours_and_under_the_limit():
+    fresh(); configure(); _wa_leads(2)
+    with db.db() as c:
+        C.create_campaign(c, "Spawn", "whatsapp", "", "", {}, launch=True, style="ready")
+    spawned = []
+    real_spawn, jobs.spawn = jobs.spawn, lambda jid, kind: spawned.append(kind)
+    try:
+        sender = C.Sender()
+        assert sender._whatsapp_tick(db.get_settings()) is None and not spawned          # not linked: nothing starts
+        db.set_internal("whatsapp_linked", True)
+        assert sender._whatsapp_tick(db.get_settings()) and spawned == ["whatsapp"]
+        sender._whatsapp_tick(db.get_settings()); assert spawned == ["whatsapp"]         # a worker is already running
+        with db.db() as c:
+            c.execute("UPDATE jobs SET status='done'")
+        sender.last_wa_spawn = 0
+        configure(whatsapp_daily_cap=0)
+        assert sender._whatsapp_tick(db.get_settings()) == 60.0 and spawned == ["whatsapp"]   # daily limit reached
+        configure(whatsapp_daily_cap=40, send_window_enabled=True, send_window_start="00:00", send_window_end="00:00")
+        assert sender._whatsapp_tick(db.get_settings()) == 30.0 and spawned == ["whatsapp"]   # outside sending hours
+    finally:
+        jobs.spawn = real_spawn
+
+
+@test
+def the_real_browser_driver_sends_waits_for_the_tick_and_handles_bad_numbers_and_logout():
+    import mock_whatsapp as mw
+    srv = mw.serve()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    fresh(); db.set_internal("whatsapp_linked", False)
+    real = whatsapp.profile_dir, whatsapp.CONFIRM_SECONDS
+    whatsapp.profile_dir = lambda: Path(tempfile.mkdtemp())
+    whatsapp.CONFIRM_SECONDS = 4
+    drv = whatsapp.WhatsAppWeb(log=lambda m: None, base=base, headless=True)
+    try:
+        mw.MODE.update(mode="ok", tick_ms=400); mw.SENT.clear()
+        drv.open()
+        assert drv.wait_ready(20) == "ready"
+        assert drv.send("+254 700 000 777", "Hello Mama, a second line:\nsee dericbi.vercel.app") == "sent"
+        assert mw.SENT == [("254700000777", "Hello Mama, a second line:\nsee dericbi.vercel.app")]       # typed in, sent, and confirmed
+        assert drv.send("+254700000999", "x") == "not_on_whatsapp" and len(mw.SENT) == 1
+        mw.MODE["mode"] = "stuck"
+        try:
+            drv.send("+254700000778", "never ticks"); raise AssertionError("must not claim it was sent")
+        except whatsapp.SendUnconfirmed:
+            pass
+        mw.MODE["mode"] = "qr"
+        try:
+            drv.send("+254700000779", "x"); raise AssertionError("logged out")
+        except whatsapp.LoggedOut:
+            pass
+        assert drv.state() == "qr"
+    finally:
+        drv.close(); srv.shutdown()
+        whatsapp.profile_dir, whatsapp.CONFIRM_SECONDS = real
+
+
+@test
+def linking_whatsapp_waits_for_the_code_to_be_scanned_and_remembers_it():
+    fresh(); db.set_internal("whatsapp_linked", False)
+
+    class Linking(FakeWA):
+        polls = 0
+        def state(self):
+            Linking.polls += 1
+            return "qr" if Linking.polls < 3 else "ready"
+    with db.db() as c:
+        jid = jobs.create_job(c, "whatsapp_link", {})
+    assert whatsapp.run_link(jid, driver_factory=lambda: Linking(), wait_seconds=30) == "done" and whatsapp.is_linked()
+    assert db.get_internal("whatsapp_linked_at")
+    with db.db() as c:
+        msgs = " ".join(r["msg"] for r in c.execute("SELECT msg FROM job_logs WHERE job_id=?", (jid,)))
+    assert "Linked devices" in msgs and "linked" in msgs
+    whatsapp.set_linked(False)
+    with db.db() as c:
+        jid = jobs.create_job(c, "whatsapp_link", {})
+    class Never(FakeWA):
+        def state(self): return "qr"
+    assert whatsapp.run_link(jid, driver_factory=lambda: Never(), wait_seconds=1) == "failed" and not whatsapp.is_linked()
+
+
 if __name__ == "__main__":
     SMTP.stop()
-    AT.shutdown()
+    PHONE.shutdown()
     bad = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} passed")
     sys.exit(1 if bad else 0)

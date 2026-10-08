@@ -10,12 +10,13 @@
       const sent = d.sent_today;
       const firstRun = d.total === 0;
 
-      const guide = (firstRun || (!st.email_ready && !st.sms_ready)) && html`
+      const guide = (firstRun || (!st.email_ready && !st.sms_ready && !st.whatsapp_linked)) && html`
         <section class="panel"><div class="panel-body stack" style="gap:10px">
           <h2>Getting started</h2>
           <ol style="margin:0;padding-left:20px;display:grid;gap:6px">
             ${d.total === 0 && html`<li>Bring in leads: <a href="#/find">find them on Google Maps</a>, or <a href="#/leads">import your existing CSV</a>. Anything already saved is never added twice.</li>`}
-            ${!st.sms_ready && html`<li>Connect SMS (Africa's Talking) in <a href="#/settings">Settings</a> to text leads that have mobile numbers.</li>`}
+            ${!st.sms_ready && html`<li>Connect your Android phone in <a href="#/settings">Settings</a> to text leads that have mobile numbers, at no per-text cost.</li>`}
+            ${!st.whatsapp_linked && html`<li>Connect WhatsApp in <a href="#/settings">Settings</a> to message leads on WhatsApp, sent and recorded automatically.</li>`}
             ${!st.email_ready && html`<li>Connect your email in <a href="#/settings">Settings</a> to email leads and track their replies.</li>`}
             <li>Write your message in <a href="#/outreach">Outreach</a>, preview who it goes to, then start sending.</li>
           </ol></div></section>`;
@@ -59,7 +60,7 @@
         <div class="grid2">
           <section class="panel"><div class="panel-head"><h2>Running campaigns</h2><a class="small right" href="#/outreach">Manage</a></div>
             ${d.campaigns.length ? html`<div class="list">${d.campaigns.map((c) => html`
-              <div><div class="grow"><div>${c.name}</div><div class="muted small">${c.channel === 'sms' ? 'SMS' : 'Email'} · ${c.sent} of ${c.total} sent · ${c.replies} replies${c.last_error ? ' · ' + c.last_error : ''}</div></div>
+              <div><div class="grow"><div>${c.name}</div><div class="muted small">${c.channel === 'sms' ? 'SMS' : c.channel === 'whatsapp' ? 'WhatsApp' : 'Email'} · ${c.sent} of ${c.total} sent · ${c.replies} replies${c.last_error ? ' · ' + c.last_error : ''}</div></div>
               <span class="chip ${c.status === 'paused' ? 'warm' : 'ok'}">${c.status === 'paused' ? 'Paused' : 'Running'}</span></div>`)}</div>`
               : html`<div class="empty"><strong>Nothing is sending</strong><a href="#/outreach">Start a campaign</a></div>`}
           </section>

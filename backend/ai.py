@@ -287,27 +287,56 @@ def summarize(s: dict, lead: dict) -> str:
 
 def draft_template(s: dict, channel: str, brief: str) -> dict:
     """One message for many recipients, using {name} {town} {sector} {sender} placeholders."""
-    if channel not in ("sms", "email"):
-        raise ValueError("Channel must be email or sms")
-    form = ("A text message, plain text, under 300 characters." if channel == "sms" else
-            "An email: first line 'Subject: ...', then a blank line, then a body under 120 words.")
+    if channel not in ("sms", "email", "whatsapp"):
+        raise ValueError("Channel must be email, sms or whatsapp")
+    form = _form(channel, 100 if channel == "sms" else 0)
     text = ask(s, SYSTEM, _context(s, (
         f"Extra guidance: {brief.strip() or 'none'}.\n"
-        f"Write one message that will be sent to many local businesses. {form} "
-        "Use the placeholders {name}, {town}, {sector} and {sender} in curly braces where natural, and no other "
-        "placeholders. Do not add an opt-out line; the app adds it.")))
+        f"Write one message that will be sent to many local businesses. {form} {CRAFT} "
+        "Use the placeholders {name}, {town}, {sector}, {pain} (the money-losing problem typical for that kind of business), "
+        "{first} (the sender's first name), {website}, {whatsapp} and {email} in curly braces where natural, and no other "
+        "placeholders. Never type the contact details out: use the placeholders. Do not add an opt-out line; the app adds it. "
+        + ("A {name} can be 25 characters long, so keep the rest very short." if channel == "sms" else ""))))
     subject, body = _split_subject(text) if channel == "email" else ("", text)
     return {"subject": subject, "body": body}
 
 
 FORMS = {
-    "sms": "A text message under 300 characters.",
-    "whatsapp": "A WhatsApp message in a warm, conversational voice, plain text, under 90 words, no subject line.",
+    "sms": "A text message.",
+    "whatsapp": "A WhatsApp message in a warm, conversational voice, plain text, at most 300 characters, no subject line.",
     "email": "An email: first line 'Subject: ...', then a blank line, then a body under 120 words.",
 }
 
+# How a message is built so it is read and answered: a real pain point, a curiosity gap, one easy step, nothing made up.
+CRAFT = (
+    "Write like a skilled, honest salesperson: (1) open with ONE specific pain point owners of this kind of business feel, "
+    "as a question or an observation, never an accusation; (2) open a curiosity gap by hinting at what can be seen or fixed "
+    "without giving the whole answer; (3) make it about them, using their business name or town; (4) end with ONE easy, "
+    "low-effort next step (reply YES, message on WhatsApp, or take a 2-minute look at the website); (5) warm, human, plain "
+    "words; no hype, no ALL CAPS, at most one exclamation mark, no spam words such as free money, guaranteed, urgent, act now "
+    "or winner; (6) never invent numbers, testimonials, prices, results or facts about their business."
+)
 
-def draft_for_lead(s: dict, lead: dict, channel: str, notes: str, avoid: str = "") -> dict:
+
+def _form(channel: str, limit: int = 0) -> str:
+    if channel == "sms" and limit:
+        return (f"A text message in plain English letters only (no emojis, no curly quotes, no accents), one short paragraph. "
+                f"HARD LIMIT: {limit} characters in total, counting spaces and the contact detail. Count carefully; shorter is better.")
+    return FORMS[channel]
+
+
+def _contact(s: dict, channel: str) -> str:
+    site = (s.get("contact_website") or "").strip()
+    wa, mail = (s.get("contact_whatsapp") or "").strip(), (s.get("contact_email") or "").strip()
+    if channel == "sms":
+        short = re.sub(r"^https?://(www\.)?", "", site).rstrip("/")
+        return f"Contact (use exactly ONE, the website or the WhatsApp number): {short or 'none'} / WhatsApp {wa.replace(' ', '') or 'none'}."
+    if channel == "whatsapp":
+        return f"Website to mention if useful: {site or 'none'}. They are already on WhatsApp, so do not repeat the number."
+    return f"Contact details to include at the end: website {site or 'none'}, WhatsApp {wa or 'none'}, email {mail or 'none'}."
+
+
+def draft_for_lead(s: dict, lead: dict, channel: str, notes: str, avoid: str = "", limit: int = 0) -> dict:
     """A first message, a reply, or a follow-up that fits the conversation so far, for one lead.
     `avoid` is another message to word differently from (used when a draft came out too alike)."""
     if channel not in FORMS:
@@ -319,8 +348,9 @@ def draft_for_lead(s: dict, lead: dict, channel: str, notes: str, avoid: str = "
         f"{_lead_facts(lead)}\n"
         f"Conversation so far:\n{thread or '(none yet)'}\n"
         f"Our rough notes or instructions for this message: {notes.strip() or 'none'}.\n"
-        f"{_stage(lead)} {FORMS[channel]} Write the final text with real names, no placeholders, speaking as {s['sender_name']} "
-        "in the first person and signing off with that name. "
+        f"{_stage(lead)} {_form(channel, limit)} {CRAFT} {_contact(s, channel)} "
+        f"Write the final text with real names, no placeholders, speaking as {s['sender_name']} "
+        "in the first person and signing off with the first name only. "
         f"What we can help a business like theirs find out (offer it as something we can look into together, never claim it is a fact about them): {_angle(lead['sector'])}. "
         "Use only the facts above, and weave in one or two real details about them (their town, type of business, or something from the conversation) "
         "so it reads as written for them alone. Do not add an opt-out line; the app adds it."

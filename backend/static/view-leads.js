@@ -168,7 +168,7 @@
   }
 
   // ================================================================= drawer
-  const TAGS = ['{name}', '{town}', '{sector}', '{sender}'];
+  const TAGS = ['{name}', '{town}', '{pain}', '{website}', '{whatsapp}'];
   async function getSettings() { return (App.state.settings = await api('/settings')); }
 
   App.openLead = async function openLead(id, compose) {
@@ -199,8 +199,10 @@
       : html`<div class="tl"><i></i><div><div class="small muted">${when(t)}</div><div>${e.detail}</div></div></div>`)
       : html`<div class="muted">No history yet.</div>`;
 
-    const canEmail = lead.email && !lead.email_bounced && !lead.do_not_contact;
-    const canSms = lead.phone_norm && lead.is_mobile && !lead.do_not_contact;
+    // A lead gets one message at a time: after one has gone out, another is only allowed as a follow-up (after the wait) or once they reply.
+    const hold = lead.outreach && !lead.outreach.allowed ? lead.outreach.reason : '';
+    const canEmail = lead.email && !lead.email_bounced && !lead.do_not_contact && !hold;
+    const canSms = lead.phone_norm && lead.is_mobile && !lead.do_not_contact && !hold;
     const canWa = canSms;
 
     render(ov, html`<div class="scrim" id="scrim"></div>
@@ -216,14 +218,15 @@
         <div class="drawer-body">
           <div class="row">
             ${lead.phone_norm ? html`<button class="btn small" type="button" id="copy-phone" title="Copy the number to dial it">Copy ${lead.phone_display}</button>` : ''}
-            <button class="btn small" data-compose="email" ${canEmail ? '' : 'disabled'} title="${canEmail ? '' : 'Needs a working email and not do-not-contact'}">Email</button>
-            <button class="btn small" data-compose="whatsapp" ${canWa ? '' : 'disabled'} title="${canWa ? 'Free: opens WhatsApp with the message ready, you press send' : 'Needs a mobile number and not do-not-contact'}">WhatsApp</button>
-            <button class="btn small" data-compose="sms" ${canSms ? '' : 'disabled'} title="${canSms ? '' : 'Needs a mobile number and not do-not-contact'}">Text</button>
+            <button class="btn small" data-compose="email" ${canEmail ? '' : 'disabled'} title="${hold || (canEmail ? '' : 'Needs a working email and not do-not-contact')}">Email</button>
+            <button class="btn small" data-compose="whatsapp" ${canWa ? '' : 'disabled'} title="${hold || (canWa ? 'Free: sent from your own WhatsApp' : 'Needs a mobile number and not do-not-contact')}">WhatsApp</button>
+            <button class="btn small" data-compose="sms" ${canSms ? '' : 'disabled'} title="${hold || (canSms ? '' : 'Needs a mobile number and not do-not-contact')}">Text</button>
             <button class="btn small" id="log-reply">Log a reply</button>
             ${lead.messages.length ? html`<button class="btn small" id="ai-summary" title="A short summary and the best next step">Summarise with AI</button>` : ''}
             ${lead.maps_url ? html`<a class="btn small" href="${lead.maps_url}" rel="noopener noreferrer">Google Maps</a>` : ''}
             ${/^https?:\/\//i.test(lead.website) ? html`<a class="btn small" href="${lead.website}" rel="noopener noreferrer">Website</a>` : ''}
           </div>
+          ${hold ? html`<div class="notice" style="margin:0">${hold}</div>` : ''}
           <div id="composer"></div>
 
           <form id="edit" class="stack" style="gap:12px">
@@ -284,19 +287,20 @@
       const s = App.state.settings || (await getSettings());
       const wa = channel === 'whatsapp';
       const aiReady = !!s.ai_custom_url || Object.keys(s).some((k) => /^ai_key_.+_set$/.test(k) && s[k]);
-      const ready = wa ? true : channel === 'email' ? s.smtp_host && s.from_email : s.at_username && s.at_api_key_set;
+      const linked = wa && (await api('/status')).whatsapp_linked;   // linked: WhatsApp sends it and records it by itself
+      const ready = wa ? true : channel === 'email' ? s.smtp_host && s.from_email : s.sms_gateway_url && s.sms_gateway_user && s.sms_gateway_pass_set;
       render($('#composer'), html`<form class="panel" id="send-form"><div class="panel-body stack" style="gap:10px">
         <h3>${channel === 'email' ? 'Email ' : wa ? 'WhatsApp ' : 'Text '}${lead.name}</h3>
-        ${!ready ? html`<div class="notice">${channel === 'email' ? 'Email' : 'SMS'} isn't set up yet. <a href="#/settings" id="goset">Open settings</a></div>` : ''}
+        ${!ready ? html`<div class="notice">${channel === 'email' ? 'Email' : 'Your phone for texts'} isn't set up yet. <a href="#/settings" id="goset">Open settings</a></div>` : ''}
         ${channel === 'email' ? html`<label class="field">Subject<input type="text" name="subject" required></label>` : ''}
         <label class="field">Message<textarea name="body" rows="5" required></textarea></label>
         <div class="row tags"><button type="button" class="btn small primary" id="ai-write" title="Writes a first message or a reply to their latest one. Uses anything you have typed as guidance.">Write with AI</button>${wa ? '' : TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}
           <span class="smsmeter right" id="meter"></span></div>
-        <div class="small muted">${wa ? 'Free: WhatsApp opens with this message ready. You press send there, then use Log a reply when they answer.' : s.append_optout ? 'An opt-out line is added automatically.' : ''}</div>
-        <div class="row"><button class="btn primary" type="submit" ${ready ? '' : 'disabled'}>${channel === 'email' ? 'Send email' : wa ? 'Open WhatsApp' : 'Send text'}</button>
+        <div class="small muted">${wa ? (linked ? 'WhatsApp is connected: this is sent for you and recorded automatically. Use Log a reply when they answer.' : 'WhatsApp opens with this message ready. You press send there, then use Log a reply when they answer.') : channel === 'sms' ? 'A text must fit one SMS (160 characters). The opt-out line is included in the count.' : s.append_optout ? 'An opt-out line is added automatically.' : ''}</div>
+        <div class="row"><button class="btn primary" type="submit" ${ready ? '' : 'disabled'}>${channel === 'email' ? 'Send email' : wa ? (linked ? 'Send on WhatsApp' : 'Open WhatsApp') : 'Send text'}</button>
           <button class="btn quiet" type="button" id="cancel-c">Cancel</button></div></div></form>`);
       const f = $('#send-form'); const ta = f.elements.body;
-      const meter = () => { if (channel !== 'sms') return; const len = ta.value.length + (s.append_optout ? (s.optout_suffix_sms || '').length : 0); $('#meter').textContent = `${len} characters · ${len <= 160 ? 1 : Math.ceil(len / 153)} SMS`; };
+      const meter = () => { if (channel !== 'sms') return; const len = ta.value.length + (s.append_optout ? (s.optout_suffix_sms || '').length : 0); const m = $('#meter'); m.textContent = `${len} of 160 characters`; m.style.color = len > 160 ? 'var(--bad)' : ''; };
       ta.addEventListener('input', meter); meter();
       $$('[data-tag]', f).forEach((b) => (b.onclick = () => { const p = ta.selectionStart; ta.setRangeText(b.dataset.tag, p, ta.selectionEnd, 'end'); ta.focus(); meter(); }));
       $('#cancel-c').onclick = () => render($('#composer'), html``);
@@ -304,9 +308,11 @@
       $('#goset') && ($('#goset').onclick = close);
       f.addEventListener('submit', async (e) => {
         e.preventDefault(); const btn = e.submitter; btn.disabled = true;
+        if (channel === 'sms' && ta.value.length + (s.append_optout ? (s.optout_suffix_sms || '').length : 0) > 160) { toast('That text is over 160 characters. Shorten it so it goes as one SMS.', true); btn.disabled = false; return; }
         if (wa) {
           try {
             const r = await api(`/leads/${id}/whatsapp`, { method: 'POST', body: { body: ta.value } });
+            if (r.queued) { toast('Sending on WhatsApp now. It will show as sent in a moment.'); reload(); return; }
             await api('/open-url', { method: 'POST', body: { url: r.url } });
             toast('WhatsApp opened and the message is logged'); reload();
           } catch (err) { fail(err); btn.disabled = false; }
