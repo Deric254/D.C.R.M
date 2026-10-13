@@ -77,7 +77,7 @@
         const a = e.target.closest('[data-lead]');
         if (a) App.openLead(+a.dataset.lead);
       });
-      const t = setInterval(() => { if (location.hash.startsWith('#/overview') || location.hash === '') App.refresh(); }, 30000);
+      const t = setInterval(() => { if (location.hash.startsWith('#/overview') || location.hash === '') App.refreshQuiet(); }, 30000);
       return () => clearInterval(t);
     },
   };

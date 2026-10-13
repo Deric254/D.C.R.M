@@ -232,7 +232,9 @@ hr.sep { border: 0; border-top: 1px solid var(--line-2); margin: 4px 0; }
 /* Sign-in: nothing else is shown until someone has signed in */
 .auth { display: none; }
 body.locked .app, body.locked #overlay { display: none; }
-body.locked .auth { display: grid; place-items: start center; min-height: 100vh; padding: 6vh 12px 24px; background: var(--canvas); }
+body.locked .auth { display: grid; place-items: start center; align-content: start; position: fixed; inset: 0; overflow-y: auto; overscroll-behavior: contain; padding: 6vh 12px 24px; background: var(--canvas); }   /* html/body never scroll, so this screen scrolls itself */
+.auth-card { margin-bottom: 24px; }
+.auth [id$="-hint"] { min-height: 3.6em; }   /* the password hint changes height as you type; reserve room so the form doesn't jump */
 .auth-card { width: min(560px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 24px; box-shadow: var(--shadow); }
 .auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .auth-brand img { width: 40px; height: 40px; border-radius: 8px; object-fit: contain; }

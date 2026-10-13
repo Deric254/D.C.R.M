@@ -148,7 +148,7 @@
   }
   App.go = (view, params) => { location.hash = '#/' + view + (params ? '?' + new URLSearchParams(params) : ''); };
 
-  async function route() {
+  async function route(silent) {   // silent === true: redraw in place, keep the scroll position (hashchange passes an Event, which is not true)
     if (document.body.classList.contains('locked')) return;   // signed out: only the sign-in is shown
     const { view, params } = parseHash();
     const v = App.views[view] || App.views.overview;
@@ -157,12 +157,14 @@
     $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === name));
     $('#page-title').textContent = v.title;
     document.title = v.title + ' · DericBI CRM';
-    const el = $('#content'); el.scrollTop = 0;
-    render(el, html`<div class="empty">Loading…</div>`);
+    const el = $('#content'); const keep = el.scrollTop;
+    if (silent !== true) { el.scrollTop = 0; render(el, html`<div class="empty">Loading…</div>`); }
     try { cleanup = (await v.render(el, params)) || null; }
     catch (e) { render(el, html`<div class="notice bad">${e.message}</div>`); }
+    if (silent === true) el.scrollTop = keep;
   }
   App.refresh = route;
+  App.refreshQuiet = () => route(true);
 
   // ------------------------------------------------------------- status bar
   let polling = false;   // never stack requests when the engine is slow
