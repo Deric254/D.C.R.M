@@ -102,6 +102,7 @@
         const n = S.selected.size, box = $('#bulk');
         if (!n) return render(box, html``);
         render(box, html`<div class="bulkbar"><strong>${n} selected</strong>
+          ${S.archived ? '' : html`<button class="btn small primary" id="b-reach" title="Message these leads: each gets one message, on the best way">Reach out</button>`}
           <select id="b-status"><option value="">Set status…</option>${App.STATUSES.map((x) => opt(x, App.STATUS_LABEL[x], ''))}</select>
           <select id="b-grade"><option value="">Set grade…</option>${['hot', 'warm', 'cold', 'unclear'].map((x) => opt(x, App.GRADE_LABEL[x], ''))}${opt('-', 'Clear grade', '')}</select>
           <button class="btn small" id="b-dnc">Do not contact</button>
@@ -114,6 +115,7 @@
         $('#b-status').onchange = (e) => e.target.value && run({ action: 'status', value: e.target.value }, 'Status updated');
         $('#b-grade').onchange = (e) => e.target.value && run({ action: 'grade', value: e.target.value === '-' ? '' : e.target.value }, 'Grade updated');
         $('#b-dnc').onclick = async () => { if (await App.confirm(`Mark ${n} lead(s) as do-not-contact? They will never be messaged.`, 'Mark do-not-contact', true)) run({ action: 'dnc', value: '1' }, 'Marked do-not-contact'); };
+        if ($('#b-reach')) $('#b-reach').onclick = () => { App.reachOut = [...S.selected]; location.hash = '#/outreach'; };
         $('#b-arch').onclick = () => run({ action: S.archived ? 'restore' : 'archive' }, S.archived ? 'Restored' : "Archived (kept on record so it can't come back as a duplicate)");
         $('#b-clear').onclick = () => { S.selected.clear(); load(); };
       }

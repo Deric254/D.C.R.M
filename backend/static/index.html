@@ -19,7 +19,7 @@
       <a href="#/replies" data-view="replies"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Replies</span><em class="badge hidden" id="badge-replies">0</em></a>
       <a href="#/settings" data-view="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 14a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></a>
     </nav>
-    <div class="side-foot" id="side-foot"></div>
+    <div class="side-foot" id="side-foot"><div id="who"></div><div id="ver"></div></div>
   </aside>
   <div class="main">
     <header class="topbar">
@@ -29,10 +29,12 @@
     <main class="content" id="content"></main>
   </div>
 </div>
+<div id="auth" class="auth"></div>
 <div id="overlay"></div>
 <dialog id="dlg"></dialog>
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <script src="/core.js"></script>
+<script src="/auth-ui.js"></script>
 <script src="/view-overview.js"></script>
 <script src="/view-today.js"></script>
 <script src="/view-leads.js"></script>

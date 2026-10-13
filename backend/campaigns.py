@@ -36,7 +36,8 @@ import messaging
 from messaging import SendError
 from util import days_ago, now, today_start
 
-CHANNELS = ("email", "sms", "whatsapp")
+REAL_CHANNELS = ("email", "sms", "whatsapp")
+CHANNELS = REAL_CHANNELS + ("auto",)   # "auto": the best way for each lead, chosen per lead (see pick_channel)
 AUTO_CHANNELS = ("email", "sms")   # sent by the background sender itself. WhatsApp goes through the WhatsApp worker
                                    # (see _whatsapp_tick), or by hand from the queue (wa_next) until WhatsApp is linked.
 SIMILAR = 0.9   # two messages in one campaign at least this alike count as the same message
@@ -49,6 +50,8 @@ def _audience_where(channel: str, filters: dict):
     args = []
     if channel == "email":
         where.append("l.email IS NOT NULL AND l.email_bounced = 0")
+    elif channel == "auto":   # reachable some way: narrowed to the ways in use by _auto_rows
+        where.append("((l.email IS NOT NULL AND l.email_bounced = 0) OR (l.phone_norm IS NOT NULL AND l.is_mobile = 1))")
     else:
         where.append("l.phone_norm IS NOT NULL AND l.is_mobile = 1")
 
@@ -82,15 +85,31 @@ def _audience_where(channel: str, filters: dict):
     return where, args
 
 
+def _auto_rows(conn, rows, s: dict):
+    """For 'best way' campaigns: [(lead, the way they will be reached)], leaving out leads no usable way reaches."""
+    usable = usable_channels(s)
+    out = []
+    for r in rows:
+        ch = pick_channel(conn, r, s, usable)
+        if ch:
+            out.append((r, ch))
+    return out
+
+
 def build_audience(conn, channel: str, filters: dict, s: dict, limit=None):
     where, args = _audience_where(channel, filters)
     sql = f"SELECT l.* FROM leads l WHERE {' AND '.join(where)} ORDER BY l.id"
+    if channel == "auto":
+        rows = [r for r, _ in _auto_rows(conn, conn.execute(sql, args).fetchall(), s)]
+        return rows[: int(limit)] if limit else rows
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, args).fetchall()
 
 
 def count_audience(conn, channel: str, filters: dict) -> int:
+    if channel == "auto":
+        return len(build_audience(conn, channel, filters, db.get_settings(conn)))
     where, args = _audience_where(channel, filters)
     return conn.execute(f"SELECT COUNT(*) FROM leads l WHERE {' AND '.join(where)}", args).fetchone()[0]
 
@@ -98,11 +117,18 @@ def count_audience(conn, channel: str, filters: dict) -> int:
 def audience_list(conn, channel: str, filters: dict, limit: int = 1000) -> dict:
     """The leads a campaign on this channel could go to, for the pick-your-leads list."""
     where, args = _audience_where(channel, filters)
+    if channel == "auto":
+        s = db.get_settings(conn)
+        rows = _auto_rows(conn, conn.execute(f"SELECT l.* FROM leads l WHERE {' AND '.join(where)} "
+                                             "ORDER BY l.name COLLATE NOCASE", args).fetchall(), s)
+        return {"total": len(rows), "leads": [
+            {"id": r["id"], "name": r["name"], "town": r["town"], "sector": r["sector"], "grade": r["grade"], "via": ch,
+             "contact": r["email"] if ch == "email" else r["phone_norm"]} for r, ch in rows[: int(limit)]]}
     total = conn.execute(f"SELECT COUNT(*) FROM leads l WHERE {' AND '.join(where)}", args).fetchone()[0]
     rows = conn.execute(f"SELECT l.id, l.name, l.town, l.sector, l.email, l.phone_norm, l.grade FROM leads l "
                         f"WHERE {' AND '.join(where)} ORDER BY l.name COLLATE NOCASE LIMIT {int(limit)}", args).fetchall()
     return {"total": total, "leads": [
-        {"id": r["id"], "name": r["name"], "town": r["town"], "sector": r["sector"],
+        {"id": r["id"], "name": r["name"], "town": r["town"], "sector": r["sector"], "via": channel,
          "contact": r["email"] if channel == "email" else r["phone_norm"], "grade": r["grade"]} for r in rows]}
 
 
@@ -112,7 +138,42 @@ def reach_counts(conn) -> dict:
     return {ch: {"leads": count_audience(conn, ch, {}), "ready": channel_ready(ch, s)} for ch in CHANNELS}
 
 
+def usable_channels(s: dict, linked=None) -> list:
+    """The ways that can be used right now without anyone pressing send, best first (the owner's order from Settings).
+    WhatsApp counts only once it is connected, so a 'best way' campaign never leaves messages waiting for a tap."""
+    linked = bool(db.get_internal("whatsapp_linked")) if linked is None else linked
+    order = [c for c in str(s.get("reach_order") or "whatsapp,email,sms").split(",") if c in REAL_CHANNELS]
+    return [c for c in order if (linked if c == "whatsapp" else channel_ready(c, s))]
+
+
+def _can_reach(conn, lead, channel: str) -> bool:
+    if channel == "email":
+        return bool(lead["email"]) and not lead["email_bounced"]
+    if not lead["phone_norm"] or not lead["is_mobile"]:
+        return False
+    if channel == "whatsapp" and conn.execute("SELECT 1 FROM events WHERE lead_id=? AND kind='no_whatsapp' LIMIT 1",
+                                              (lead["id"],)).fetchone():
+        return False   # known not to be on WhatsApp
+    return True
+
+
+def pick_channel(conn, lead, s: dict, usable=None, exclude=()):
+    """The one way this lead will be reached: the first usable way they can be reached on, skipping 'exclude'."""
+    for ch in (usable_channels(s) if usable is None else usable):
+        if ch not in exclude and _can_reach(conn, lead, ch):
+            return ch
+    return None
+
+
+def _prior_channel(conn, lead_id: int):
+    row = conn.execute("SELECT channel FROM messages WHERE lead_id=? AND direction='out' AND status='sent' "
+                       "ORDER BY id DESC LIMIT 1", (lead_id,)).fetchone()
+    return row["channel"] if row else None
+
+
 def channel_ready(channel: str, s: dict) -> bool:
+    if channel == "auto":
+        return bool(usable_channels(s))
     if channel == "email":
         return bool(messaging.clean_text(s["smtp_host"]) and messaging.clean_text(s["from_email"]))
     if channel == "sms":
@@ -154,8 +215,8 @@ def validate_campaign(channel, subject, body, personalize=False, style=""):
         raise ValueError("Tell the AI what the messages should say" if personalize else "Message text can't be empty")
     if personalize:
         return   # the AI writes the subject and text itself
-    if channel == "email" and not (subject or "").strip():
-        raise ValueError("Email subject can't be empty")
+    if channel in ("email", "auto") and not (subject or "").strip():
+        raise ValueError("Email subject can't be empty (an email is one of the ways a lead may be reached)")
     bad = messaging.unknown_placeholders(subject, body)
     if bad:
         raise ValueError("Unknown placeholder(s): " + ", ".join("{" + b + "}" for b in bad) +
@@ -169,20 +230,19 @@ def preview(conn, channel, subject, body, filters, personalize=False, style=""):
     full = build_audience(conn, channel, filters, s)
     rows = full[: int(limit)] if limit else full
     sample, too_long = None, 0
+    ways = {}   # how many leads each way will reach
+    usable = usable_channels(s) if channel == "auto" else None
+    via = [(r, pick_channel(conn, r, s, usable) if channel == "auto" else channel) for r in rows]
+    for _, ch in via:
+        ways[ch] = ways.get(ch, 0) + 1
     if rows and not personalize:
-        subj, text, problem = compose(channel, style, subject, body, rows[0], s, 0)
-        lead = rows[0]
-        sample = {
-            "lead": lead["name"],
-            "to": lead["email"] if channel == "email" else lead["phone_norm"],
-            "subject": subj,
-            "body": text or problem,
-            "length": len(text) if channel == "sms" else 0,
-        }
-        if channel == "sms":
-            too_long = sum(1 for i, r in enumerate(rows[:300]) if compose(channel, style, subject, body, r, s, i)[2])
+        lead, ch0 = via[0]
+        subj, text, problem = compose(ch0, style, subject, body, lead, s, 0)
+        sample = {"lead": lead["name"], "to": lead["email"] if ch0 == "email" else lead["phone_norm"], "via": ch0,
+                  "subject": subj, "body": text or problem, "length": len(text) if ch0 == "sms" else 0}
+        too_long = sum(1 for i, (r, ch) in enumerate(via[:300]) if ch == "sms" and compose(ch, style, subject, body, r, s, i)[2])
     return {"matching": len(full), "will_send": len(rows), "sample": sample, "channel_ready": channel_ready(channel, s),
-            "ai_ready": bool(ai.configured(s)), "too_long": too_long,
+            "ai_ready": bool(ai.configured(s)), "too_long": too_long, "ways": ways, "usable": usable,
             "whatsapp_linked": bool(db.get_internal("whatsapp_linked"))}
 
 
@@ -195,12 +255,17 @@ def ai_samples(conn, channel, brief, filters, count=3):
     rows = build_audience(conn, channel, filters, s, min(count, limit))
     if not rows:
         raise ValueError("Nobody matches this audience yet.")
-    leads = [L.lead_detail(conn, r["id"]) for r in rows]
+    usable = usable_channels(s) if channel == "auto" else None
+    # the way each lead would really be reached (read here: a database connection can't be shared with the threads below)
+    leads = [(L.lead_detail(conn, r["id"]), pick_channel(conn, r, s, usable) if channel == "auto" else channel) for r in rows]
+    room = messaging.SMS_LIMIT - len(messaging.final_body("sms", "", s))
 
-    def one(lead):
-        d = ai.draft_for_lead(s, lead, channel, brief)
-        return {"lead": lead["name"], "to": lead["email"] if channel == "email" else lead["phone_norm"],
-                "subject": d["subject"], "body": messaging.final_body(channel, d["body"], s)}
+    def one(item):
+        lead, ch = item
+        d = ai.draft_for_lead(s, lead, ch, brief, limit=room if ch == "sms" else 0)
+        text = messaging.sms_clean(d["body"]) if ch == "sms" else d["body"]
+        return {"lead": lead["name"], "to": lead["email"] if ch == "email" else lead["phone_norm"], "via": ch,
+                "subject": d["subject"], "body": messaging.final_body(ch, text, s)}
     with ThreadPoolExecutor(max_workers=len(leads)) as pool:
         return list(pool.map(one, leads))
 
@@ -294,24 +359,27 @@ def launch_campaign(conn, cid: int):
         raise ValueError("Add an AI key in Settings first. Gemini, Groq and NVIDIA all offer free keys.")
     if not channel_ready(c["channel"], s):
         raise ValueError({"email": "Email isn't connected yet. Open Settings and connect Gmail first.",
-                          "sms": "Your phone isn't connected yet. Open Settings > Text messages first."}[c["channel"]])
+                          "sms": "Your phone isn't connected yet. Open Settings > Text messages first.",
+                          "auto": "Connect at least one way to reach people first: Gmail, your phone for texts, or WhatsApp (Settings)."}[c["channel"]])
     filters = json.loads(c["filters"] or "{}")
     limit = filters.get("limit") or None
     rows = build_audience(conn, c["channel"], filters, s, limit)
     if not rows:
         raise ValueError("No leads match this audience right now.")
     n = 0
+    usable = usable_channels(s) if c["channel"] == "auto" else None
     for i, lead in enumerate(rows):
         problem = None
+        ch = pick_channel(conn, lead, s, usable) if c["channel"] == "auto" else c["channel"]   # ONE way per lead
         if c["ai_personalize"]:
             subject = body = ""   # the sender writes this lead's message just before it goes out
         else:
-            subject, body, problem = compose(c["channel"], c["style"], c["subject"], c["body"], lead, s, i)
-        to = lead["email"] if c["channel"] == "email" else lead["phone_norm"]
+            subject, body, problem = compose(ch, c["style"], c["subject"], c["body"], lead, s, i)
+        to = lead["email"] if ch == "email" else lead["phone_norm"]
         conn.execute(
             "INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, error, "
             "scheduled_at, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (lead["id"], cid, "out", c["channel"], to, subject, body, "skipped" if problem else "queued", problem or "",
+            (lead["id"], cid, "out", ch, to, subject, body, "skipped" if problem else "queued", problem or "",
              now(), now()))
         n += 1
     conn.execute("UPDATE campaigns SET status='running', total=?, launched_at=?, last_error='' WHERE id=?", (n, now(), cid))
@@ -349,7 +417,12 @@ def campaign_stats(conn, cid=None):
           AND m.grade NOT IN ('auto','bounce')) AS replies,
       (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in' AND m.grade='hot') AS hot,
       (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in' AND m.grade='warm') AS warm,
-      (SELECT COUNT(*) FROM campaigns k WHERE k.followup_of=c.id AND k.status IN ('scheduled','running','paused')) AS followups_waiting
+      (SELECT COUNT(*) FROM campaigns k WHERE k.followup_of=c.id AND k.status IN ('scheduled','running','paused')) AS followups_waiting,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='email') AS n_email,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='sms') AS n_sms,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='whatsapp') AS n_whatsapp,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='whatsapp'
+          AND m.status='queued') AS queued_whatsapp
     FROM campaigns c """
     if cid is not None:
         r = conn.execute(q + "WHERE c.id=?", (cid,)).fetchone()
@@ -390,7 +463,7 @@ def _elsewhere(conn, lead_id: int, cid) -> bool:
 
 def send_now(lead_id: int, channel: str, subject: str, body: str) -> dict:
     """Send a single message to one lead immediately (used from the lead panel)."""
-    if channel not in CHANNELS:
+    if channel not in REAL_CHANNELS:
         raise ValueError("Channel must be email, text or WhatsApp")
     if channel == "whatsapp":
         raise ValueError("WhatsApp is sent from WhatsApp itself: use the WhatsApp button on the lead.")
@@ -520,7 +593,7 @@ def wa_next(cid: int):
     while True:
         with db.db() as conn:
             c = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
-            if not c or c["channel"] != "whatsapp":
+            if not c or c["channel"] not in ("whatsapp", "auto"):
                 raise KeyError("WhatsApp campaign not found")
             if c["status"] == "done":
                 return None
@@ -530,7 +603,8 @@ def wa_next(cid: int):
             row = conn.execute(
                 "SELECT m.*, c.ai_personalize, c.body AS brief, c.followup_step AS step FROM messages m "
                 "JOIN campaigns c ON c.id = m.campaign_id "
-                "WHERE m.campaign_id=? AND m.direction='out' AND m.status='queued' AND (m.scheduled_at IS NULL OR m.scheduled_at <= ?) "
+                "WHERE m.campaign_id=? AND m.direction='out' AND m.channel='whatsapp' AND m.status='queued' "
+                "AND (m.scheduled_at IS NULL OR m.scheduled_at <= ?) "
                 "ORDER BY m.id LIMIT 1", (cid, now())).fetchone()
             stats = conn.execute(
                 "SELECT COUNT(*) AS total, SUM(status='sent') AS sent, SUM(status='queued') AS left FROM messages "
@@ -606,12 +680,43 @@ def wa_act(mid: int, action: str, body: str = None) -> dict:
         if action == "sent":
             _mark_sent(conn, mid, lead["id"], "manual", None)
         elif action == "no_whatsapp":
-            conn.execute("UPDATE messages SET status='skipped', error='Not on WhatsApp' WHERE id=?", (mid,))
             db.log_event(conn, lead["id"], "no_whatsapp", "Number is not on WhatsApp" + (" - email them instead" if lead["email"] else ""))
+            if not reroute(conn, mid, "whatsapp", "not on WhatsApp"):
+                conn.execute("UPDATE messages SET status='skipped', error='Not on WhatsApp' WHERE id=?", (mid,))
         else:
             conn.execute("UPDATE messages SET status='skipped', error='Skipped by you' WHERE id=?", (mid,))
         Sender._maybe_finish(conn, m["campaign_id"])
     return {"status": "sent" if action == "sent" else "skipped"}
+
+
+def reroute(conn, mid: int, failed: str, reason: str) -> bool:
+    """'Best way' campaigns: when a lead can't be reached the way first chosen (not on WhatsApp, email bounced), their ONE
+    message moves to the next way instead of being lost. It is the same message row, so the lead is never messaged twice."""
+    m = conn.execute("SELECT m.*, c.channel AS cchannel, c.style AS cstyle, c.subject AS csubject, c.body AS cbody, "
+                     "c.ai_personalize AS cai, c.followup_step AS step, c.status AS cstatus FROM messages m "
+                     "JOIN campaigns c ON c.id = m.campaign_id WHERE m.id=?", (mid,)).fetchone()
+    if not m or m["cchannel"] != "auto" or m["cstatus"] not in ("running", "paused"):
+        return False
+    lead = conn.execute("SELECT * FROM leads WHERE id=?", (m["lead_id"],)).fetchone()
+    if not lead or lead["do_not_contact"] or lead["archived"]:
+        return False
+    s = db.get_settings(conn)
+    tried = {failed}
+    for e in conn.execute("SELECT detail FROM events WHERE lead_id=? AND kind='rerouted'", (lead["id"],)):
+        tried.add(e["detail"].split("->")[0].strip())
+    nxt = pick_channel(conn, lead, s, usable_channels(s), exclude=tried)
+    if not nxt:
+        return False
+    subject = body = ""
+    if not m["cai"]:
+        subject, body, problem = compose(nxt, m["cstyle"], m["csubject"], m["cbody"], lead, s, m["id"], int(m["step"] or 0))
+        if problem:
+            return False
+    conn.execute("UPDATE messages SET channel=?, to_addr=?, subject=?, body=?, status='queued', error='', attempts=0, "
+                 "scheduled_at=? WHERE id=?",
+                 (nxt, lead["email"] if nxt == "email" else lead["phone_norm"], subject, body, now(), mid))
+    db.log_event(conn, lead["id"], "rerouted", f"{failed}->{nxt}: {reason}")
+    return True
 
 
 # --------------------------------------------- WhatsApp worker (sends through WhatsApp Web, records by itself)
@@ -669,9 +774,10 @@ def wa_result(mid: int, outcome: str, detail: str = ""):
         if outcome == "sent":
             _mark_sent(conn, mid, lead_id, "whatsapp-web", None)
         elif outcome == "not_on_whatsapp":
-            conn.execute("UPDATE messages SET status='skipped', error='Not on WhatsApp' WHERE id=?", (mid,))
             lead = conn.execute("SELECT email FROM leads WHERE id=?", (lead_id,)).fetchone()
             db.log_event(conn, lead_id, "no_whatsapp", "Number is not on WhatsApp" + (" - email them instead" if lead["email"] else ""))
+            if not reroute(conn, mid, "whatsapp", "not on WhatsApp"):
+                conn.execute("UPDATE messages SET status='skipped', error='Not on WhatsApp' WHERE id=?", (mid,))
         elif outcome == "requeue":
             conn.execute("UPDATE messages SET status='queued', attempts=attempts-1, error=? WHERE id=?", (detail, mid))
         elif outcome == "retry" and m["attempts"] < 3:
@@ -710,7 +816,8 @@ def _followup_leads(conn, c, only_due: bool):
              "AND r.grade NOT IN ('auto','bounce'))"]
     args = [c["followup_of"], c["id"]]
     where.append("l.email IS NOT NULL AND l.email_bounced = 0" if c["channel"] == "email"
-                 else "l.phone_norm IS NOT NULL AND l.is_mobile = 1")
+                 else "((l.email IS NOT NULL AND l.email_bounced = 0) OR (l.phone_norm IS NOT NULL AND l.is_mobile = 1))"
+                 if c["channel"] == "auto" else "l.phone_norm IS NOT NULL AND l.is_mobile = 1")
     if only_due:
         where.append("l.last_contacted_at <= ?")
         args.append(days_ago(int(c["followup_days"])))
@@ -730,20 +837,29 @@ def release_followups(s: dict = None, conn=None) -> int:
             if c["ai_personalize"] and not ai.configured(s):
                 continue   # an AI follow-up waits until there is a key
             rows = _followup_leads(conn, c, True)
+            usable = usable_channels(s) if c["channel"] == "auto" else None
+            queued_here = 0
             for i, lead in enumerate(rows):
+                ch = c["channel"]
+                if ch == "auto":   # keep to the way they were first reached when it still works, else the best way now
+                    prior = _prior_channel(conn, lead["id"])
+                    ch = prior if prior in (usable or []) and _can_reach(conn, lead, prior) else pick_channel(conn, lead, s, usable)
+                    if not ch:
+                        continue
                 subject = body = problem = ""
                 if not c["ai_personalize"]:   # ready-made: the nudge / tip / last note for this step
-                    subject, body, problem = compose(c["channel"], "ready", "", "", lead, s, i, max(int(c["followup_step"] or 1), 1))
-                to = lead["email"] if c["channel"] == "email" else lead["phone_norm"]
+                    subject, body, problem = compose(ch, "ready", "", "", lead, s, i, max(int(c["followup_step"] or 1), 1))
+                to = lead["email"] if ch == "email" else lead["phone_norm"]
                 conn.execute(
                     "INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, error, "
                     "scheduled_at, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (lead["id"], c["id"], "out", c["channel"], to, subject, body, "skipped" if problem else "queued",
+                    (lead["id"], c["id"], "out", ch, to, subject, body, "skipped" if problem else "queued",
                      problem or "", now(), now()))
-            if rows:
+                queued_here += 1
+            if queued_here:
                 conn.execute("UPDATE campaigns SET status='running', total=total+?, launched_at=COALESCE(launched_at, ?), "
-                             "finished_at=NULL, last_error='' WHERE id=?", (len(rows), now(), c["id"]))
-                queued += len(rows)
+                             "finished_at=NULL, last_error='' WHERE id=?", (queued_here, now(), c["id"]))
+                queued += queued_here
                 Sender._maybe_finish(conn, c["id"])
         return queued
     finally:
@@ -1005,6 +1121,11 @@ class Sender(threading.Thread):
                 conn.execute("UPDATE messages SET status='queued', attempts=attempts-1, error=? WHERE id=?", (str(e), mid))
                 conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE channel=? AND status='running'",
                              (str(e), ch))
+                # a 'best way' campaign has other ways to keep going: only this way waits (and the reason is shown)
+                held = conn.execute("UPDATE campaigns SET last_error=? WHERE channel='auto' AND status='running' AND id IN "
+                                    "(SELECT campaign_id FROM messages WHERE channel=? AND status='queued')", (str(e), ch)).rowcount
+                if held:
+                    self.next_ok[ch] = time.time() + 120   # try this way again in two minutes; the others carry on
                 self._set("paused", str(e))
                 return
             if e.kind == "transient" and attempts < 3:
@@ -1012,9 +1133,12 @@ class Sender(threading.Thread):
                 conn.execute("UPDATE messages SET status='queued', error=?, scheduled_at=? WHERE id=?",
                              (str(e), retry_at, mid))
             else:
-                conn.execute("UPDATE messages SET status='failed', error=? WHERE id=?", (str(e), mid))
-                if ch == "email" and "Recipient refused" in str(e):
+                bounced = ch == "email" and "Recipient refused" in str(e)
+                if bounced:
                     L.mark_bounced(conn, lead_id, str(e))
+                if bounced and reroute(conn, mid, "email", "the email address was refused"):
+                    return
+                conn.execute("UPDATE messages SET status='failed', error=? WHERE id=?", (str(e), mid))
             self.fails[cid] = self.fails.get(cid, 0) + 1
             if self.fails[cid] >= 5:
                 conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE id=?",

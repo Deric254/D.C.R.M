@@ -43,3 +43,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# the owner licence key must never be committed
+dericbi-owner.key
+*.key
+!dericbi.key.pub

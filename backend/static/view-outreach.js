@@ -1,22 +1,27 @@
 (function () {
   const { html, render, api, $, $$, when, toast, fail, debounce } = App;
   const TAGS = ['{name}', '{town}', '{pain}', '{website}', '{whatsapp}'];
-  const CHLAB = { email: 'Email', sms: 'Text', whatsapp: 'WhatsApp' };
+  const CHLAB = { auto: 'Best way', email: 'Email', sms: 'Text', whatsapp: 'WhatsApp' };
+  const WAYS = { whatsapp: 'WhatsApp', email: 'email', sms: 'text' };
   const CSTATUS = { draft: ['Draft', ''], running: ['Sending', 'ok'], paused: ['Paused', 'warm'], done: ['Done', 'ok'], cancelled: ['Cancelled', 'cold'], scheduled: ['Waiting for follow-up time', 'warm'] };
 
   App.views.outreach = {
     title: 'Outreach',
     async render(el) {
       const [facets, settings, list, st0, reach0] = await Promise.all([api('/facets'), api('/settings'), api('/campaigns'), api('/status'), api('/campaigns/reach')]);
-      let showForm = list.length === 0;
+      let preset = App.reachOut || null; App.reachOut = null;   // leads ticked on the Leads page
+      let showForm = list.length === 0 || !!preset;
       let timer;
       let known = [];   // the campaign rows last drawn
       let linked = !!st0.whatsapp_linked;
       let reach = reach0;
+      // The ways a "best way" campaign can use right now, in the owner's order. WhatsApp counts only once it is connected.
+      const usableNow = () => String(settings.reach_order || 'whatsapp,email,sms').split(',').filter((c) => (c === 'whatsapp' ? linked : reach[c].ready));
 
       function formHtml() {
         const w = settings.followup_wait_days;
         const chk = (name, vals) => vals.map((v) => html`<label class="opt"><input type="checkbox" name="${name}" value="${v}">${v}</label>`);
+        const usable = usableNow();
         const card = (ch, title, line) => html`<label><input type="radio" name="channel" value="${ch}"><b>${title}</b><span class="small">${reach[ch].leads} lead${reach[ch].leads === 1 ? '' : 's'} can be reached</span><span class="small muted">${line}</span></label>`;
         return html`<section class="panel" id="newpanel"><div class="panel-head"><h2>New campaign</h2><button class="btn small quiet right" id="hide-form">Close</button></div>
           <form id="cform" class="panel-body stack" style="gap:20px">
@@ -25,7 +30,8 @@
                 <div class="row"><button class="btn small primary" type="button" id="plan-go">Set up with AI</button></div><div id="plan-note"></div></div></details>
 
             <div class="stack" style="gap:8px"><h3>1. How do you want to reach them?</h3>
-              <div class="reach">${card('whatsapp', 'WhatsApp', linked ? 'Connected: sends by itself' : 'Not connected: you press send')}
+              <div class="reach">${card('auto', 'Best way for each lead', usable.length ? `${usable.map((c) => WAYS[c]).join(', then ')}: one message each, on the first way that works` : 'Connect a way in Settings first')}
+                ${card('whatsapp', 'WhatsApp', linked ? 'Connected: sends by itself' : 'Not connected: you press send')}
                 ${card('email', 'Email', reach.email.ready ? 'Ready' : 'Set up Gmail in Settings first')}
                 ${card('sms', 'Text message', reach.sms.ready ? 'Ready: sent by your phone' : 'Connect your phone in Settings first')}</div>
               <div class="small muted">Each lead gets one message at a time. Anyone who already has one is left out until it is a follow-up.</div></div>
@@ -34,7 +40,7 @@
               <div class="grid2"><label class="field">Find by name<input type="text" id="aud-q" placeholder="Start typing a business name"></label></div>
               <div><div class="small muted" style="margin-bottom:4px">Sector</div><div class="chips chips-scroll">${facets.sectors.length ? chk('sectors', facets.sectors) : html`<span class="muted">No sectors yet</span>`}</div></div>
               <div><div class="small muted" style="margin-bottom:4px">Town</div><div class="chips chips-scroll">${facets.towns.length ? chk('towns', facets.towns) : html`<span class="muted">No towns yet</span>`}</div></div>
-              <div id="pickhead" class="row"></div><div id="pick" class="pick"></div></div>
+              <div id="preset-note"></div><div id="pickhead" class="row"></div><div id="pick" class="pick"></div></div>
 
             <div class="stack" style="gap:10px"><h3>3. What should it say?</h3>
               <div class="chips"><label class="opt"><input type="radio" name="mode" value="ready" checked>Ready-made for each kind of business</label>
@@ -42,7 +48,7 @@
                 <label class="opt"><input type="radio" name="mode" value="ai">AI writes each one</label></div>
               <div class="small muted" id="mode-note"></div>
               <div id="msgbox" class="stack hidden" style="gap:8px">
-                <label class="field hidden" id="subj-wrap">Subject<input type="text" name="subject" placeholder="A quick question for {name}"></label>
+                <label class="field hidden" id="subj-wrap">Subject (used when a lead is reached by email)<input type="text" name="subject" placeholder="A quick question for {name}"></label>
                 <div class="field"><span id="msg-title">Message</span>
                   <textarea name="body" rows="5" placeholder="{name}: how much does {pain} cost you each month? I can show you. {website} - {first}"></textarea>
                   <div class="row tags" id="tools"><button type="button" class="btn small primary" id="ai-write" title="Uses anything you have typed as guidance">Write with AI</button>${TAGS.map((t) => html`<button type="button" class="btn small" data-tag="${t}">${t}</button>`)}</div>
@@ -74,7 +80,7 @@
         rows = rows.filter((c) => c.style !== 'single' || c.status !== 'done');   // one-lead WhatsApp sends show only while they are in progress
         render($('#clist'), rows.length ? html`<div class="tablewrap"><table class="t"><thead><tr><th>Campaign</th><th>Status</th><th style="width:170px">Progress</th><th>Failed</th><th>Replies</th><th></th></tr></thead><tbody>
           ${rows.map((c) => { const [lab, cls] = CSTATUS[c.status] || [c.status, '']; return html`<tr style="cursor:default">
-            <td><div class="name">${c.name}</div><div class="muted small">${CHLAB[c.channel] || c.channel}${c.style === 'ready' ? ' · ready-made' : c.ai_personalize ? ' · AI-written' : ''}${c.followup_days || c.followup_of ? ` · follow-up${c.followup_days ? ` after ${c.followup_days} day${c.followup_days === 1 ? '' : 's'} of silence` : ''}` : ''} · ${c.launched_at ? 'Started ' + when(c.launched_at) : 'Not started'}</div>${c.last_error ? html`<div class="small" style="color:var(--bad)">${c.last_error}</div>` : ''}</td>
+            <td><div class="name">${c.name}</div><div class="muted small">${CHLAB[c.channel] || c.channel}${c.channel === 'auto' ? ' (' + [c.n_whatsapp && c.n_whatsapp + ' WhatsApp', c.n_email && c.n_email + ' email', c.n_sms && c.n_sms + ' text'].filter(Boolean).join(', ') + ')' : ''}${c.style === 'ready' ? ' · ready-made' : c.ai_personalize ? ' · AI-written' : ''}${c.followup_days || c.followup_of ? ` · follow-up${c.followup_days ? ` after ${c.followup_days} day${c.followup_days === 1 ? '' : 's'} of silence` : ''}` : ''} · ${c.launched_at ? 'Started ' + when(c.launched_at) : 'Not started'}</div>${c.last_error ? html`<div class="small" style="color:var(--bad)">${c.last_error}</div>` : ''}</td>
             <td><span class="chip ${cls}">${lab}</span></td>
             <td><div class="progress"><i style="width:${App.pct(c.sent, c.total)}%"></i></div><div class="small muted">${c.sent} of ${c.total} sent${c.queued ? ` · ${c.queued} waiting` : ''}</div></td>
             <td>${c.failed || '0'}${c.skipped ? html`<div class="small muted">${c.skipped} skipped</div>` : ''}</td>
@@ -110,7 +116,7 @@
       async function followUp(c) {
         const dlg = await App.dialog({ title: 'Follow up', ok: 'Schedule follow-up', body: html`
           <p class="small muted">Goes only to people from “${c.name}” who got a message and haven't replied. Nobody ever gets two messages at once.</p>
-          <label class="field">Send it by<select id="fu-ch">${['email', 'whatsapp', 'sms'].map((ch) => html`<option value="${ch}" ${ch === c.channel ? 'selected' : ''}>${CHLAB[ch]}</option>`)}</select></label>
+          <label class="field">Send it by<select id="fu-ch">${['auto', 'email', 'whatsapp', 'sms'].map((ch) => html`<option value="${ch}" ${ch === c.channel ? 'selected' : ''}>${ch === 'auto' ? 'Best way for each lead' : CHLAB[ch]}</option>`)}</select></label>
           <label class="field">After how many days of silence<input id="fu-days" type="number" min="0" max="30" value="${settings.followup_wait_days}"></label>
           <p class="small muted">The message is ready-made for each kind of business: a gentle nudge first, then something useful, then a polite last note. Another channel works too, for leads reachable on it.</p>` });
         if (!dlg) return;
@@ -180,10 +186,10 @@
         const channel = () => f.elements.channel.value;
         const mode = () => f.elements.mode.value;
         // start on a way that is ready and has leads
-        const first = ['whatsapp', 'email', 'sms'].find((c) => reach[c].ready && reach[c].leads && (c !== 'whatsapp' || linked)) || ['email', 'sms', 'whatsapp'].find((c) => reach[c].ready && reach[c].leads) || 'email';
+        const first = (reach.auto.ready && reach.auto.leads ? 'auto' : null) || ['whatsapp', 'email', 'sms'].find((c) => reach[c].ready && reach[c].leads && (c !== 'whatsapp' || linked)) || ['email', 'sms', 'whatsapp'].find((c) => reach[c].ready && reach[c].leads) || 'email';
         f.querySelector(`input[name=channel][value=${first}]`).checked = true;
 
-        const audienceFilters = () => { const fd = new FormData(f); return { sectors: fd.getAll('sectors'), towns: fd.getAll('towns'), q: $('#aud-q').value.trim() }; };
+        const audienceFilters = () => { const fd = new FormData(f); const o = { sectors: fd.getAll('sectors'), towns: fd.getAll('towns'), q: $('#aud-q').value.trim() }; if (preset) o.lead_ids = preset; return o; };
         const getBody = () => {
           const fd = new FormData(f);
           return { name: fd.get('name'), channel: channel(), subject: fd.get('subject') || '', body: mode() === 'ready' ? '' : fd.get('body'),
@@ -194,7 +200,7 @@
         // ---- the leads, each one tickable
         const drawPick = () => {
           render($('#pickhead'), html`<div class="small"><b>${picked.size}</b> of ${total} selected</div><div class="row right" style="gap:6px"><button type="button" class="btn small" id="pick-all">Select all shown</button><button type="button" class="btn small quiet" id="pick-none">Clear</button></div>`);
-          render($('#pick'), shown.length ? html`${shown.map((l) => html`<label><input type="checkbox" data-id="${l.id}" ${picked.has(l.id) ? 'checked' : ''}><span style="flex:1"><b>${l.name}</b> <span class="muted small">${[l.town, l.sector].filter(Boolean).join(' · ')}</span></span><span class="small muted">${l.contact}</span></label>`)}`
+          render($('#pick'), shown.length ? html`${shown.map((l) => html`<label><input type="checkbox" data-id="${l.id}" ${picked.has(l.id) ? 'checked' : ''}><span style="flex:1"><b>${l.name}</b> <span class="muted small">${[l.town, l.sector].filter(Boolean).join(' · ')}</span></span>${l.via ? html`<span class="chip">${CHLAB[l.via]}</span>` : ''}<span class="small muted">${l.contact || ''}</span></label>`)}`
             : html`<div class="empty" style="padding:18px"><strong>Nobody to show</strong>Everyone who can be reached this way has already been messaged, or no one matches the search.</div>`);
           $('#pick-all').onclick = () => { shown.forEach((l) => picked.add(l.id)); drawPick(); preview(); };
           $('#pick-none').onclick = () => { picked.clear(); drawPick(); preview(); };
@@ -205,6 +211,8 @@
           try {
             const r = await api('/campaigns/audience', { method: 'POST', body: { channel: channel(), filters: audienceFilters(), limit: 1000 } });
             shown = r.leads; total = r.total;
+            render($('#preset-note'), preset ? html`<div class="notice" style="margin:0">You chose ${preset.length} lead${preset.length === 1 ? '' : 's'} on the Leads page. ${total} can be messaged now${total < preset.length ? ` (the rest were already messaged, or have no way to reach them)` : ''}. <a href="#" id="preset-clear">Show everyone instead</a></div>` : html``);
+            if ($('#preset-clear')) $('#preset-clear').onclick = (e) => { e.preventDefault(); preset = null; loadAudience(true); };
             if (selectAll) picked = new Set(shown.map((l) => l.id)); else picked = new Set([...picked].filter((id) => shown.some((l) => l.id === id)));
             drawPick(); preview();
           } catch (err) { fail(err); }
@@ -216,10 +224,11 @@
         const syncForm = () => {
           const ch = channel(), m = mode();
           $('#msgbox').classList.toggle('hidden', m === 'ready');
-          $('#subj-wrap').classList.toggle('hidden', ch !== 'email' || m !== 'own'); $('#tools').classList.toggle('hidden', m !== 'own');
+          $('#subj-wrap').classList.toggle('hidden', (ch !== 'email' && ch !== 'auto') || m !== 'own'); $('#tools').classList.toggle('hidden', m !== 'own');
           $('#msg-title').textContent = m === 'ai' ? 'What should the AI say? Give the goal, the offer and what you want them to do.' : 'Message';
           f.elements.body.placeholder = m === 'ai' ? aiHint : plainHint;
           $('#mode-note').textContent = m === 'ready' ? 'Each business gets the message written for its kind of business (pharmacy, agrovet, hardware, salon…), with its own name, a real pain point, and your website, WhatsApp and email. Texts are always one SMS of 160 characters or less.'
+            : m === 'own' && ch === 'auto' ? 'The same words go by WhatsApp, email or text, whichever suits each lead. A text must fit 160 characters, so keep it short. Use {name}, {town}, {pain}, {website}, {whatsapp} and {email}.'
             : m === 'own' ? 'Use {name}, {town}, {pain}, {website}, {whatsapp} and {email} and each lead gets their own version.'
             : 'The AI writes a fresh message for each person, in the same plain, curious style, and keeps texts to one SMS.';
           if (ch !== 'sms' || m === 'ai' || m === 'ready') return render($('#meter'), html``);
@@ -235,16 +244,16 @@
             const p = await api('/campaigns/preview', { method: 'POST', body });
             if (!document.body.contains(f)) return;
             lastPreview = p;
-            const cap = settings[`${body.channel}_daily_cap`] || 1;
-            const days = p.will_send ? Math.ceil(p.will_send / Math.max(1, cap)) : 0;
+            const cap = settings[`${body.channel}_daily_cap`] || 0;
+            const days = p.will_send && cap ? Math.ceil(p.will_send / cap) : 0;
             render(box, html`
-              ${!p.channel_ready ? html`<div class="notice bad">${body.channel === 'sms' ? 'Your phone isn\'t connected yet.' : 'Email isn\'t connected yet.'} <a href="#/settings">Open settings</a> before sending.</div>` : ''}
+              ${!p.channel_ready ? html`<div class="notice bad">${body.channel === 'auto' ? 'No way to reach people is connected yet. Connect Gmail, your phone for texts, or WhatsApp.' : body.channel === 'sms' ? 'Your phone isn\'t connected yet.' : 'Email isn\'t connected yet.'} <a href="#/settings">Open settings</a> before sending.</div>` : ''}
               ${body.channel === 'whatsapp' && !p.whatsapp_linked ? html`<div class="notice">WhatsApp isn't connected, so you'll press send for each lead. <a href="#/settings">Connect it in Settings</a> and it sends by itself.</div>` : ''}
               ${body.ai && !p.ai_ready ? html`<div class="notice bad">The AI isn't connected yet. <a href="#/settings">Open settings</a> and add a free key, or choose a ready-made message.</div>` : ''}
-              <div><strong>${p.will_send}</strong> lead${p.will_send === 1 ? '' : 's'} will get ${body.ai ? 'a message written for them' : 'a message'}${days > 1 ? html` <span class="muted">· at your daily limit of ${cap} that takes about ${days} days</span>` : ''}.</div>
+              <div><strong>${p.will_send}</strong> lead${p.will_send === 1 ? '' : 's'} will get ${body.ai ? 'a message written for them' : 'a message'}${body.channel === 'auto' && Object.keys(p.ways || {}).length ? html`: ${Object.entries(p.ways).map(([c, n]) => `${n} by ${WAYS[c]}`).join(', ')}` : ''}${days > 1 ? html` <span class="muted">· at your daily limit of ${cap} that takes about ${days} days</span>` : ''}.</div>
               ${p.too_long ? html`<div class="notice bad">${p.too_long} text${p.too_long === 1 ? ' is' : 's are'} too long for one SMS and would be skipped. Shorten the message.</div>` : ''}
               ${body.ai ? html`<div class="row"><span class="small muted">Each message is written by the AI just before it goes out.</span><button type="button" class="btn small right" id="ai-samples">Show example messages</button></div><div id="samples" class="stack" style="gap:8px"></div>`
-                : p.sample ? html`<div class="small muted">Example for ${p.sample.lead}, sent to ${p.sample.to}${p.sample.length ? ` · ${p.sample.length} of 160 characters` : ''}</div>
+                : p.sample ? html`<div class="small muted">Example for ${p.sample.lead}, ${body.channel === 'auto' ? `by ${WAYS[p.sample.via]}, ` : ''}sent to ${p.sample.to}${p.sample.length ? ` · ${p.sample.length} of 160 characters` : ''}</div>
                 <div class="sample">${p.sample.subject ? p.sample.subject + '\n\n' : ''}${p.sample.body}</div>` : ''}`);
             if ($('#ai-samples')) $('#ai-samples').onclick = showSamples;
             $('#go').disabled = !p.will_send || !p.channel_ready || (body.ai && !p.ai_ready) || p.too_long === p.will_send;
@@ -256,7 +265,7 @@
         };
         const showSamples = (e) => busy(e.currentTarget, 'Writing…', async () => {
           const rows = await api('/campaigns/ai-samples', { method: 'POST', body: getBody(), timeout: 100000 });
-          render($('#samples'), html`${rows.map((x) => html`<div class="small muted">Example for ${x.lead}, sent to ${x.to}</div><div class="sample">${x.subject ? x.subject + '\n\n' : ''}${x.body}</div>`)}
+          render($('#samples'), html`${rows.map((x) => html`<div class="small muted">Example for ${x.lead}, sent to ${x.to}${x.via ? ` (by ${WAYS[x.via]})` : ''}</div><div class="sample">${x.subject ? x.subject + '\n\n' : ''}${x.body}</div>`)}
             <div class="small muted">Examples only: each real message is written fresh when it is sent.</div>`);
         });
         $('#plan-go').onclick = (e) => busy(e.currentTarget, 'Setting up…', async () => {
@@ -282,7 +291,8 @@
         const submit = async (launch) => {
           try {
             const n = lastPreview ? lastPreview.will_send : picked.size, ch = channel();
-            const ask = ch === 'whatsapp' ? (linked ? `Start sending on WhatsApp to ${n} lead${n === 1 ? '' : 's'}? Messages go out one at a time, with pauses, from your connected WhatsApp.` : `Start a WhatsApp campaign for ${n} lead${n === 1 ? '' : 's'}? WhatsApp isn't connected, so you'll press send for each lead.`)
+            const ask = ch === 'auto' ? `Start reaching ${n} lead${n === 1 ? '' : 's'}? Each gets ONE message, on the first way that works for them (${usableNow().map((c) => WAYS[c]).join(', then ')}). If a way fails, such as a number that is not on WhatsApp, their message moves to the next way instead of being lost.`
+              : ch === 'whatsapp' ? (linked ? `Start sending on WhatsApp to ${n} lead${n === 1 ? '' : 's'}? Messages go out one at a time, with pauses, from your connected WhatsApp.` : `Start a WhatsApp campaign for ${n} lead${n === 1 ? '' : 's'}? WhatsApp isn't connected, so you'll press send for each lead.`)
               : ch === 'sms' ? `Start texting ${n} lead${n === 1 ? '' : 's'}? Your phone sends them one at a time, with a pause between each.` : `Start sending to ${n} lead${n === 1 ? '' : 's'}? Emails go out gradually within your limits.`;
             if (launch && !(await App.confirm(ask, 'Start campaign'))) return;
             await api('/campaigns', { method: 'POST', body: { ...getBody(), launch } });

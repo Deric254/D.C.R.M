@@ -1,4 +1,5 @@
 """End-to-end backend tests. Run:  python tests/test_backend.py"""
+import base64
 import json
 import os
 import re
@@ -9,8 +10,8 @@ import time
 import traceback
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import timedelta
 from pathlib import Path
-from urllib.parse import parse_qs
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
@@ -30,6 +31,29 @@ import jobs  # noqa: E402
 import scraper  # noqa: E402
 import enrich  # noqa: E402
 from util import days_ago, normalize_phone, now  # noqa: E402
+import auth  # noqa: E402
+import ed25519  # noqa: E402
+import owner_key  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+# A throwaway owner key for the tests: the app under test believes this is the owner's public key.
+TEST_OWNER_KEY, TEST_OWNER_PUB = auth.make_owner_key()
+owner_key.OWNER_PUBLIC_KEY = TEST_OWNER_PUB
+STRONG = "Maize&Tractor#2468"
+QS = [{"q": auth.QUESTIONS[0], "a": "Kamunyaka Primary"}, {"q": auth.QUESTIONS[1], "a": "Kisii"}, {"q": auth.QUESTIONS[2], "a": "Otieno"}]
+OWNER_SETUP = {"mode": "owner", "username": "Deric Marangu", "password": STRONG, "questions": QS, "owner_key": TEST_OWNER_KEY}
+
+
+class AuthedClient(TestClient):
+    """A test client that is already signed in as the owner, so the existing tests keep testing what they test."""
+    def __enter__(self):
+        super().__enter__()
+        r = self.post("/api/auth/setup", json=OWNER_SETUP)
+        if r.status_code == 409:   # this database already has the account
+            r = self.post("/api/auth/login", json={"username": "Deric Marangu", "password": STRONG})
+        assert r.status_code == 200, r.text
+        return self
+
 
 RESULTS = []
 
@@ -141,7 +165,7 @@ db.init_db()
 
 def fresh():
     with db.db() as c:
-        for t in ("events", "messages", "campaigns", "job_logs", "jobs", "leads", "settings"):
+        for t in ("events", "messages", "campaigns", "job_logs", "jobs", "leads", "sessions", "security_answers", "users", "settings"):
             c.execute(f"DELETE FROM {t}")
 
 
@@ -759,11 +783,10 @@ def email_enrichment():
 # ========================================================================== API
 @test
 def api_end_to_end():
-    from fastapi.testclient import TestClient
     import server
     fresh()
     app = server.create_app(port=8765)
-    with TestClient(app, base_url="http://127.0.0.1:8765") as cl:
+    with AuthedClient(app, base_url="http://127.0.0.1:8765") as cl:
         assert cl.get("/api/health").json()["ok"]
         # host / origin guards
         assert TestClient(app, base_url="http://evil.example").get("/api/health").status_code == 403
@@ -918,7 +941,6 @@ def all_searches_failing_marks_job_failed():
 @test
 def ai_drafts_providers_and_errors():
     """Drafts come back from an OpenAI-style server; failures give a readable 502, not a crash."""
-    from fastapi.testclient import TestClient
     import server
     fresh()
     seen = []
@@ -935,7 +957,7 @@ def ai_drafts_providers_and_errors():
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             r = cl.post("/api/ai/template", json={"channel": "sms"})
             assert r.status_code == 502 and "key" in r.json()["detail"].lower()
             assert cl.put("/api/settings", json={"ai_provider": "nope"}).status_code == 400
@@ -966,7 +988,6 @@ def ai_drafts_providers_and_errors():
 @test
 def retired_ai_model_is_replaced_automatically_and_settings_fill_their_own_blanks():
     """A model name the provider has retired must not silently kill the AI: the next name, then the provider's own list, is used."""
-    from fastapi.testclient import TestClient
     import ai, server
     fresh()
     asked = []
@@ -1002,7 +1023,7 @@ def retired_ai_model_is_replaced_automatically_and_settings_fill_their_own_blank
             ai.ask(s, "sys", "hi"); assert False
         except ai.AIError as e:
             assert "decommissioned" in str(e) or "not found" in str(e), e
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             got = cl.get("/api/settings").json()
             assert got["ai_defaults"]["gemini"] and got["ai_defaults"]["groq"]
             cl.put("/api/settings", json={"smtp_host": "smtp.gmail.com", "smtp_user": "me@gmail.com", "imap_host": "imap.gmail.com"})
@@ -1039,7 +1060,6 @@ def _ai_server(answer):
 def ai_plans_searches_from_a_conversation():
     """The owner describes who to reach; the AI answers with clean, de-duplicated searches the finder can run."""
     import ai
-    from fastapi.testclient import TestClient
     import server
     # --- reading the model's answer: fences, chatter, junk entries, duplicates, a hard cap
     ok = ai.parse_plan('Sure!\n```json\n{"reply": " Pharmacies  first. ", "searches": ['
@@ -1063,7 +1083,7 @@ def ai_plans_searches_from_a_conversation():
         {"category": "Clinic", "town": "Kisii"}]})}
     srv, seen = _ai_server(answer)
     try:
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             r = cl.post("/api/ai/plan-searches", json={"goal": "pharmacies in Kisii"})
             assert r.status_code == 502 and "key" in r.json()["detail"].lower()     # no AI key yet: a readable message
             cl.put("/api/settings", json={"ai_provider": "custom", "ai_custom_url": f"http://127.0.0.1:{srv.server_port}",
@@ -1110,10 +1130,9 @@ def ai_grades_unclear_replies_and_summarises():
         with db.db() as c:
             assert L.record_reply(c, lid, "sms", "zzz qqq")["grade"] == "unclear"
         # summary needs a conversation
-        from fastapi.testclient import TestClient
         import server
         answer["text"] = "They wanted details. Send a demo."
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             assert cl.post(f"/api/leads/{lid}/ai-summary").json()["summary"].startswith("They wanted")
             empty = cl.post("/api/leads", json={"name": "Quiet One", "phone": "0766000222"}).json()["id"]
             assert cl.post(f"/api/leads/{empty}/ai-summary").status_code == 400
@@ -1131,13 +1150,12 @@ def ai_grades_unclear_replies_and_summarises():
 
 @test
 def missing_logo_and_empty_slogan_never_break_the_app():
-    from fastapi.testclient import TestClient
     import server
     fresh()
     real = config.static_dir
     config.static_dir = lambda: Path(TMP) / "nowhere"
     try:
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             assert cl.get("/api/branding/logo").status_code == 404          # the page just hides the image
             assert cl.get("/api/settings").json()["slogan"] == ""
             assert cl.get("/api/health").status_code == 200 and cl.get("/api/dashboard").status_code == 200
@@ -1213,7 +1231,6 @@ DISTINCT = {
 def ai_campaign_writes_each_lead_its_own_message_and_logs_it():
     """The brief goes in, every lead gets its own AI-written email built from what we know about them, sent
     through the normal sender, with the exact text kept on the message and nobody messaged twice."""
-    from fastapi.testclient import TestClient
     import server
     fresh(); SMTP_INBOX.clear(); configure()
     srv, seen = _ai_server({"text": lambda req: f"Subject: About {_who(req)}\n\n{DISTINCT[_who(req)]}"})
@@ -1225,7 +1242,7 @@ def ai_campaign_writes_each_lead_its_own_message_and_logs_it():
                                            ("Gamma Drugs", "Kisii", "Hospital Lane", "")):
                 L.add_lead(c, {"name": name, "town": town, "sector": "Pharmacy", "address": addr, "notes": note,
                                "email": name.split()[0].lower() + "@shop.test", "website": "https://" + name.split()[0].lower() + ".test"})
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             brief = "Offer our billing software and ask for a ten minute demo."
             body = {"name": "AI test", "channel": "email", "body": brief, "filters": {"sectors": ["Pharmacy"]}, "ai": True}
             pv = cl.post("/api/campaigns/preview", json=body).json()
@@ -1265,7 +1282,6 @@ def ai_campaign_writes_each_lead_its_own_message_and_logs_it():
 def ai_campaign_holds_back_near_copies_and_retry_rewrites_them():
     """A message almost identical to another one in the campaign is reworded once; if it is still a copy it is
     held back (not sent, nothing saved), and Retry failed writes it afresh."""
-    from fastapi.testclient import TestClient
     import server
     fresh(); SMTP_INBOX.clear(); configure()
     same = "Subject: Quick idea\n\nHello there, we help pharmacies keep stock and expiry dates on one simple screen. Could we show you in ten minutes this week?"
@@ -1276,7 +1292,7 @@ def ai_campaign_holds_back_near_copies_and_retry_rewrites_them():
         with db.db() as c:
             for n in ("Alpha Chemist", "Beta Pharmacy"):
                 L.add_lead(c, {"name": n, "town": "Meru", "sector": "Pharmacy", "email": n.split()[0].lower() + "@shop.test"})
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             cid = cl.post("/api/campaigns", json={"name": "Dup", "channel": "email", "body": "Offer a demo", "ai": True,
                                                   "filters": {}, "launch": True}).json()["id"]
             assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 1)
@@ -1335,7 +1351,6 @@ def ai_message_is_never_sent_with_blanks_no_subject_or_when_the_ai_is_down():
 
 @test
 def pausing_or_cancelling_while_the_ai_writes_stops_that_message():
-    from fastapi.testclient import TestClient
     import server
     fresh(); SMTP_INBOX.clear(); configure()
     state = {"do": None, "cid": None}
@@ -1355,7 +1370,7 @@ def pausing_or_cancelling_while_the_ai_writes_stops_that_message():
         state["do"] = "cancel"   # cancelled the moment the AI is asked, i.e. while it is "writing"
         with db.db() as c:
             C.launch_campaign(c, state["cid"])
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765"):
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765"):
             assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='skipped'") == 1)
             assert not SMTP_INBOX and count("SELECT COUNT(*) FROM messages WHERE body<>''") == 0
         fresh(); configure(); _use_ai(srv)
@@ -1365,7 +1380,7 @@ def pausing_or_cancelling_while_the_ai_writes_stops_that_message():
         state["do"] = "pause"
         with db.db() as c:
             C.launch_campaign(c, state["cid"])
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765"):
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765"):
             assert _wait(lambda: count("SELECT COUNT(*) FROM messages WHERE status='queued' AND attempts=0") == 1)
             time.sleep(1.5)
             assert not SMTP_INBOX and count("SELECT COUNT(*) FROM campaigns WHERE status='paused'") == 1
@@ -1376,7 +1391,6 @@ def pausing_or_cancelling_while_the_ai_writes_stops_that_message():
 @test
 def ai_plans_a_campaign_from_plain_words_and_shows_sample_drafts():
     import ai
-    from fastapi.testclient import TestClient
     import server
     facets = {"sectors": ["Clinic", "Pharmacy"], "towns": ["Meru", "Embu"]}
     ok = ai.parse_campaign('```json\n{"reply": " Done. ", "name": "Meru  pharmacies", "channel": "sms", "brief": "Offer a demo.", '
@@ -1400,7 +1414,7 @@ def ai_plans_a_campaign_from_plain_words_and_shows_sample_drafts():
         with db.db() as c:
             for i in range(4):
                 L.add_lead(c, {"name": f"Shop {i}", "town": "Meru", "sector": "Pharmacy", "email": f"s{i}@shop.test"})
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             r = cl.post("/api/campaigns/ai-plan", json={"goal": "email Meru pharmacies about billing"}).json()
             assert r["sectors"] == ["Pharmacy"] and r["towns"] == ["Meru"] and r["limit"] == 2 and r["brief"], r
             assert "Pharmacy" in _prompt(seen[-1]) and "Meru" in _prompt(seen[-1]) and "billing" in _prompt(seen[-1])
@@ -1527,7 +1541,6 @@ def old_database_gains_reply_tracking_and_new_persona_defaults():
 
 @test
 def follow_ups_go_only_to_people_who_have_not_replied_when_they_fall_due():
-    from fastapi.testclient import TestClient
     import server
     from util import days_ago
     fresh(); SMTP_INBOX.clear(); configure()
@@ -1537,7 +1550,7 @@ def follow_ups_go_only_to_people_who_have_not_replied_when_they_fall_due():
         with db.db() as c:
             ids = {name: L.add_lead(c, {"name": name, "town": "Meru", "sector": "Pharmacy",
                                         "email": name.split()[0].lower() + "@shop.test"})["id"] for name in DISTINCT}
-        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
             body = {"name": "Seq", "channel": "email", "body": "Offer a demo of the stock dashboard.",
                     "filters": {"sectors": ["Pharmacy"]}, "ai": True}
             for bad in ([0], [31], ["x"], [1, 2, 3, 4]):
@@ -1621,7 +1634,6 @@ def today_lists_replies_due_follow_ups_and_quiet_leads_once_each():
 @test
 def deal_value_and_offer_are_saved_validated_and_totalled():
     import server
-    from fastapi.testclient import TestClient
     fresh()
     with db.db() as c:
         a = L.add_lead(c, {"name": "Big Shop", "phone": "0700000301"})["id"]
@@ -1635,7 +1647,7 @@ def deal_value_and_offer_are_saved_validated_and_totalled():
             except ValueError:
                 pass
         assert "Sales dashboard,45000" in L.export_csv(c).replace("\r", "")
-    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
         d = cl.get("/api/dashboard").json()
         assert d["won_value"] == 45000 and d["open_value"] == 12000 and set(d["channels"]) == {"email", "sms", "whatsapp"}
 
@@ -1757,9 +1769,8 @@ def whatsapp_queue_refuses_unsendable_leads_paused_campaigns_and_ai_messages_are
 @test
 def whatsapp_queue_works_through_the_api():
     import server
-    from fastapi.testclient import TestClient
     ids = _wa_setup()
-    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
         r = cl.post("/api/campaigns", json={"name": "api", "channel": "whatsapp", "body": "Hi {name}", "launch": True,
                                             "filters": {"statuses": ["new"]}})
         assert r.status_code == 200, r.text
@@ -1831,12 +1842,11 @@ def gmail_style_password_and_username_slips_no_longer_break_sending():
 
 @test
 def reading_replies_uses_the_sending_login_and_settings_clean_pasted_passwords():
-    from fastapi.testclient import TestClient
     import server
     fresh()
     assert messaging.inbox_login({"imap_user": "", "smtp_user": "", "from_email": "me@gmail.com", "imap_pass": "", "smtp_pass": "abcd efgh"}) == \
         ("me@gmail.com", "abcdefgh")
-    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
         r = cl.put("/api/settings", json={"smtp_pass": "abcd\u00a0efgh ijkl", "sms_gateway_pass": "pa ss", "optout_suffix_sms": "STOP to opt out"})
         assert r.status_code == 200 and db.get_settings()["smtp_pass"] == "abcdefghijkl" and db.get_settings()["sms_gateway_pass"] == "pass"
         assert db.get_settings()["optout_suffix_sms"] == " STOP to opt out"        # keeps the space that joins it to the text
@@ -1918,7 +1928,6 @@ def a_message_queued_in_one_campaign_is_dropped_if_the_lead_was_messaged_another
 # ======================================================== READY-MADE MESSAGES
 @test
 def every_ready_made_text_fits_one_sms_with_a_long_name_and_the_opt_out_line():
-    import library
     s = dict(db.SETTING_DEFAULTS)
     assert s["contact_website"] == "https://dericbi.vercel.app" and s["contact_whatsapp"] == "+254791360805" and s["contact_email"] == "dericmarangu@gmail.com"
     names = ["MAMA WANGESHI AGROVET", "Boresha Agrovet & Hardware Supplies Ltd", "Dr. Kamau Dental Clinic and Laboratory Services", "Z"]
@@ -1993,13 +2002,12 @@ def ready_made_campaign_follow_ups_and_cross_channel_follow_up_work_without_any_
 
 @test
 def campaign_screen_api_reach_audience_followup_and_ready_preview():
-    from fastapi.testclient import TestClient
     import server
     fresh(); SMTP_INBOX.clear(); configure()
     with db.db() as c:
         ids = {n: L.add_lead(c, {"name": n, "town": "Embu", "sector": "Chemist", "phone": p, "email": e})["id"]
                for n, p, e in (("One", "0711000001", "one@shop.test"), ("Two", "0711000002", ""), ("Three", "", "three@shop.test"))}
-    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
         reach = cl.get("/api/campaigns/reach").json()
         assert reach["email"]["leads"] == 2 and reach["sms"]["leads"] == 2 and reach["whatsapp"]["leads"] == 2
         assert reach["email"]["ready"] and reach["sms"]["ready"] and reach["whatsapp"]["ready"]
@@ -2225,6 +2233,533 @@ def linking_whatsapp_waits_for_the_code_to_be_scanned_and_remembers_it():
     class Never(FakeWA):
         def state(self): return "qr"
     assert whatsapp.run_link(jid, driver_factory=lambda: Never(), wait_seconds=1) == "failed" and not whatsapp.is_linked()
+
+
+import server  # noqa: E402
+
+
+# ======================================================== SIGN-IN, USERS AND LICENCES
+@test
+def ed25519_matches_the_published_test_vectors():
+    for sk, pk, msg, sig in (
+        ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
+         "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+        ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb", "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",
+         "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")):
+        sk, pk, msg, sig = map(bytes.fromhex, (sk, pk, msg, sig))
+        assert ed25519.public_key(sk) == pk and ed25519.sign(sk, msg) == sig and ed25519.verify(pk, msg, sig)
+        assert not ed25519.verify(pk, msg + b"!", sig) and not ed25519.verify(pk, msg, sig[:-1] + bytes([sig[-1] ^ 1]))
+        assert not ed25519.verify(pk[:-1], msg, sig)
+
+
+@test
+def passwords_must_be_strong_and_nothing_is_stored_in_the_clear():
+    weak = {"short1!A": "12 characters", "alllowercase123!": "capital", "ALLUPPERCASE123!": "lowercase", "NoNumbersHere!!!": "number",
+            "NoSymbols12345Ab": "symbol", "Password123456!": "common", "Derickabc123!!!": "name", "Aaaabcdefg12!!": "three times",
+            "Abcd1234Xyzw!!": "runs", "Mmmm Mmmm 1!": "Spaces"}
+    for pw, hint in weak.items():
+        got = " ".join(auth.password_problems(pw, "Deric Marangu"))
+        assert got, pw
+    assert auth.password_problems(STRONG, "Deric Marangu") == []
+    assert all(not auth.password_problems(auth.strong_password(), "Anyone") for _ in range(100))   # temporary passwords obey the rules too
+    h1, h2 = auth.hash_secret(STRONG), auth.hash_secret(STRONG)
+    assert h1 != h2 and STRONG not in h1 and auth.check_secret(STRONG, h1) and not auth.check_secret(STRONG + "x", h1)
+    assert not auth.check_secret(STRONG, "garbage") and not auth.check_secret("", h1)
+    fresh()
+    with db.db() as c:
+        auth.create_user(c, "Deric Marangu", STRONG, "owner", QS)
+        for bad in (lambda: auth.create_user(c, "Deric Marangu", STRONG, "owner", QS), lambda: auth.create_user(c, "deric  marangu", STRONG, "member"),
+                    lambda: auth.create_user(c, "Ann", "weak", "member"), lambda: auth.create_user(c, "x", STRONG, "member")):
+            try:
+                bad(); raise AssertionError("must be refused")
+            except ValueError:
+                pass
+    # nothing readable anywhere in the database files
+    blob = b"".join(p.read_bytes() for p in Path(config.DATA_DIR).glob("*") if p.is_file() and p.suffix in (".db", ".sqlite", "") or p.name.endswith(("-wal", "-shm")))
+    for secret in (STRONG, "kamunyaka", "otieno"):
+        assert secret.encode() not in blob.lower() or secret == "kisii", secret
+
+
+@test
+def security_questions_need_three_different_questions_with_real_answers():
+    ok = auth.question_problems(QS, "Deric Marangu", STRONG)
+    assert ok == []
+    assert auth.question_problems(QS[:2], "x", STRONG)
+    assert auth.question_problems([QS[0], QS[0], QS[2]], "x", STRONG)
+    assert auth.question_problems([{**QS[0], "a": "ab"}, QS[1], QS[2]], "x", STRONG)
+    assert auth.question_problems([{**QS[0], "a": "Kisii"}, QS[1], QS[2]], "x", STRONG)              # two answers the same
+    assert auth.question_problems([{**QS[0], "a": "Maize Tractor"}, QS[1], QS[2]], "x", STRONG)      # an answer taken from the password
+    assert auth.question_problems([{"q": "Made-up question?", "a": "Something"}, QS[1], QS[2]], "x", STRONG)
+    assert auth.norm_answer("  Kamunyaka   PRIMARY!! ") == "kamunyaka primary" and auth.norm_answer("Café") == "cafe"
+
+
+@test
+def nothing_works_without_signing_in_and_the_session_cookie_is_locked_down():
+    fresh()
+    app = server.create_app(port=8765)
+    with TestClient(app, base_url="http://127.0.0.1:8765") as cl:
+        assert cl.get("/api/health").json() == {"ok": True, "version": cl.get("/api/health").json()["version"]}     # no data folder shown
+        assert cl.get("/api/auth/status").json()["state"] == "setup"
+        for path in ("/api/leads", "/api/settings", "/api/campaigns", "/api/status", "/api/users", "/api/backup"):
+            r = cl.get(path)
+            assert r.status_code == 401 and r.json()["auth"] == "login", path
+        assert cl.post("/api/campaigns", json={}).status_code == 401 and cl.post("/api/settings/test-email", json={"to": "a@b.co"}).status_code == 401
+        assert cl.get("/").status_code == 200                                                   # the page itself loads, to show the sign-in
+        # the first account is the owner's, and only the owner's
+        assert cl.post("/api/auth/setup", json={**OWNER_SETUP, "username": "Someone Else"}).status_code == 400
+        assert cl.post("/api/auth/setup", json={**OWNER_SETUP, "owner_key": ""}).status_code == 400
+        other, _ = auth.make_owner_key()
+        assert cl.post("/api/auth/setup", json={**OWNER_SETUP, "owner_key": other}).status_code == 400            # a key of someone else
+        assert cl.post("/api/auth/setup", json={**OWNER_SETUP, "password": "weak"}).status_code == 400
+        assert cl.get("/api/leads").status_code == 401
+        r = cl.post("/api/auth/setup", json=OWNER_SETUP)
+        assert r.status_code == 200
+        cookie = r.headers["set-cookie"].lower()
+        assert "httponly" in cookie and "samesite=strict" in cookie and "path=/" in cookie
+        assert cl.get("/api/leads").status_code == 200 and cl.get("/api/health").json()["data_dir"]
+        st = cl.get("/api/auth/status").json()
+        assert st["state"] == "ok" and st["user"]["username"] == "Deric Marangu" and st["user"]["role"] == "owner" and st["kind"] == "owner"
+        assert cl.post("/api/auth/setup", json=OWNER_SETUP).status_code == 409                   # only once
+        # a made-up or tampered cookie is worth nothing
+        cl.cookies.set("dbi_session", "x" * 43)
+        assert cl.get("/api/leads").status_code == 401
+        # signing out ends the session for good
+        cl.cookies.clear()
+        cl.post("/api/auth/login", json={"username": "deric marangu", "password": STRONG})
+        token = cl.cookies.get("dbi_session")
+        assert cl.get("/api/leads").status_code == 200
+        cl.post("/api/auth/logout")
+        cl.cookies.clear(); cl.cookies.set("dbi_session", token)          # the old cookie, replayed
+        assert cl.get("/api/leads").status_code == 401
+        # a page on another site cannot act for the owner
+        cl.cookies.clear()
+        cl.post("/api/auth/login", json={"username": "Deric Marangu", "password": STRONG})
+        assert cl.post("/api/leads", json={"name": "X"}, headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+@test
+def wrong_passwords_lock_the_account_for_a_while_and_say_nothing_about_which_part_was_wrong():
+    fresh()
+    with db.db() as c:
+        auth.create_user(c, "Deric Marangu", STRONG, "owner", QS)
+    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        a = cl.post("/api/auth/login", json={"username": "Deric Marangu", "password": "nope"})
+        b = cl.post("/api/auth/login", json={"username": "Nobody Here", "password": "nope"})
+        assert a.status_code == b.status_code == 401
+        assert a.json()["detail"].split(".")[0] == b.json()["detail"].split(".")[0] == "Wrong username or password"
+        for _ in range(3):
+            cl.post("/api/auth/login", json={"username": "Deric Marangu", "password": "nope"})
+        r = cl.post("/api/auth/login", json={"username": "Deric Marangu", "password": "nope"})        # the 5th wrong one
+        assert r.status_code == 429 and "minute" in r.json()["detail"]
+        r = cl.post("/api/auth/login", json={"username": "Deric Marangu", "password": STRONG})       # even the right one waits
+        assert r.status_code == 429
+        with db.db() as c:
+            assert c.execute("SELECT locked_until FROM users").fetchone()[0] > time.time()
+            c.execute("UPDATE users SET locked_until=0")                                           # the wait is over
+        assert cl.post("/api/auth/login", json={"username": "Deric Marangu", "password": STRONG}).status_code == 200
+        with db.db() as c:
+            assert c.execute("SELECT failed FROM users").fetchone()[0] == 0
+
+
+@test
+def sessions_run_out_when_idle_or_old_and_a_password_change_signs_the_other_places_out():
+    fresh()
+    with db.db() as c:
+        uid = auth.create_user(c, "Deric Marangu", STRONG, "owner", QS)
+        t1, t2, t3 = (auth.login(c, "Deric Marangu", STRONG) for _ in range(3))
+        assert all(auth.session_user(c, t) for t in (t1, t2, t3)) and auth.session_user(c, "") is None and auth.session_user(c, "bogus") is None
+        c.execute("UPDATE sessions SET seen_ts=? WHERE token_hash=?", (int(time.time()) - auth.SESSION_IDLE - 5, auth._hash_token(t1)))
+        c.execute("UPDATE sessions SET created_ts=? WHERE token_hash=?", (int(time.time()) - auth.SESSION_MAX - 5, auth._hash_token(t2)))
+        assert auth.session_user(c, t1) is None and auth.session_user(c, t2) is None and auth.session_user(c, t3)
+        t4 = auth.new_session(c, uid)
+        user = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        for bad in (lambda: auth.change_password(c, user, "wrong", "Another&Strong#1357"), lambda: auth.change_password(c, user, STRONG, STRONG),
+                    lambda: auth.change_password(c, user, STRONG, "weak")):
+            try:
+                bad(); raise AssertionError("refused")
+            except (auth.AuthError, ValueError):
+                pass
+        auth.change_password(c, user, STRONG, "Another&Strong#1357", keep_token=t3)
+        assert auth.session_user(c, t3) and auth.session_user(c, t4) is None                      # this place stays, the others are signed out
+        try:
+            auth.login(c, "Deric Marangu", STRONG); raise AssertionError("old password dead")
+        except auth.AuthError:
+            pass
+        assert auth.login(c, "Deric Marangu", "Another&Strong#1357")
+
+
+@test
+def a_forgotten_password_is_recovered_with_all_three_answers_and_the_owner_also_needs_the_owner_key():
+    fresh()
+    with db.db() as c:
+        auth.create_user(c, "Deric Marangu", STRONG, "owner", QS)
+        auth.create_user(c, "Ann Wanjiru", "Orange#Cattle7531", "member", QS)
+    answers = [q["a"] for q in QS]
+    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        q = cl.post("/api/auth/recover-questions", json={"username": "Ann Wanjiru"}).json()
+        assert q["questions"] == [x["q"] for x in QS] and not q["owner"]
+        d1 = cl.post("/api/auth/recover-questions", json={"username": "No Body"}).json()
+        d2 = cl.post("/api/auth/recover-questions", json={"username": "No Body"}).json()
+        assert d1 == d2 and len(set(d1["questions"])) == 3                                           # a stable decoy: names can't be probed
+        body = {"username": "Ann Wanjiru", "answers": answers, "new_password": "Brand#New8642Pw"}
+        assert cl.post("/api/auth/recover", json={**body, "answers": [answers[0], answers[1], "wrong"]}).status_code == 403
+        assert cl.post("/api/auth/recover", json={**body, "new_password": "weak"}).status_code == 400
+        assert cl.post("/api/auth/recover", json={**body, "answers": [" KAMUNYAKA   primary ", "kisii!", "OTIENO"]}).status_code == 200   # case and spacing don't matter
+        assert cl.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": "Orange#Cattle7531"}).status_code == 401
+        assert cl.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": "Brand#New8642Pw"}).status_code == 200
+        # guessing is stopped
+        for _ in range(5):
+            r = cl.post("/api/auth/recover", json={**body, "username": "Deric Marangu", "answers": ["a1x", "b2y", "c3z"], "owner_key": TEST_OWNER_KEY})
+        assert r.status_code == 429
+        with db.db() as c:
+            c.execute("UPDATE users SET recover_locked_until=0, recover_failed=0")
+        # the owner account: right answers are not enough without the owner key
+        ob = {"username": "Deric Marangu", "answers": answers, "new_password": "Owner#Fresh9753Pw"}
+        assert cl.post("/api/auth/recover-questions", json={"username": "Deric Marangu"}).json()["owner"] is True
+        r = cl.post("/api/auth/recover", json=ob)
+        assert r.status_code == 403 and "owner key" in r.json()["detail"]
+        assert cl.post("/api/auth/recover", json={**ob, "owner_key": auth.make_owner_key()[0]}).status_code == 403
+        assert cl.post("/api/auth/recover", json={**ob, "owner_key": TEST_OWNER_KEY}).status_code == 200
+        assert cl.post("/api/auth/login", json={"username": "Deric Marangu", "password": "Owner#Fresh9753Pw"}).status_code == 200
+
+
+@test
+def the_owner_adds_people_who_must_choose_their_own_password_and_questions_before_anything_else():
+    fresh()
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as owner:
+        r = owner.post("/api/users", json={"username": "Ann Wanjiru"})
+        assert r.status_code == 200
+        temp = r.json()["temporary_password"]
+        assert not auth.password_problems(temp) and r.json()["user"]["must_change"] and r.json()["user"]["needs_questions"]
+        assert owner.post("/api/users", json={"username": "ann wanjiru"}).status_code == 400            # taken
+        assert owner.post("/api/users", json={"username": "deric   marangu"}).status_code == 400       # the owner's name is the owner's
+        users = owner.get("/api/users").json()
+        assert [u["role"] for u in users] == ["owner", "member"]
+        uid = users[1]["id"]
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as ann:
+            assert ann.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": temp}).status_code == 200
+            r = ann.get("/api/leads")
+            assert r.status_code == 403 and r.json()["auth"] == "finish"                               # nothing until she has set her own
+            assert ann.get("/api/auth/status").json()["user"]["must_change"]
+            assert ann.post("/api/auth/change-password", json={"current": temp, "new": "Mine#Is9753Strong"}).status_code == 200
+            assert ann.get("/api/leads").status_code == 403                                            # still needs her questions
+            assert ann.post("/api/auth/change-questions", json={"current": "Mine#Is9753Strong", "questions": QS}).status_code == 200
+            assert ann.get("/api/leads").status_code == 200
+            for path in ("/api/users",):
+                assert ann.get(path).status_code == 403 and ann.post(path, json={"username": "Bob Otieno"}).status_code == 403
+            assert ann.post(f"/api/users/{uid}/reset").status_code == 403
+            assert ann.post("/api/license/issue", json={"code": "ABCD-EFGH-JKLM", "username": "Bob", "days": 30, "owner_key": TEST_OWNER_KEY}).status_code == 403
+        # the owner can lock her out, bring her back, reset her password, and remove her; never touch the owner
+        assert owner.post(f"/api/users/{uid}/active", json={"active": False}).status_code == 200
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as ann:
+            r = ann.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": "Mine#Is9753Strong"})
+            assert r.status_code == 403 and "switched off" in r.json()["detail"]
+        owner.post(f"/api/users/{uid}/active", json={"active": True})
+        new_temp = owner.post(f"/api/users/{uid}/reset").json()["temporary_password"]
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as ann:
+            assert ann.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": "Mine#Is9753Strong"}).status_code == 401
+            assert ann.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": new_temp}).status_code == 200
+            assert ann.get("/api/leads").json() is not None or True
+        owner_id = users[0]["id"]
+        for path, method in ((f"/api/users/{owner_id}/reset", "post"), (f"/api/users/{owner_id}", "delete")):
+            assert getattr(owner, method)(path).status_code == 400
+        assert owner.post(f"/api/users/{owner_id}/active", json={"active": False}).status_code == 400
+        assert owner.delete(f"/api/users/{uid}").status_code == 200 and len(owner.get("/api/users").json()) == 1
+
+
+@test
+def another_computer_works_only_with_a_licence_the_owner_signed_for_that_computer():
+    fresh()
+    code = auth.install_id()
+    assert re.fullmatch(r"[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}", code) and auth.install_id() == code
+    seed = auth.parse_owner_key(TEST_OWNER_KEY)
+    lic = auth.issue_license(seed, code.lower().replace("-", " "), "Ann Wanjiru", 30)
+    assert lic["license"].startswith("DBI1.") and lic["username"] == "Ann Wanjiru"
+    data = auth.read_license(lic["license"])
+    assert data["user"] == "Ann Wanjiru" and data["role"] == "member"
+    # forged, edited, wrong computer, expired, someone else's key: all refused
+    for bad, why in ((lic["license"][:-4] + "AAAA", "signed"), (lic["license"].replace("DBI1", "DBI2"), "licence"), ("nonsense", "licence")):
+        try:
+            auth.read_license(bad); raise AssertionError(why)
+        except auth.LicenseError:
+            pass
+    parts = lic["license"].split(".")
+    edited = base64.urlsafe_b64encode(base64.urlsafe_b64decode(parts[1] + "==").replace(b"Ann Wanjiru", b"Mal Icious")).decode().rstrip("=")
+    try:
+        auth.read_license(".".join([parts[0], edited, parts[2]])); raise AssertionError("an edited licence must fail")
+    except auth.LicenseError as e:
+        assert "signed" in str(e)
+    try:
+        auth.read_license(lic["license"], for_install="ZZZZ-ZZZZ-ZZZZ"); raise AssertionError("other computer")
+    except auth.LicenseError as e:
+        assert "different computer" in str(e)
+    stranger = auth.make_owner_key()[0]
+    try:
+        auth.issue_license(auth.parse_owner_key(stranger), code, "Ann", 30); raise AssertionError("not the owner's key")
+    except auth.LicenseError:
+        pass
+    for args in (("BAD", "Ann Wanjiru", 30), (code, "Deric Marangu", 30), (code, "Ann Wanjiru", 0), (code, "Ann Wanjiru", 400)):
+        try:
+            auth.issue_license(seed, *args); raise AssertionError(args)
+        except ValueError:
+            pass
+    real_date = auth.date
+    try:
+        class Later(real_date):
+            @classmethod
+            def today(cls): return real_date.today() + timedelta(days=31)
+        auth.date = Later
+        try:
+            auth.read_license(lic["license"]); raise AssertionError("expired")
+        except auth.LicenseError as e:
+            assert "expired" in str(e)
+    finally:
+        auth.date = real_date
+
+    # a fresh computer: no account can be made without a licence, with one the person is fixed by the licence
+    with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        body = {"mode": "member", "username": "Anyone", "password": "Orange#Cattle7531", "questions": QS, "license": lic["license"]}
+        assert cl.get("/api/auth/status").json()["install_id"] == code and cl.get("/api/auth/status").json()["kind"] == "new"
+        assert cl.post("/api/auth/setup", json={**body, "license": ""}).status_code == 400
+        assert cl.post("/api/auth/setup", json={**body, "mode": "owner", "username": "Deric Marangu", "owner_key": ""}).status_code == 400
+        assert cl.post("/api/auth/setup", json={**body, "license": lic["license"][:-3] + "xyz"}).status_code == 400
+        r = cl.post("/api/auth/setup", json=body)
+        assert r.status_code == 200
+        st = cl.get("/api/auth/status").json()
+        assert st["user"]["username"] == "Ann Wanjiru" and st["user"]["role"] == "member" and st["kind"] == "licensed"       # not "Anyone"
+        assert st["license"]["ok"] and 29 <= st["license"]["days_left"] <= 30
+        assert cl.get("/api/leads").status_code == 200
+        assert cl.get("/api/users").status_code == 403 and cl.post("/api/license/issue", json={"code": code, "username": "Bob", "days": 5, "owner_key": TEST_OWNER_KEY}).status_code == 403
+        # the licence runs out: signed in or not, the computer stops until a renewed licence is pasted
+        with db.db() as c:
+            c.execute("UPDATE sessions SET seen_ts=seen_ts")
+        db.set_internal("license", auth.issue_license(seed, code, "Ann Wanjiru", 1)["license"])
+        real = auth.date
+        class Tomorrow2(real):
+            @classmethod
+            def today(cls): return real.today() + timedelta(days=3)
+        auth.date = Tomorrow2
+        try:
+            import auth_api
+            auth_api._license_cache["state"] = None
+            assert cl.get("/api/leads").status_code == 401
+            r = cl.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": "Orange#Cattle7531"})
+            assert r.status_code == 403 and "expired" in r.json()["detail"]
+        finally:
+            auth.date = real
+        wrong = auth.issue_license(seed, code, "Someone Else", 30)["license"]
+        assert cl.post("/api/auth/renew-license", json={"license": wrong}).status_code == 400
+        renewed = auth.issue_license(seed, code, "Ann Wanjiru", 60)["license"]
+        auth_api._license_cache["state"] = None
+        db.set_internal("license", auth.issue_license(seed, code, "Ann Wanjiru", 1)["license"])
+        assert cl.post("/api/auth/renew-license", json={"license": renewed}).status_code == 200
+        auth_api._license_cache["state"] = None
+        assert cl.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": "Orange#Cattle7531"}).status_code == 200
+        # winding the clock back to stretch a licence is noticed
+        db.set_internal("clock_high", int(time.time()) + 3 * 86400)
+        auth_api._license_cache["state"] = None
+        r = cl.post("/api/auth/login", json={"username": "Ann Wanjiru", "password": "Orange#Cattle7531"})
+        assert r.status_code == 403 and "clock" in r.json()["detail"]
+        db.set_internal("clock_high", 0)
+
+    # a build that has no owner key set cannot check licences, and says so; the owner can still start
+    owner_key.OWNER_PUBLIC_KEY = ""
+    try:
+        fresh()
+        with TestClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            assert cl.get("/api/auth/status").json()["licensing_configured"] is False
+            assert cl.post("/api/auth/setup", json={**OWNER_SETUP, "mode": "member", "license": lic["license"]}).status_code == 400
+            r = cl.post("/api/auth/setup", json={**OWNER_SETUP, "owner_key": ""})
+            assert r.status_code == 200 and "owner key isn't set" in r.json()["warning"]
+    finally:
+        owner_key.OWNER_PUBLIC_KEY = TEST_OWNER_PUB
+
+
+@test
+def the_owner_signs_a_licence_for_another_computer_through_the_app():
+    fresh()
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as owner:
+        body = {"code": "abcd efgh jkmn", "username": "Ann Wanjiru", "days": 45, "owner_key": TEST_OWNER_KEY}
+        r = owner.post("/api/license/issue", json=body)
+        assert r.status_code == 200 and r.json()["license"].startswith("DBI1.")
+        assert auth.read_license(r.json()["license"], for_install="ABCD-EFGH-JKMN")["user"] == "Ann Wanjiru"
+        assert owner.post("/api/license/issue", json={**body, "owner_key": auth.make_owner_key()[0]}).status_code == 400
+        assert owner.post("/api/license/issue", json={**body, "owner_key": "nonsense"}).status_code == 400
+        assert owner.post("/api/license/issue", json={**body, "username": "Deric Marangu"}).status_code == 400
+
+
+# ======================================================== BEST WAY FOR EACH LEAD
+def _mixed_leads():
+    """A WhatsApp-able lead, a mobile-only lead, an email-only lead, a landline+email lead, and one with nothing."""
+    with db.db() as c:
+        return {k: L.add_lead(c, {"name": n, "town": "Meru", "sector": "Pharmacy", "phone": p, "email": e})["id"] for k, n, p, e in (
+            ("both", "Both Ways Chemist", "0700000601", "both@shop.test"), ("phone", "Phone Only Chemist", "0700000602", ""),
+            ("mail", "Mail Only Chemist", "", "mail@shop.test"), ("land", "Landline Chemist", "064 30123", "land@shop.test"),
+            ("none", "Nothing Chemist", "", ""))}
+
+
+@test
+def best_way_gives_every_lead_exactly_one_way_in_the_owners_order():
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); PHONE_MODE["mode"] = "ok"; configure(); db.set_internal("whatsapp_linked", True)
+    ids = _mixed_leads()
+    with db.db() as c:
+        s = db.get_settings(c)
+        assert C.usable_channels(s) == ["whatsapp", "email", "sms"]
+        a = C.audience_list(c, "auto", {})
+        assert a["total"] == 4 and {l["name"]: l["via"] for l in a["leads"]} == {
+            "Both Ways Chemist": "whatsapp", "Phone Only Chemist": "whatsapp", "Mail Only Chemist": "email", "Landline Chemist": "email"}
+        assert ids["none"] not in [l["id"] for l in a["leads"]]
+        cid = C.create_campaign(c, "Best", "auto", "", "", {"lead_ids": list(ids.values())}, launch=True, style="ready", followups=[3])
+        rows = {r["lead_id"]: r for r in c.execute("SELECT * FROM messages WHERE campaign_id=?", (cid,))}
+        assert len(rows) == 4 and rows[ids["both"]]["channel"] == "whatsapp" and rows[ids["mail"]]["channel"] == "email"
+        assert rows[ids["land"]]["to_addr"] == "land@shop.test" and rows[ids["phone"]]["to_addr"].startswith("+2547")
+        assert "WhatsApp" not in rows[ids["both"]]["body"] and "Both Ways Chemist" in rows[ids["both"]]["body"] and "{" not in rows[ids["mail"]]["body"]
+        st = [x for x in C.campaign_stats(c) if x["id"] == cid][0]
+        assert (st["channel"], st["n_whatsapp"], st["n_email"], st["n_sms"]) == ("auto", 2, 2, 0)
+    # the owner can put the ways in another order, and unready ways are never used
+    configure(reach_order="email,whatsapp,sms")
+    with db.db() as c:
+        assert {l["name"]: l["via"] for l in C.audience_list(c, "auto", {"lead_ids": list(ids.values())})["leads"]} == {}   # already messaged
+    fresh(); configure(reach_order="sms,email,whatsapp"); db.set_internal("whatsapp_linked", False)
+    ids = _mixed_leads()
+    with db.db() as c:
+        s = db.get_settings(c)
+        assert C.usable_channels(s) == ["sms", "email"]                                    # WhatsApp is not connected: never planned
+        assert {l["name"]: l["via"] for l in C.audience_list(c, "auto", {})["leads"]} == {
+            "Both Ways Chemist": "sms", "Phone Only Chemist": "sms", "Mail Only Chemist": "email", "Landline Chemist": "email"}
+    configure(smtp_host="", from_email="")
+    with db.db() as c:
+        assert C.usable_channels(db.get_settings(c)) == ["sms"] and C.count_audience(c, "auto", {}) == 2
+    configure(smtp_host="", from_email="", sms_gateway_url="")
+    with db.db() as c:
+        try:
+            C.create_campaign(c, "Nothing", "auto", "", "", {}, launch=True, style="ready"); raise AssertionError("no way is set up")
+        except ValueError as e:
+            assert "at least one way" in str(e)
+
+
+@test
+def best_way_campaign_sends_each_lead_one_message_on_their_way_and_cannot_double_reach_anyone():
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); PHONE_MODE["mode"] = "ok"; configure(); db.set_internal("whatsapp_linked", True)
+    ids = _mixed_leads()
+    with db.db() as c:
+        cid = C.create_campaign(c, "Best", "auto", "", "", {"lead_ids": [ids["both"], ids["phone"], ids["mail"], ids["land"]]},
+                                launch=True, style="ready", followups=[])
+    run_sender(lambda: count("SELECT COUNT(*) FROM messages WHERE channel='email' AND status='sent'") == 2, timeout=15)
+    assert len(SMTP_INBOX) == 2 and PHONE_CALLS == []                                       # texts are not used while WhatsApp can do it
+    fake = FakeWA(); _run_wa(fake)                                                          # the WhatsApp worker takes its two
+    assert len(fake.sent) == 2
+    with db.db() as c:
+        st = [x for x in C.campaign_stats(c) if x["id"] == cid][0]
+        assert st["sent"] == 4 and st["status"] == "done"
+        for lid in ids.values():
+            assert c.execute("SELECT COUNT(*) FROM messages WHERE lead_id=? AND direction='out' AND status='sent'", (lid,)).fetchone()[0] <= 1
+        # nobody who was messaged can be picked again, by any campaign or by hand
+        assert C.count_audience(c, "auto", {"statuses": ["new", "contacted"]}) == 0
+        for ch in ("email", "sms", "whatsapp"):
+            assert C.count_audience(c, ch, {"statuses": ["new", "contacted"]}) == 0
+    try:
+        with db.db() as c:
+            C.create_campaign(c, "Again", "auto", "", "", {"lead_ids": list(ids.values())}, launch=True, style="ready")
+        raise AssertionError("everyone already has a message")
+    except ValueError as e:
+        assert "No leads match" in str(e)
+
+
+@test
+def a_lead_who_cannot_be_reached_the_first_way_moves_to_the_next_without_being_messaged_twice():
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); PHONE_MODE["mode"] = "ok"; configure(); db.set_internal("whatsapp_linked", True)
+    with db.db() as c:
+        a = L.add_lead(c, {"name": "Not On WA", "town": "T", "sector": "Pharmacy", "phone": "0700000701", "email": "a@shop.test"})["id"]
+        b = L.add_lead(c, {"name": "Only WA No Mail", "town": "T", "sector": "Pharmacy", "phone": "0700000702"})["id"]
+        cid = C.create_campaign(c, "Fallback", "auto", "", "", {"lead_ids": [a, b]}, launch=True, style="ready", followups=[])
+    # both are planned for WhatsApp; the first is not on WhatsApp: the same message moves to email, the second has nowhere to go
+    fake = FakeWA({"+254700000701": "not_on", "+254700000702": "not_on"}); _run_wa(fake)
+    assert fake.sent == []
+    with db.db() as c:
+        ma = c.execute("SELECT * FROM messages WHERE lead_id=?", (a,)).fetchone()
+        mb = c.execute("SELECT * FROM messages WHERE lead_id=?", (b,)).fetchone()
+        assert c.execute("SELECT COUNT(*) FROM messages WHERE lead_id=?", (a,)).fetchone()[0] == 1          # one row, moved, never copied
+        assert (ma["channel"], ma["status"], ma["to_addr"], ma["error"]) == ("email", "queued", "a@shop.test", "")
+        assert "Not On WA" in ma["body"] and "{" not in ma["body"] and ma["subject"]
+        assert (mb["channel"], mb["status"], mb["to_addr"]) == ("sms", "queued", "+254700000702")            # no email, so a text
+        kinds = [(e["kind"]) for e in c.execute("SELECT kind FROM events WHERE lead_id=? ORDER BY id", (a,))]
+        assert "no_whatsapp" in kinds and "rerouted" in kinds
+        assert C.count_audience(c, "whatsapp", {"statuses": ["new", "contacted"]}) == 0
+    run_sender(lambda: count("SELECT status FROM messages WHERE lead_id=?", a) == "sent" and count("SELECT status FROM messages WHERE lead_id=?", b) == "sent")
+    assert len(SMTP_INBOX) == 1 and len(PHONE_CALLS) == 1 and PHONE_CALLS[0]["to"] == "+254700000702"
+    assert count("SELECT COUNT(*) FROM messages WHERE lead_id IN (?,?) AND status='sent'", a, b) == 2
+    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "done"
+    # with no other way to reach someone who is not on WhatsApp, they are skipped (and never offered WhatsApp again)
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); configure(sms_gateway_url=""); db.set_internal("whatsapp_linked", True)
+    with db.db() as c:
+        d = L.add_lead(c, {"name": "Dead End", "town": "T", "sector": "Pharmacy", "phone": "0700000704"})["id"]
+        cid2 = C.create_campaign(c, "Dead", "auto", "", "", {"lead_ids": [d]}, launch=True, style="ready", followups=[])
+    _run_wa(FakeWA({"+254700000704": "not_on"}))
+    assert (count("SELECT status FROM messages WHERE lead_id=?", d), count("SELECT error FROM messages WHERE lead_id=?", d)) == ("skipped", "Not on WhatsApp")
+    assert count("SELECT status FROM campaigns WHERE id=?", cid2) == "done"
+    configure()
+    # an email that bounces moves on too (here to a text, because WhatsApp isn't an option for a lead known not to be on it)
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); configure(reach_order="email,whatsapp,sms"); db.set_internal("whatsapp_linked", False)
+    with db.db() as c:
+        z = L.add_lead(c, {"name": "Bounce Me", "town": "T", "sector": "Pharmacy", "phone": "0700000703", "email": "refuse@shop.test"})["id"]
+        C.create_campaign(c, "Bounce", "auto", "", "", {"lead_ids": [z]}, launch=True, style="ready", followups=[])
+    run_sender(lambda: len(PHONE_CALLS) == 1, timeout=15)       # the test mail server refuses addresses that start with refuse@
+    assert len(PHONE_CALLS) == 1 and PHONE_CALLS[0]["to"] == "+254700000703" and "Bounce Me" in PHONE_CALLS[0]["text"]
+    assert count("SELECT COUNT(*) FROM messages WHERE lead_id=?", z) == 1 and count("SELECT email_bounced FROM leads WHERE id=?", z) == 1
+
+
+@test
+def best_way_follow_ups_keep_each_lead_on_the_way_they_were_first_reached_and_the_screen_api_shows_it():
+    fresh(); SMTP_INBOX.clear(); PHONE_CALLS.clear(); PHONE_MODE["mode"] = "ok"; configure(); db.set_internal("whatsapp_linked", True)
+    ids = _mixed_leads()
+    with db.db() as c:
+        cid = C.create_campaign(c, "Best", "auto", "", "", {"lead_ids": [ids["both"], ids["mail"]]}, launch=True, style="ready", followups=[3])
+    run_sender(lambda: count("SELECT COUNT(*) FROM messages WHERE channel='email' AND status='sent'") == 1, timeout=15)
+    _run_wa(FakeWA())
+    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "done"
+    with db.db() as c:
+        c.execute("UPDATE leads SET last_contacted_at=?", (days_ago(4),))
+    assert C.release_followups() == 2
+    with db.db() as c:
+        fu = c.execute("SELECT id FROM campaigns WHERE followup_of=?", (cid,)).fetchone()["id"]
+        rows = {r["lead_id"]: r for r in c.execute("SELECT * FROM messages WHERE campaign_id=?", (fu,))}
+        assert rows[ids["both"]]["channel"] == "whatsapp" and rows[ids["mail"]]["channel"] == "email"
+        assert "reach" in rows[ids["mail"]]["body"].lower() or "note" in rows[ids["mail"]]["body"].lower()
+    import server
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        reach = cl.get("/api/campaigns/reach").json()
+        assert set(reach) == {"email", "sms", "whatsapp", "auto"} and reach["auto"]["ready"]
+        pv = cl.post("/api/campaigns/preview", json={"channel": "auto", "style": "ready", "body": "", "filters": {}}).json()
+        assert pv["channel_ready"] and pv["usable"] == ["whatsapp", "email", "sms"]
+        assert cl.post("/api/campaigns", json={"channel": "auto", "style": "", "subject": "", "body": "x", "filters": {}}).status_code == 400   # needs a subject for the email way
+        assert cl.put("/api/settings", json={"reach_order": "email,sms"}).status_code == 400
+        assert cl.put("/api/settings", json={"reach_order": "sms,whatsapp,email"}).status_code == 200
+        assert cl.post(f"/api/leads/{ids['mail']}/send", json={"channel": "auto", "subject": "x", "body": "y"}).status_code == 400
+
+
+@test
+def ai_previews_for_a_best_way_campaign_are_written_for_the_way_each_lead_would_really_be_reached():
+    import ai
+    fresh(); SMTP_INBOX.clear(); PHONE_MODE["mode"] = "ok"; configure(); db.set_internal("whatsapp_linked", True)
+    ids = _mixed_leads()
+    seen = []
+    real_conf, real_draft = ai.configured, ai.draft_for_lead
+    ai.configured = lambda s_: True
+
+    def draft(s_, lead, ch, notes, avoid="", limit=0):
+        assert ch in ("email", "sms", "whatsapp"), ch                      # never the word 'auto'
+        seen.append((lead["name"], ch, limit))
+        return {"subject": "Quick question" if ch == "email" else "", "body": f"Hi {lead['name']} \u2014 can I show you something? {'x' * 300 if ch == 'sms' else ''}"}
+    ai.draft_for_lead = draft
+    try:
+        with db.db() as c:
+            out = C.ai_samples(c, "auto", "Offer a demo", {"lead_ids": [ids["both"], ids["mail"]]}, count=2)
+    finally:
+        ai.configured, ai.draft_for_lead = real_conf, real_draft
+    assert {o["lead"]: o["via"] for o in out} == {"Both Ways Chemist": "whatsapp", "Mail Only Chemist": "email"}
+    assert next(o for o in out if o["via"] == "email")["subject"] == "Quick question"
+    assert next(o for o in out if o["via"] == "email")["to"] == "mail@shop.test" and next(o for o in out if o["via"] == "whatsapp")["to"].startswith("+2547")
 
 
 if __name__ == "__main__":

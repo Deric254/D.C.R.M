@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import ai
+import auth_api
 import branding
 import campaigns as C
 import config
@@ -167,7 +168,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
 
     app = FastAPI(title="DericBI CRM", version=VERSION, lifespan=lifespan)
 
-    # ---- security: only our own window may talk to this server
+    # ---- security: only our own window may talk to this server, and only people who have signed in
+    auth_api.install(app)
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         host = request.headers.get("host", "")
@@ -203,8 +206,11 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
 
     # ------------------------------------------------------------------ basics
     @app.get("/api/health")
-    def health():
-        return {"ok": True, "version": VERSION, "data_dir": str(config.DATA_DIR)}
+    def health(request: Request):
+        out = {"ok": True, "version": VERSION}
+        if request.state.user:   # the data folder is only shown to someone signed in
+            out["data_dir"] = str(config.DATA_DIR)
+        return out
 
     @app.get("/api/status")
     def status(request: Request):
@@ -609,6 +615,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise ValueError("Wait at least 20 seconds between WhatsApp messages. Faster than that gets numbers banned.")
         if "sms_sim" in clean and clean["sms_sim"] > 3:
             raise ValueError("SIM number must be 0 (phone's default), 1, 2 or 3")
+        if "reach_order" in clean and sorted(clean["reach_order"].split(",")) != ["email", "sms", "whatsapp"]:
+            raise ValueError("The order must list WhatsApp, email and sms once each")
         if "followup_wait_days" in clean and not 0 <= clean["followup_wait_days"] <= 30:
             raise ValueError("Follow-up wait must be between 0 and 30 days")
         if clean.get("contact_website") and not clean["contact_website"].startswith(("http://", "https://")):

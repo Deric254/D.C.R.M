@@ -62,6 +62,10 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements.txt
+
+      - name: Check the owner licence key is set
+        shell: pwsh
+        run: python scripts/check-owner-key.py
       - uses: actions/setup-node@v4
         with:
           node-version: 20

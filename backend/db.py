@@ -140,6 +140,35 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- People who may sign in. Passwords and security answers are stored only as salted scrypt hashes.
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  role TEXT NOT NULL DEFAULT 'member',            -- 'owner' (the mother account) or 'member'
+  pw_hash TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  must_change INTEGER NOT NULL DEFAULT 0,         -- set after the owner issues a temporary password
+  failed INTEGER NOT NULL DEFAULT 0,
+  locked_until INTEGER NOT NULL DEFAULT 0,
+  recover_failed INTEGER NOT NULL DEFAULT 0,
+  recover_locked_until INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  last_login_at TEXT
+);
+CREATE TABLE IF NOT EXISTS security_answers (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  slot INTEGER NOT NULL,
+  question TEXT NOT NULL,
+  answer_hash TEXT NOT NULL,
+  PRIMARY KEY (user_id, slot)
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,                    -- the browser holds the token; only its hash is kept
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_ts INTEGER NOT NULL,
+  seen_ts INTEGER NOT NULL
+);
 """
 
 DEFAULT_PITCH = (
@@ -170,6 +199,8 @@ SETTING_DEFAULTS = {
     "send_window_enabled": True, "send_window_start": "08:00", "send_window_end": "18:00",
     # a lead who got a message is only messaged again as a follow-up, and only after this many days (or if they reply)
     "followup_wait_days": 3,
+    # "best way for each lead": which way to try first, then next ("whatsapp,email,sms" = WhatsApp, then email, then text)
+    "reach_order": "whatsapp,email,sms",
     # opt-out wording
     "append_optout": True,
     "optout_footer_email": "If you'd rather not hear from us, reply STOP and we won't contact you again.",

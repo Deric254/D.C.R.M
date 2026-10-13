@@ -41,7 +41,7 @@
     title: 'Settings',
     async render(el) {
       let [s, health, st] = await Promise.all([api('/settings'), api('/health'), api('/status')]);
-      const form = () => html`<form id="sform" class="stack" style="max-width:860px">
+      const form = () => html`<div id="account-panels" class="stack" style="max-width:860px;margin-bottom:16px"></div><form id="sform" class="stack" style="max-width:860px">
         <section class="panel"><div class="panel-head"><h2>Your business</h2></div><div class="panel-body">
           ${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}
           <div class="grid2" style="margin-top:14px">${field(s, 'contact_website', 'Your website', { hint: 'Written into messages as {website}.' })}${field(s, 'contact_whatsapp', 'Your WhatsApp number', { hint: 'Written into messages as {whatsapp}.' })}
@@ -114,6 +114,7 @@
               ${field(s, 'email_delay_sec', 'Seconds between emails', { type: 'number', min: 0, hint: 'A little random variation is added.' })}${field(s, 'sms_delay_sec', 'Seconds between texts', { type: 'number', min: 30, hint: 'At least 30: Android blocks apps that send faster.' })}</div>
             ${check(s, 'send_window_enabled', 'Only send during these hours')}
             <div class="grid2">${field(s, 'send_window_start', 'From', { type: 'time' })}${field(s, 'send_window_end', 'Until', { type: 'time' })}</div>
+            ${select(s, 'reach_order', 'When you choose "Best way for each lead", try first', [['whatsapp,email,sms', 'WhatsApp, then email, then text'], ['email,whatsapp,sms', 'Email, then WhatsApp, then text'], ['whatsapp,sms,email', 'WhatsApp, then text, then email'], ['email,sms,whatsapp', 'Email, then text, then WhatsApp'], ['sms,whatsapp,email', 'Text, then WhatsApp, then email'], ['sms,email,whatsapp', 'Text, then email, then WhatsApp']])}
             ${field(s, 'followup_wait_days', 'Days before a follow-up can be sent', { type: 'number', min: 0, hint: 'A lead gets one message at a time. After this many days with no reply it can be followed up.' })}
           </div></section>
 
@@ -160,7 +161,7 @@
         ? html`<p class="muted small">Updates are installed from the desktop app.</p>`
         : html`<div class="row"><button type="button" class="btn" id="check-update">Check for updates</button>
             ${App.state.update ? html`<button type="button" class="btn primary" id="install-update">Install version ${App.state.update.version} and restart</button>` : ''}</div>`);
-      const draw = () => { render(el, form()); updateBox(); };
+      const draw = () => { render(el, form()); updateBox(); App.renderAccount($('#account-panels')).catch(fail); };
       draw();
 
       const save = async () => {
@@ -168,6 +169,7 @@
         return s;
       };
       el.addEventListener('submit', async (e) => {
+        if (e.target.id !== 'sform') return;   // the account and people forms above have their own handlers and must not save the settings
         e.preventDefault();
         try { await save(); toast('Settings saved'); draw(); App.loadBrand(); } catch (err) { fail(err); }
       });

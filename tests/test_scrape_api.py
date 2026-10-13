@@ -1,12 +1,10 @@
 """Integration test: the running app starts scrape worker processes, reports progress, honours Stop.
 Run: python tests/test_scrape_api.py"""
-import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,15 +16,13 @@ BASE = f"http://127.0.0.1:{PORT}"
 DATA = tempfile.mkdtemp(prefix="dericbi-scrape-")
 
 
+import authkit  # noqa: E402
+
+SESSION = authkit.Session(BASE)
+
+
 def call(method, path, body=None):
-    req = urllib.request.Request(BASE + "/api" + path, method=method,
-                                 data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read() or b"null")
-    except urllib.error.HTTPError as e:
-        return {"error": e.code, **json.loads(e.read() or b"{}")}
+    return SESSION.call(method, path, body)
 
 
 def wait_job(jid, states, timeout=120):
@@ -50,6 +46,7 @@ try:
             call("GET", "/health"); break
         except Exception:
             time.sleep(0.25)
+    SESSION.sign_in()
 
     one = {"searches": [{"category": "Pharmacy", "town": "Meru"}], "max_per_search": 100, "headless": True}
     r = call("POST", "/jobs/scrape", one)

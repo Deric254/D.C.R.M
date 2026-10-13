@@ -37,9 +37,27 @@ Open a lead and press **WhatsApp**, **Email** or **Text**. The AI writes the mes
 - **Everything is tracked:** each reply is matched to the message of ours it answers ("In answer to our WhatsApp of ..."), a lead you are still waiting on shows **Awaiting reply**, and Overview shows how many leads answered on each channel.
 - **Your identity:** Settings > Sender name and Settings > AI writing help > *Who you are and what you sell* decide how the AI introduces you (default: Deric Marangu, data analyst, with ready-made tools adapted to each business). Edit that text to name your actual tools.
 
+## Accounts and licences
+
+Nothing in the app opens until someone has signed in. The first account on the owner's computer is **Deric Marangu**, the owner (mother) account.
+
+- **Passwords** must be strong: 12+ characters with a capital, a number and a symbol, no common passwords, no part of the name, no runs like `1234`. *Suggest a strong password* makes one. Passwords and security answers are stored only as salted scrypt hashes. Five wrong passwords lock the account for a while, and the wait grows each time.
+- **Security questions:** three, all needed to reset a forgotten password (and, for the owner, the owner key as well). Changing a password signs out every other place.
+- **Other people** are added by the owner in *Settings > People on this computer*. They get a temporary password and must choose their own password and questions before they can use anything. Only the owner can add, switch off, reset or remove people.
+- **Another computer needs the owner's signature.** A new computer shows an *activation code*. The owner enters that code in *Settings > Let another computer use the app*, adds the person's name, pastes the **owner key**, and gets a licence to send back. The licence is signed (Ed25519) and works on that computer only, for the days chosen. Every copy of the app carries only the owner's *public* key, so it can check a licence but never make one.
+
+**One-time setup (do this before you build the installer):**
+
+1. Run `python scripts/make-owner-key.py`. It writes `dericbi-owner.key` (keep it secret and make a backup: it is never committed, and never saved by the app) and prints a public key.
+2. Paste that public key into `backend/owner_key.py` and commit that file.
+3. The release build now fails if the public key is missing, so an unprotected installer can't go out by mistake.
+4. On your own computer, open the app and create the owner account with your name and the owner key.
+
+**What this does and doesn't do:** it stops anyone using a copy without your licence, and stops people using each other's accounts. The app is not hosted, so a licence can't be taken back from a computer that is offline: it simply ends on its date, so issue short ones and renew them. A determined person who edits the program files could remove the check; licences and passwords keep honest users honest, they are not copy-protection against that. The data file itself is not encrypted, so turn on Windows BitLocker or a Windows password for the computer.
+
 ## Email, WhatsApp and texts (Outreach)
 
-Press **New campaign**: 1) choose how to reach them (WhatsApp, Email or Text), 2) tick the leads (filter by sector, town or name; untick anyone you want to leave out), 3) choose the message, 4) choose follow-ups, then **Start campaign**.
+Press **New campaign** (or tick leads on the Leads page and press **Reach out**): 1) choose how to reach them: WhatsApp, Email, Text, or **Best way for each lead** (each lead gets ONE message on the first way that works for them, in the order set in Settings; if a way fails, such as a number that isn't on WhatsApp or an email that bounces, that same message moves to the next way, so nobody is ever reached twice), 2) tick the leads (filter by sector, town or name; untick anyone you want to leave out), 3) choose the message, 4) choose follow-ups, then **Start campaign**.
 
 - **Email (Gmail):** Settings > Email > *Connect Gmail*: your Gmail address and an App Password (the page shows how to get one). It sets up sending and reading replies, then tests both and shows each step with a tick or cross, so a failure says exactly what to change.
 - **Texts (your Android phone):** install the free open-source *SMS Gateway for Android* app on the phone, switch on its Local server, and put its address, username and password in Settings > Text messages. The phone and the PC must be on the same Wi-Fi/router or hotspot. Texts are sent by your SIM (your normal SMS bundle applies). Android only allows about 30 texts per 30 minutes per app, so the app waits at least 30 seconds between texts. A text is always one SMS of 160 characters or less, opt-out line included; a long business name is shortened to fit.

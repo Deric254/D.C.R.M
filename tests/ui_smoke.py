@@ -4,10 +4,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
+import authkit  # noqa: E402
 SHOTS = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix="shots-"))
 SHOTS.mkdir(parents=True, exist_ok=True)
 PORT = 8791
@@ -15,15 +16,11 @@ BASE = f"http://127.0.0.1:{PORT}"
 DATA = tempfile.mkdtemp(prefix="dericbi-ui-")
 
 
+SESSION = authkit.Session(BASE)
+
+
 def call(method, path, body=None):
-    req = urllib.request.Request(BASE + "/api" + path, method=method,
-                                 data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req) as r:
-            return json.loads(r.read() or b"null")
-    except urllib.error.HTTPError as e:
-        return {"error": e.code, **json.loads(e.read() or b"{}")}
+    return SESSION.call(method, path, body)
 
 
 server = subprocess.Popen([sys.executable, str(ROOT / "backend" / "main.py"), "--port", str(PORT), "--data-dir", DATA],
@@ -37,6 +34,7 @@ try:
             time.sleep(0.25)
     else:
         raise SystemExit("server didn't start: " + server.stdout.read())
+    SESSION.sign_in()
 
     # ---------------------------------------------------------------- seed data
     names = [("Meru Central Pharmacy", "Pharmacy", "Meru"), ("Chuka Agrovet Supplies", "Agrovet", "Chuka"),
@@ -77,7 +75,9 @@ try:
     problems = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1366, "height": 860})
+        context = browser.new_context(viewport={"width": 1366, "height": 860})
+        context.add_cookies(SESSION.cookies())   # start signed in; the sign-in screens have their own test (ui_auth.py)
+        page = context.new_page()
         page.on("console", lambda m: problems.append(f"console {m.type}: {m.text}") if m.type in ("error", "warning") else None)
         page.on("pageerror", lambda e: problems.append(f"pageerror: {e} @ {page.url} | {(e.stack or '')[:300]}"))
         page.on("dialog", lambda d: (problems.append(f"UNEXPECTED JS dialog: {d.message}"), d.dismiss()))
@@ -219,7 +219,13 @@ try:
         page.wait_for_function("document.querySelector('#slogan').textContent === 'Leads that reply'")
         assert call("GET", "/settings")["ai_pitch"] == "Stock software"
         page.click("#test-ai")
-        page.wait_for_selector(".toast.bad")   # no key yet: a clear error, not a crash
+        page.wait_for_function("document.querySelector('.toasts') && document.querySelector('.toasts').textContent.includes('works')")   # an AI is set up: it says so
+        ai_settings = {k: call("GET", "/settings")[k] for k in ("ai_provider", "ai_custom_url", "ai_custom_model")}
+        call("PUT", "/settings", {"ai_provider": "gemini", "ai_custom_url": "", "ai_custom_model": ""})
+        page.reload(); page.wait_for_selector("#sform"); page.click("#test-ai")
+        page.wait_for_selector(".toast.bad")   # no key: a clear error, not a crash
+        assert "Add an AI key first" in page.inner_text(".toasts")
+        call("PUT", "/settings", ai_settings)   # the Today step below needs the AI again
 
         # ---- Today: replies to answer, with the message already written when a button is pressed
         page.click('#nav a[data-view="today"]')

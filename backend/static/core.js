@@ -41,6 +41,8 @@
     let data = null;
     try { data = await res.json(); } catch (_) { /* empty body */ }
     if (!res.ok) {
+      // The session ended (signed out elsewhere, idle too long, licence ended): bring the sign-in back.
+      if (data && ['login', 'finish'].includes(data.auth) && !path.startsWith('/auth/') && App.relock) App.relock();
       const err = new Error((data && data.detail) || `Request failed (${res.status})`);
       err.status = res.status; err.data = data; throw err;
     }
@@ -147,6 +149,7 @@
   App.go = (view, params) => { location.hash = '#/' + view + (params ? '?' + new URLSearchParams(params) : ''); };
 
   async function route() {
+    if (document.body.classList.contains('locked')) return;   // signed out: only the sign-in is shown
     const { view, params } = parseHash();
     const v = App.views[view] || App.views.overview;
     const name = App.views[view] ? view : 'overview';
@@ -200,7 +203,7 @@
     const [s, h] = await Promise.all([api('/settings'), api('/health')]);
     const slogan = $('#slogan');
     slogan.textContent = s.slogan; slogan.classList.toggle('hidden', !s.slogan);
-    $('#side-foot').textContent = 'v' + h.version;
+    $('#ver').textContent = 'v' + h.version;
     App.showLogo($('#brand-logo'));
   };
   // Only the desktop shell can update itself; in a plain browser these stay unavailable.
@@ -209,7 +212,7 @@
   App.checkUpdate = async () => (App.state.update = await shell().invoke('check_update'));
   App.installUpdate = () => shell().invoke('install_update');
 
-  App.start = function () {
+  App.start = async function () {
     window.addEventListener('hashchange', route);
     // Links that leave the app open in the normal browser, so the app window never navigates away.
     document.addEventListener('click', (e) => {
@@ -221,6 +224,7 @@
       }
     });
     $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close('cancel'); });
+    await App.gate();   // nothing loads until someone has signed in
     pollStatus(); setInterval(pollStatus, 4000);
     App.loadBrand().catch(() => {});
     if (App.desktop()) setTimeout(() => App.checkUpdate().catch(() => {}), 6000);

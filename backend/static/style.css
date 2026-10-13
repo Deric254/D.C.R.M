@@ -228,3 +228,17 @@ hr.sep { border: 0; border-top: 1px solid var(--line-2); margin: 4px 0; }
 .pick label { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line-2); cursor: pointer; }
 .pick label:last-child { border-bottom: 0; }
 @media (max-width: 700px) { .reach { grid-template-columns: 1fr; } }
+
+/* Sign-in: nothing else is shown until someone has signed in */
+.auth { display: none; }
+body.locked .app, body.locked #overlay { display: none; }
+body.locked .auth { display: grid; place-items: start center; min-height: 100vh; padding: 6vh 12px 24px; background: var(--canvas); }
+.auth-card { width: min(560px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 24px; box-shadow: var(--shadow); }
+.auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.auth-brand img { width: 40px; height: 40px; border-radius: 8px; object-fit: contain; }
+.who { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.who b { display: block; color: #fff; font-size: 13px; }
+.who small { display: block; opacity: .75; }
+.who .btn { color: var(--side-ink); }
+.auth code, .panel code { word-break: break-all; }
+.reach { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }

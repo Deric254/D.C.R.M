@@ -1,0 +1,10 @@
+"""The owner's PUBLIC key: the one thing that makes a copy of the app answer to the owner account.
+
+Every copy of the app checks licences and the owner's identity against this key. Only the matching PRIVATE key,
+which only the owner holds, can make a licence these copies accept. A public key is safe to publish.
+
+Set it once, before you build the installer:
+    python scripts/make-owner-key.py        (makes dericbi-owner.key: keep it secret; prints the line below)
+then paste the printed value here.
+"""
+OWNER_PUBLIC_KEY = ""   # 64 hex characters, printed by scripts/make-owner-key.py
