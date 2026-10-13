@@ -7,4 +7,4 @@ Set it once, before you build the installer:
     python scripts/make-owner-key.py        (makes dericbi-owner.key: keep it secret; prints the line below)
 then paste the printed value here.
 """
-OWNER_PUBLIC_KEY = ""   # 64 hex characters, printed by scripts/make-owner-key.py
+OWNER_PUBLIC_KEY = "e4c79b36e1f58b5690ac3be0b9c43226eff08d98520c820c4f893d1e56c69d29"   # 64 hex characters, printed by scripts/make-owner-key.py
