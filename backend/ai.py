@@ -228,9 +228,16 @@ def _stage(lead: dict) -> str:
     """What this message is: a first hello, a reply, or a follow-up to something we sent that got no answer."""
     convo = _convo(lead)
     if not convo:
-        return ("This is the FIRST message. Introduce us by name and say in a few words what we do, show one concrete way "
-                "it could help this kind of business, mention that we have ready-made tools we adapt to their business "
-                "if the offer says so, and ask one easy question.")
+        return ("This is the FIRST message to someone who does not know us (a cold lead), so it has to earn a reply. Build it in "
+                "this order, in plain, warm, human words: (1) greet them by their business name; (2) one sincere line of "
+                "appreciation that is TRUE: respect for the work of running this kind of business, or one real detail from the "
+                "facts or notes above, never invented praise, ratings, reviews, years or results; (3) in one sentence say who we "
+                "are and what we do, and how it helps THIS kind of business, using the angle below as something we can look into "
+                "together; mention ready-made tools we adapt to their business only if the offer says so; (4) invite them to reply "
+                "if they would like to improve that, or to try a different way of doing it; (5) if what we offer says they pay only "
+                "when satisfied (or any similar term), say so plainly in one short line, otherwise say nothing about price; "
+                "(6) end with ONE easy next step. In a text or WhatsApp keep (1), (3) and (6), and add (4) and (5) only if there "
+                "is room.")
     last = convo[-1]
     if last["direction"] == "in":
         return "They replied. Answer exactly what they said first, then offer one clear next step."
@@ -242,7 +249,9 @@ def _stage(lead: dict) -> str:
     when = (last["sent_at"] or last["created_at"] or "")[:10]
     how = CHANNEL_NAMES.get(last["channel"], last["channel"])
     task = (f"We have had NO reply to our {how} message of {when} ({waiting} unanswered so far). Write a short follow-up that "
-            "refers to it naturally, takes a NEW angle instead of repeating it, and asks one easy question.")
+            "refers to it naturally, gives one small genuinely useful insight for this kind of business (never a claim about "
+            "them), takes a NEW angle instead of repeating it, keeps any 'pay only when satisfied' term from the offer in one "
+            "short line if the offer has one, and asks one easy question that can be answered in a word.")
     if waiting >= 3:
         task += " This is the last note: be gracious and say we will not keep messaging, and that they can reach us any time."
     return task
@@ -309,12 +318,13 @@ FORMS = {
 
 # How a message is built so it is read and answered: a real pain point, a curiosity gap, one easy step, nothing made up.
 CRAFT = (
-    "Write like a skilled, honest salesperson: (1) open with ONE specific pain point owners of this kind of business feel, "
-    "as a question or an observation, never an accusation; (2) open a curiosity gap by hinting at what can be seen or fixed "
+    "Write like a skilled, honest salesperson who respects the reader: (1) greet them briefly by name, then name ONE specific "
+    "pain point owners of this kind of business feel, as a question or an observation, never an accusation; (2) open a curiosity gap by hinting at what can be seen or fixed "
     "without giving the whole answer; (3) make it about them, using their business name or town; (4) end with ONE easy, "
     "low-effort next step (reply YES, message on WhatsApp, or take a 2-minute look at the website); (5) warm, human, plain "
     "words; no hype, no ALL CAPS, at most one exclamation mark, no spam words such as free money, guaranteed, urgent, act now "
-    "or winner; (6) never invent numbers, testimonials, prices, results or facts about their business."
+    "or winner; (6) never invent numbers, testimonials, prices, results or facts about their business, and never say you saw "
+    "their work, reviews or results unless the facts above say so; (7) lower the risk: replying commits them to nothing."
 )
 
 

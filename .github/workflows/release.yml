@@ -28,6 +28,7 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       - run: python tests/test_backend.py
       - run: python tests/test_ui_guards.py
+      - run: python tests/test_message_craft.py
 
   build:
     needs: test

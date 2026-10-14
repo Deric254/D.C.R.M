@@ -66,20 +66,22 @@ SMS = {
 
 # WhatsApp: a little more room, still short enough to be read in one glance.
 WHATSAPP = {
-    g: (f"Hi {{name}}, {{sender}} here, a data analyst in {{town}}. Quick question: how much money goes to {PAIN[g]} each month? "
-        "I help local businesses see this from their own records, and I'd like to show you what I found for businesses like yours. "
-        "Curious? Reply YES and I'll send it. Or see how it works: {website}")
+    g: (f"Hello {{name}}, {{sender}} here. Running a business like yours takes real work, and I respect that. "
+        f"I'm a data analyst, and I help businesses see {PAIN[g]} from their own records so they can fix it. "
+        "If you'd like to improve this, or try a different way of tracking it, reply YES and I'll show you what it could look "
+        "like for you. You only pay if you're satisfied with my work. More: {website}")
     for g in PAIN
 }
 
 # Emails: (subject, body). The opt-out footer is added when sending.
 EMAIL = {
-    g: (f"A quick question about {PAIN[g]}",
-        f"Hi {{name}},\n\nHow much money goes to {PAIN[g]} at {{name}} in a month? Most owners can only guess, "
-        "because the answer is hiding in their own sales and stock records.\n\n"
-        "I'm {sender}, a data analyst. I turn those records into a simple picture of what is selling, what is not, and "
-        "where money is slipping away. I'd like to show you what that looks like for a business like yours.\n\n"
-        "Worth a 10-minute look? Just reply YES, or reach me directly:\n"
+    g: (f"{{name}}: a quick idea about {PAIN[g]}",
+        "Hi {name},\n\nI came across {name} while looking at local businesses. Running one takes real effort, and I respect that.\n\n"
+        f"I'm {{sender}}, a data analyst. I help businesses like yours see {PAIN[g]} from their own sales and stock records, "
+        "so you can decide with facts instead of guesses.\n\n"
+        "If you'd like to improve this, or try a different way of tracking it, just reply YES and I'll show you what it could "
+        "look like for {name}. You only pay if you're satisfied with my work.\n\n"
+        "Worth a quick look? Or reach me directly:\n"
         "Website: {website}\nWhatsApp: {whatsapp}\nEmail: {email}\n\n{sender}")
     for g in PAIN
 }
