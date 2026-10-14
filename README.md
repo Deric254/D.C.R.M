@@ -81,6 +81,21 @@ On **Outreach**, tick **Let the AI write each message for each person**. The mes
 - **Never half-written:** a message with a leftover `{blank}` or no email subject is not sent. If the AI is busy or out of free limit the message waits and retries; if no AI key is set the campaign pauses.
 - **The log:** the exact text of every message is kept. Open a campaign's **Details** to read what each lead got, or open the lead to see it in their history.
 
+## Speed on a slow computer
+
+The app was measured on a deliberately starved computer (one processor core shared with a CPU-hungry program, and for the browser a further 6x slowdown) with a large database: 30,000 leads, 40 campaigns, 30,000 messages. Run the same measurements yourself:
+
+- `python tests/perf_bench.py --leads 30000 --hog` times what every screen asks the server for, and the CPU used while the app is just left open.
+- `python tests/perf_ui.py --data <folder made by perf_bench.seed> --throttle 6` times each screen in Chrome and how long the page freezes.
+
+What changed, and what it did (before -> after): **Today 9.4 s -> 0.2 s** (it read every lead and counted per row; it now reads only the 40 shown), **Overview 3.1 s -> 0.4 s** (one pass over the leads instead of about 20), **campaign list** 11 scans per campaign -> one, **Leads page** no longer sorts every lead on each page view (0.2 ms instead of 50 ms), **best-way counts and previews** are one query instead of a lookup per lead, and **New campaign** draws 100 leads at a time instead of 1,000 (its freeze fell from 1.0 s to 0.2 s). Screens now stop refreshing while the window is hidden or minimised, slow down when nothing is running, and skip redrawing when nothing changed. The database is set up for a slow disk (write-ahead log, normal sync) and learns the shape of your data once.
+
+The tests keep it that way: they check the new queries give exactly the old answers on randomised data, and that the work a screen does does not grow with the number of leads.
+
+**Light mode** (Settings > Limits): each Chrome window costs about 0.7 GB, and the lead search and WhatsApp each open one. On a computer with 4 GB of memory or less, or two processor cores, light mode switches on by itself and runs one browser at a time (WhatsApp waits for a lead search and the reverse). You can force it on or off.
+
+**Not changed, and the biggest remaining cost on a very slow computer:** the installer packs the engine as one file that includes Playwright, so every launch first unpacks well over 100 MB into a temporary folder, which on a slow disk with antivirus scanning can take many seconds before the app opens. The cure is to build the engine as a folder (`pyinstaller --onedir`) and ship that folder with the app, which also needs a change to how the Tauri shell finds and starts it (`src-tauri/src/main.rs` and `tauri.conf.json`). That can only be built and tested on Windows, so it was not changed blind. Until then, keeping the app open instead of closing and reopening it avoids the cost.
+
 ## Local use
 
 Building the installer on your own PC needs Python, Node.js, Rust and the **Visual Studio Build Tools** (workload “Desktop development with C++”). GitHub builds it for you on every push, so you only need these to build locally.

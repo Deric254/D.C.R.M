@@ -33,6 +33,7 @@ import jobs
 import leads as L
 import library
 import messaging
+import perf
 from messaging import SendError
 from util import days_ago, now, today_start
 
@@ -52,6 +53,8 @@ def _audience_where(channel: str, filters: dict):
         where.append("l.email IS NOT NULL AND l.email_bounced = 0")
     elif channel == "auto":   # reachable some way: narrowed to the ways in use by _auto_rows
         where.append("((l.email IS NOT NULL AND l.email_bounced = 0) OR (l.phone_norm IS NOT NULL AND l.is_mobile = 1))")
+    elif channel is None:     # no way chosen: used to count every way in one pass (reach_counts)
+        pass
     else:
         where.append("l.phone_norm IS NOT NULL AND l.is_mobile = 1")
 
@@ -88,9 +91,10 @@ def _audience_where(channel: str, filters: dict):
 def _auto_rows(conn, rows, s: dict):
     """For 'best way' campaigns: [(lead, the way they will be reached)], leaving out leads no usable way reaches."""
     usable = usable_channels(s)
+    no_wa = _no_whatsapp_ids(conn) if "whatsapp" in usable else set()
     out = []
     for r in rows:
-        ch = pick_channel(conn, r, s, usable)
+        ch = pick_channel(conn, r, s, usable, no_whatsapp=no_wa)
         if ch:
             out.append((r, ch))
     return out
@@ -108,9 +112,9 @@ def build_audience(conn, channel: str, filters: dict, s: dict, limit=None):
 
 
 def count_audience(conn, channel: str, filters: dict) -> int:
-    if channel == "auto":
-        return len(build_audience(conn, channel, filters, db.get_settings(conn)))
     where, args = _audience_where(channel, filters)
+    if channel == "auto":
+        where = where + [_any_way_sql(usable_channels(db.get_settings(conn)))]
     return conn.execute(f"SELECT COUNT(*) FROM leads l WHERE {' AND '.join(where)}", args).fetchone()[0]
 
 
@@ -118,12 +122,14 @@ def audience_list(conn, channel: str, filters: dict, limit: int = 1000) -> dict:
     """The leads a campaign on this channel could go to, for the pick-your-leads list."""
     where, args = _audience_where(channel, filters)
     if channel == "auto":
-        s = db.get_settings(conn)
-        rows = _auto_rows(conn, conn.execute(f"SELECT l.* FROM leads l WHERE {' AND '.join(where)} "
-                                             "ORDER BY l.name COLLATE NOCASE", args).fetchall(), s)
-        return {"total": len(rows), "leads": [
-            {"id": r["id"], "name": r["name"], "town": r["town"], "sector": r["sector"], "grade": r["grade"], "via": ch,
-             "contact": r["email"] if ch == "email" else r["phone_norm"]} for r, ch in rows[: int(limit)]]}
+        usable = usable_channels(db.get_settings(conn))
+        where = where + [_any_way_sql(usable)]
+        total = conn.execute(f"SELECT COUNT(*) FROM leads l WHERE {' AND '.join(where)}", args).fetchone()[0]
+        rows = conn.execute(f"SELECT l.id, l.name, l.town, l.sector, l.grade, l.email, l.phone_norm, {_way_sql(usable)} AS via "
+                            f"FROM leads l WHERE {' AND '.join(where)} ORDER BY l.name COLLATE NOCASE LIMIT {int(limit)}", args).fetchall()
+        return {"total": total, "leads": [
+            {"id": r["id"], "name": r["name"], "town": r["town"], "sector": r["sector"], "grade": r["grade"], "via": r["via"],
+             "contact": r["email"] if r["via"] == "email" else r["phone_norm"]} for r in rows]}
     total = conn.execute(f"SELECT COUNT(*) FROM leads l WHERE {' AND '.join(where)}", args).fetchone()[0]
     rows = conn.execute(f"SELECT l.id, l.name, l.town, l.sector, l.email, l.phone_norm, l.grade FROM leads l "
                         f"WHERE {' AND '.join(where)} ORDER BY l.name COLLATE NOCASE LIMIT {int(limit)}", args).fetchall()
@@ -135,7 +141,12 @@ def audience_list(conn, channel: str, filters: dict, limit: int = 1000) -> dict:
 def reach_counts(conn) -> dict:
     """How many never-messaged leads each way of reaching them could go to, and which ways are ready to use."""
     s = db.get_settings(conn)
-    return {ch: {"leads": count_audience(conn, ch, {}), "ready": channel_ready(ch, s)} for ch in CHANNELS}
+    where, args = _audience_where(None, {})
+    # every way's count from ONE pass over the leads (it was one pass per way)
+    n = conn.execute(f"SELECT SUM({_WAY_COND['email']}), SUM({_WAY_COND['sms']}), SUM({_WAY_COND['whatsapp']}), "
+                     f"SUM({_any_way_sql(usable_channels(s))}) FROM leads l WHERE {' AND '.join(where)}", args).fetchone()
+    counts = {"email": n[0] or 0, "sms": n[1] or 0, "whatsapp": n[2] or 0, "auto": n[3] or 0}
+    return {ch: {"leads": counts[ch], "ready": channel_ready(ch, s)} for ch in CHANNELS}
 
 
 def usable_channels(s: dict, linked=None) -> list:
@@ -146,23 +157,49 @@ def usable_channels(s: dict, linked=None) -> list:
     return [c for c in order if (linked if c == "whatsapp" else channel_ready(c, s))]
 
 
-def _can_reach(conn, lead, channel: str) -> bool:
+def _can_reach(conn, lead, channel: str, no_whatsapp=None) -> bool:
+    """no_whatsapp: ids of leads known not to be on WhatsApp, read once for a whole batch; None = look this lead up."""
     if channel == "email":
         return bool(lead["email"]) and not lead["email_bounced"]
     if not lead["phone_norm"] or not lead["is_mobile"]:
         return False
-    if channel == "whatsapp" and conn.execute("SELECT 1 FROM events WHERE lead_id=? AND kind='no_whatsapp' LIMIT 1",
-                                              (lead["id"],)).fetchone():
-        return False   # known not to be on WhatsApp
+    if channel == "whatsapp":
+        known = (lead["id"] in no_whatsapp) if no_whatsapp is not None else bool(
+            conn.execute("SELECT 1 FROM events WHERE lead_id=? AND kind='no_whatsapp' LIMIT 1", (lead["id"],)).fetchone())
+        if known:
+            return False   # known not to be on WhatsApp
     return True
 
 
-def pick_channel(conn, lead, s: dict, usable=None, exclude=()):
+def pick_channel(conn, lead, s: dict, usable=None, exclude=(), no_whatsapp=None):
     """The one way this lead will be reached: the first usable way they can be reached on, skipping 'exclude'."""
     for ch in (usable_channels(s) if usable is None else usable):
-        if ch not in exclude and _can_reach(conn, lead, ch):
+        if ch not in exclude and _can_reach(conn, lead, ch, no_whatsapp):
             return ch
     return None
+
+
+def _no_whatsapp_ids(conn) -> set:
+    return {r[0] for r in conn.execute("SELECT DISTINCT lead_id FROM events WHERE kind='no_whatsapp'")}
+
+
+# The same choice pick_channel makes, written as SQL, so counting and listing thousands of leads is one query and not a
+# lookup per lead. (tests/test_backend.py checks the two always agree.)
+_WAY_COND = {
+    "email": "(l.email IS NOT NULL AND l.email_bounced = 0)",
+    "sms": "(l.phone_norm IS NOT NULL AND l.is_mobile = 1)",
+    "whatsapp": "(l.phone_norm IS NOT NULL AND l.is_mobile = 1 AND NOT EXISTS "
+                "(SELECT 1 FROM events e WHERE e.lead_id = l.id AND e.kind = 'no_whatsapp'))",
+}
+
+
+def _way_sql(usable) -> str:
+    """SQL giving the way each lead is reached (the first usable one that fits them), NULL when none does."""
+    return ("CASE " + " ".join(f"WHEN {_WAY_COND[c]} THEN '{c}'" for c in usable) + " END") if usable else "NULL"
+
+
+def _any_way_sql(usable) -> str:
+    return "(" + " OR ".join(_WAY_COND[c] for c in usable) + ")" if usable else "0"
 
 
 def _prior_channel(conn, lead_id: int):
@@ -226,22 +263,38 @@ def validate_campaign(channel, subject, body, personalize=False, style=""):
 def preview(conn, channel, subject, body, filters, personalize=False, style=""):
     validate_campaign(channel, subject, body, personalize, style)
     s = db.get_settings(conn)
-    limit = (filters or {}).get("limit") or None
-    full = build_audience(conn, channel, filters, s)
-    rows = full[: int(limit)] if limit else full
-    sample, too_long = None, 0
-    ways = {}   # how many leads each way will reach
+    limit = int((filters or {}).get("limit") or 0) or None
     usable = usable_channels(s) if channel == "auto" else None
-    via = [(r, pick_channel(conn, r, s, usable) if channel == "auto" else channel) for r in rows]
-    for _, ch in via:
-        ways[ch] = ways.get(ch, 0) + 1
-    if rows and not personalize:
-        lead, ch0 = via[0]
+    if channel == "auto" and limit:   # a capped audience is rare: take the simple route
+        via = _auto_rows(conn, conn.execute(f"SELECT l.* FROM leads l WHERE {' AND '.join(_audience_where(channel, filters)[0])} ORDER BY l.id",
+                                            _audience_where(channel, filters)[1]).fetchall(), s)
+        matching, via = len(via), via[:limit]
+        will_send, ways = len(via), {}
+        for _, ch in via:
+            ways[ch] = ways.get(ch, 0) + 1
+        sample_rows = via[:300]
+    else:
+        matching = count_audience(conn, channel, filters)
+        will_send = min(matching, limit) if limit else matching
+        if channel == "auto":
+            where, args = _audience_where(channel, filters)
+            where = where + [_any_way_sql(usable)]
+            way = _way_sql(usable)
+            ways = dict(conn.execute(f"SELECT way, COUNT(*) FROM (SELECT {way} AS way FROM leads l WHERE {' AND '.join(where)}) "
+                                     "GROUP BY way", args).fetchall()) if will_send else {}
+            sample_rows = [(r, r["via"]) for r in conn.execute(
+                f"SELECT l.*, {way} AS via FROM leads l WHERE {' AND '.join(where)} ORDER BY l.id LIMIT {min(300, will_send)}", args)]
+        else:
+            ways = {channel: will_send} if will_send else {}
+            sample_rows = [(r, channel) for r in build_audience(conn, channel, filters, s, min(300, will_send))] if will_send else []
+    sample, too_long = None, 0
+    if sample_rows and not personalize:
+        lead, ch0 = sample_rows[0]
         subj, text, problem = compose(ch0, style, subject, body, lead, s, 0)
         sample = {"lead": lead["name"], "to": lead["email"] if ch0 == "email" else lead["phone_norm"], "via": ch0,
                   "subject": subj, "body": text or problem, "length": len(text) if ch0 == "sms" else 0}
-        too_long = sum(1 for i, (r, ch) in enumerate(via[:300]) if ch == "sms" and compose(ch, style, subject, body, r, s, i)[2])
-    return {"matching": len(full), "will_send": len(rows), "sample": sample, "channel_ready": channel_ready(channel, s),
+        too_long = sum(1 for i, (r, ch) in enumerate(sample_rows) if ch == "sms" and compose(ch, style, subject, body, r, s, i)[2])
+    return {"matching": matching, "will_send": will_send, "sample": sample, "channel_ready": channel_ready(channel, s),
             "ai_ready": bool(ai.configured(s)), "too_long": too_long, "ways": ways, "usable": usable,
             "whatsapp_linked": bool(db.get_internal("whatsapp_linked"))}
 
@@ -406,28 +459,41 @@ def set_campaign_status(conn, cid: int, action: str):
         raise ValueError(f"Can't {action} a campaign that is {c['status']}")
 
 
-def campaign_stats(conn, cid=None):
-    q = """
-    SELECT c.*,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='sent') AS sent,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='queued') AS queued,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='failed') AS failed,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='skipped') AS skipped,
-      (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in'
-          AND m.grade NOT IN ('auto','bounce')) AS replies,
-      (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in' AND m.grade='hot') AS hot,
-      (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in' AND m.grade='warm') AS warm,
-      (SELECT COUNT(*) FROM campaigns k WHERE k.followup_of=c.id AND k.status IN ('scheduled','running','paused')) AS followups_waiting,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='email') AS n_email,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='sms') AS n_sms,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='whatsapp') AS n_whatsapp,
-      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='whatsapp'
-          AND m.status='queued') AS queued_whatsapp
-    FROM campaigns c """
+def campaign_stats(conn, cid=None, statuses=None):
+    """Campaigns with their progress counts. One pass over the messages of the campaigns shown, not one per number."""
     if cid is not None:
-        r = conn.execute(q + "WHERE c.id=?", (cid,)).fetchone()
-        return dict(r) if r else None
-    return [dict(r) for r in conn.execute(q + "ORDER BY c.id DESC")]
+        camps = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchall()
+    elif statuses:
+        camps = conn.execute(f"SELECT * FROM campaigns WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY id DESC",
+                             list(statuses)).fetchall()
+    else:
+        camps = conn.execute("SELECT * FROM campaigns ORDER BY id DESC").fetchall()
+    if not camps:
+        return None if cid is not None else []
+    agg = {r["campaign_id"]: r for r in conn.execute(
+        """SELECT campaign_id,
+             SUM(direction='out' AND status='sent') AS sent, SUM(direction='out' AND status='queued') AS queued,
+             SUM(direction='out' AND status='failed') AS failed, SUM(direction='out' AND status='skipped') AS skipped,
+             COUNT(DISTINCT CASE WHEN direction='in' AND grade NOT IN ('auto','bounce') THEN lead_id END) AS replies,
+             COUNT(DISTINCT CASE WHEN direction='in' AND grade='hot' THEN lead_id END) AS hot,
+             COUNT(DISTINCT CASE WHEN direction='in' AND grade='warm' THEN lead_id END) AS warm,
+             SUM(direction='out' AND channel='email') AS n_email, SUM(direction='out' AND channel='sms') AS n_sms,
+             SUM(direction='out' AND channel='whatsapp') AS n_whatsapp,
+             SUM(direction='out' AND channel='whatsapp' AND status='queued') AS queued_whatsapp
+           FROM messages WHERE campaign_id IN (SELECT value FROM json_each(?)) GROUP BY campaign_id""",
+        (json.dumps([c["id"] for c in camps]),))}
+    waiting = {r[0]: r[1] for r in conn.execute(
+        "SELECT followup_of, COUNT(*) FROM campaigns WHERE followup_of IS NOT NULL "
+        "AND status IN ('scheduled','running','paused') GROUP BY followup_of")}
+    out = []
+    for c in camps:
+        d = dict(c)
+        a = agg.get(c["id"])
+        for key in ("sent", "queued", "failed", "skipped", "replies", "hot", "warm", "n_email", "n_sms", "n_whatsapp", "queued_whatsapp"):
+            d[key] = (a[key] or 0) if a else 0
+        d["followups_waiting"] = waiting.get(c["id"], 0)
+        out.append(d)
+    return out[0] if cid is not None else out
 
 
 # ------------------------------------------------------------- one-off sends
@@ -1034,6 +1100,11 @@ class Sender(threading.Thread):
         if not self.in_window(s):
             self._set("waiting", f"Outside sending hours ({s['send_window_start']}–{s['send_window_end']})")
             return 30.0
+        with db.db() as conn:
+            wait = perf.browser_conflict(conn, s, "whatsapp")
+        if wait:   # light mode: a lead search has the browser; WhatsApp goes on when it is done
+            self._set("waiting", "WhatsApp waits for the lead search to finish")
+            return 15.0
         if sent_today >= int(s["whatsapp_daily_cap"]):
             self._set("waiting", f"Daily whatsapp limit reached ({sent_today})")
             return 60.0

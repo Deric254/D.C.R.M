@@ -93,7 +93,15 @@ def check_secret(secret: str, stored: str) -> bool:
         return False
 
 
-_DUMMY = hash_secret("not-a-real-password")   # an unknown username costs the same time as a wrong password
+_dummy = []
+
+
+def _dummy_hash() -> str:
+    """A hash to check against when the username is unknown, so that costs the same time as a wrong password.
+    Made the first time it is needed, not at start-up (a password hash is a noticeable cost on a weak computer)."""
+    if not _dummy:
+        _dummy.append(hash_secret("not-a-real-password"))
+    return _dummy[0]
 
 
 # ------------------------------------------------------------ strong passwords
@@ -251,7 +259,7 @@ def login(conn, username: str, password: str) -> str:
     """Check the password and return a new session token. One message for 'no such user' and 'wrong password'."""
     user = get_user(conn, username)
     if not user:
-        check_secret(password or "", _DUMMY)
+        check_secret(password or "", _dummy_hash())
         raise AuthError("Wrong username or password.")
     if user["locked_until"] > time.time():
         raise AuthError(_lock_message(user["locked_until"]), 429)
@@ -351,7 +359,7 @@ def recover(conn, username: str, answers, new_password: str, key_text: str = "")
     user = get_user(conn, username)
     generic = AuthError("Those answers don't match.", 403)
     if not user or not has_questions(conn, user["id"]) or not isinstance(answers, list) or len(answers) != 3:
-        check_secret("x", _DUMMY)
+        check_secret("x", _dummy_hash())
         raise generic
     if user["recover_locked_until"] > time.time():
         raise AuthError(_lock_message(user["recover_locked_until"]), 429)

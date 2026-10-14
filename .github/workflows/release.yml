@@ -27,6 +27,7 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - run: pip install -r backend/requirements-dev.txt
       - run: python tests/test_backend.py
+      - run: python tests/test_ui_guards.py
 
   build:
     needs: test

@@ -22,6 +22,7 @@ import db
 import jobs
 import leads as L
 import messaging
+import perf
 from messaging import SendError
 from util import now, parent_alive, today_start
 from version import VERSION
@@ -210,6 +211,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         out = {"ok": True, "version": VERSION}
         if request.state.user:   # the data folder is only shown to someone signed in
             out["data_dir"] = str(config.DATA_DIR)
+            out["machine"] = {**perf.machine(), "light_mode": perf.light_mode(db.get_settings())}
         return out
 
     @app.get("/api/status")
@@ -239,15 +241,27 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     def dashboard():
         with db.db() as conn:
             q = lambda sql, *a: conn.execute(sql, a).fetchone()[0]
-            total = q("SELECT COUNT(*) FROM leads WHERE archived=0")
-            by_status = {r[0]: r[1] for r in conn.execute(
-                "SELECT status, COUNT(*) FROM leads WHERE archived=0 GROUP BY status")}
-            by_grade = {(r[0] or "none"): r[1] for r in conn.execute(
-                "SELECT grade, COUNT(*) FROM leads WHERE archived=0 GROUP BY grade")}
+            # every lead count in ONE pass over the leads table (it used to be a pass per number)
+            total = with_phone = with_mobile = with_email = dnc = archived = 0
+            won_value = open_value = 0
+            by_status, by_grade = {}, {}
+            for r in conn.execute(
+                    "SELECT archived, do_not_contact, status, grade, COUNT(*), SUM(phone_norm IS NOT NULL), SUM(is_mobile=1), "
+                    "SUM(email IS NOT NULL), SUM(CASE WHEN status='won' THEN COALESCE(deal_value, 0) ELSE 0 END), "
+                    "SUM(CASE WHEN status IN ('interested','meeting') THEN COALESCE(deal_value, 0) ELSE 0 END) "
+                    "FROM leads GROUP BY archived, do_not_contact, status, grade"):
+                arch, no_contact, status, grade, n, ph, mob, em, won, opn = r
+                dnc += n if no_contact else 0
+                if arch:
+                    archived += n
+                    continue
+                total += n; with_phone += ph; with_mobile += mob; with_email += em; won_value += won; open_value += opn
+                by_status[status] = by_status.get(status, 0) + n
+                by_grade[grade or "none"] = by_grade.get(grade or "none", 0) + n
             contacted = q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='out' AND status='sent'")
             # "of contacted leads replied": only leads we actually sent to can count, so the rate never passes 100%
-            replied = q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='in' AND grade NOT IN ('auto','bounce') "
-                        "AND lead_id IN (SELECT lead_id FROM messages WHERE direction='out' AND status='sent')")
+            replied = q("SELECT COUNT(DISTINCT i.lead_id) FROM messages i WHERE i.direction='in' AND i.grade NOT IN ('auto','bounce') "
+                        "AND EXISTS (SELECT 1 FROM messages o WHERE o.lead_id = i.lead_id AND o.direction='out' AND o.status='sent')")
             week = datetime.now().timestamp() - 7 * 86400
             week_s = datetime.fromtimestamp(week).isoformat(sep=" ", timespec="seconds")
             hot = [dict(r) for r in conn.execute(
@@ -261,31 +275,29 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             activity = [dict(r) for r in conn.execute(
                 "SELECT e.ts, e.kind, e.detail, l.id AS lead_id, l.name FROM events e JOIN leads l ON l.id=e.lead_id "
                 "WHERE e.kind != 'enrich' ORDER BY e.id DESC LIMIT 12")]
+            today = {ch: 0 for ch in ("email", "sms", "whatsapp")}
+            for ch, n in conn.execute("SELECT channel, COUNT(*) FROM messages WHERE direction='out' AND status='sent' "
+                                      "AND sent_at >= ? GROUP BY channel", (today_start(),)):
+                today[ch] = n
+            reached = dict(conn.execute("SELECT channel, COUNT(DISTINCT lead_id) FROM messages WHERE direction='out' "
+                                        "AND status='sent' GROUP BY channel").fetchall())
+            answered = dict(conn.execute(
+                "SELECT o.channel, COUNT(DISTINCT i.lead_id) FROM messages i JOIN messages o ON o.id = i.reply_to "
+                "WHERE i.direction='in' AND i.grade NOT IN ('auto','bounce') GROUP BY o.channel").fetchall())
             return {
                 "total": total, "by_status": by_status, "by_grade": by_grade,
-                "with_phone": q("SELECT COUNT(*) FROM leads WHERE archived=0 AND phone_norm IS NOT NULL"),
-                "with_mobile": q("SELECT COUNT(*) FROM leads WHERE archived=0 AND is_mobile=1"),
-                "with_email": q("SELECT COUNT(*) FROM leads WHERE archived=0 AND email IS NOT NULL"),
-                "dnc": q("SELECT COUNT(*) FROM leads WHERE do_not_contact=1"),
-                "archived": q("SELECT COUNT(*) FROM leads WHERE archived=1"),
-                "sent_today": {ch: q("SELECT COUNT(*) FROM messages WHERE direction='out' AND channel=? AND status='sent' "
-                                     "AND sent_at >= ?", ch, today_start()) for ch in ("email", "sms", "whatsapp")},
+                "with_phone": with_phone, "with_mobile": with_mobile, "with_email": with_email,
+                "dnc": dnc, "archived": archived,
+                "sent_today": today,
                 "sent_week": q("SELECT COUNT(*) FROM messages WHERE direction='out' AND status='sent' AND sent_at >= ?", week_s),
                 "replies_week": q("SELECT COUNT(*) FROM messages WHERE direction='in' AND grade NOT IN ('auto','bounce') "
                                   "AND created_at >= ?", week_s),
-                "channels": {ch: {
-                    "contacted": q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='out' AND status='sent' "
-                                   "AND channel=?", ch),
-                    "replied": q("SELECT COUNT(DISTINCT i.lead_id) FROM messages i JOIN messages o ON o.id = i.reply_to "
-                                 "WHERE i.direction='in' AND i.grade NOT IN ('auto','bounce') AND o.channel=?", ch)}
-                    for ch in ("email", "sms", "whatsapp")},
+                "channels": {ch: {"contacted": reached.get(ch, 0), "replied": answered.get(ch, 0)} for ch in ("email", "sms", "whatsapp")},
                 "contacted": contacted, "replied": replied,
                 "reply_rate": round(100 * replied / contacted, 1) if contacted else 0,
-                "won_value": q("SELECT COALESCE(SUM(deal_value), 0) FROM leads WHERE archived=0 AND status='won'"),
-                "open_value": q("SELECT COALESCE(SUM(deal_value), 0) FROM leads WHERE archived=0 "
-                                "AND status IN ('interested','meeting')"),
+                "won_value": won_value, "open_value": open_value,
                 "hot": hot, "due": due, "activity": activity,
-                "campaigns": [c for c in C.campaign_stats(conn) if c["status"] in ("running", "paused")][:5],
+                "campaigns": C.campaign_stats(conn, statuses=("running", "paused"))[:5],
             }
 
     @app.get("/api/today")
@@ -402,6 +414,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         with db.db() as conn:
             if jobs.active_job(conn):
                 return JSONResponse({"detail": "A job is already running. Stop it or wait for it to finish."}, status_code=409)
+            busy = perf.browser_conflict(conn, db.get_settings(conn), "scrape")
+            if busy:
+                return JSONResponse({"detail": busy}, status_code=409)
             jid = jobs.create_job(conn, "scrape", {"searches": searches, "max_per_search": body.max_per_search,
                                                    "headless": body.headless, "enrich": body.enrich})
         jobs.spawn(jid, "scrape")
@@ -608,6 +623,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                     datetime.strptime(clean[k], "%H:%M")
                 except ValueError:
                     raise ValueError("Sending hours must look like 08:00")
+        if clean.get("light_mode") not in (None, "auto", "on", "off"):
+            raise ValueError("Light mode must be auto, on or off")
         if "sms_delay_sec" in clean and clean["sms_delay_sec"] < 30:
             raise ValueError("Wait at least 30 seconds between texts. Android stops an app that sends faster than about "
                              "30 texts in 30 minutes.")
@@ -767,6 +784,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         with db.db() as conn:
             if jobs.active_job(conn, "whatsapp") or jobs.active_job(conn, "whatsapp_link"):
                 raise ValueError("WhatsApp is busy right now. Wait a moment, or pause your WhatsApp campaigns first.")
+            busy = perf.browser_conflict(conn, db.get_settings(conn), "whatsapp_link")
+            if busy:
+                raise ValueError(busy)
             jid = jobs.create_job(conn, "whatsapp_link", {})
         jobs.spawn(jid, "whatsapp_link")
         return {"job": jid}

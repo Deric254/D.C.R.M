@@ -50,6 +50,15 @@ CREATE INDEX IF NOT EXISTS ix_leads_name_key ON leads(name_key);
 CREATE INDEX IF NOT EXISTS ix_leads_status ON leads(status);
 CREATE INDEX IF NOT EXISTS ix_leads_archived_grade ON leads(archived, grade);
 CREATE INDEX IF NOT EXISTS ix_leads_followup ON leads(next_followup) WHERE next_followup != '';
+CREATE INDEX IF NOT EXISTS ix_leads_contacted ON leads(last_contacted_at) WHERE last_contacted_at IS NOT NULL;   -- Today: "messaged a few days ago"
+-- The Leads page shows 50 rows in some order. With these the rows come out already in order and the database stops
+-- after 50; without them it sorted every lead on every page view.
+CREATE INDEX IF NOT EXISTS ix_leads_archived_id ON leads(archived, id);
+CREATE INDEX IF NOT EXISTS ix_leads_archived_name ON leads(archived, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS ix_leads_archived_updated ON leads(archived, updated_at);
+CREATE INDEX IF NOT EXISTS ix_leads_archived_reply ON leads(archived, last_reply_at);
+CREATE INDEX IF NOT EXISTS ix_leads_archived_sector ON leads(archived, sector);   -- the sector and town pick-lists read these alone
+CREATE INDEX IF NOT EXISTS ix_leads_archived_town ON leads(archived, town);
 
 CREATE TABLE IF NOT EXISTS campaigns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +110,8 @@ CREATE INDEX IF NOT EXISTS ix_msg_queue ON messages(status, channel);
 -- the top bar asks "any unreviewed replies?" every few seconds, and the dashboard counts sent mail
 CREATE INDEX IF NOT EXISTS ix_msg_inbox ON messages(direction, handled, grade);
 CREATE INDEX IF NOT EXISTS ix_msg_sent ON messages(direction, status, sent_at);
+CREATE INDEX IF NOT EXISTS ix_msg_lead_dir ON messages(lead_id, direction, status);     -- "has this lead been messaged": answered from the index alone
+CREATE INDEX IF NOT EXISTS ix_msg_sent_lead ON messages(direction, status, channel, lead_id);   -- distinct leads reached, per channel
 
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,6 +208,8 @@ SETTING_DEFAULTS = {
     "email_daily_cap": 80, "sms_daily_cap": 150, "whatsapp_daily_cap": 40,
     "email_delay_sec": 25, "sms_delay_sec": 65, "whatsapp_delay_sec": 60,
     "send_window_enabled": True, "send_window_start": "08:00", "send_window_end": "18:00",
+    # "auto": on for a computer with 4 GB of memory or less, or two cores; "on" / "off" to force it
+    "light_mode": "auto",
     # a lead who got a message is only messaged again as a follow-up, and only after this many days (or if they reply)
     "followup_wait_days": 3,
     # "best way for each lead": which way to try first, then next ("whatsapp,email,sms" = WhatsApp, then email, then text)
@@ -220,6 +233,12 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=30000")
+    # Kind to a slow disk and little memory. With the write-ahead log, NORMAL waits for the disk once per checkpoint
+    # instead of after every commit; the file can never be corrupted by it, and only a power cut at the very moment
+    # of a write can lose that last write.
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-16000")   # 16 MB of cache per connection
     return conn
 
 
@@ -267,6 +286,11 @@ def init_db():
         for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("sms_delay_sec", 4),
                          ("optout_suffix_sms", " Reply STOP to opt out.")):
             conn.execute("DELETE FROM settings WHERE key=? AND value=?", (key, json.dumps(old)))
+        # Let the database learn how the data is spread, so it picks the fastest index for each query. Done once; after that
+        # "optimize" refreshes it only when the data has changed a lot.
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='sqlite_stat1'").fetchone():
+            conn.execute("ANALYZE")
+        conn.execute("PRAGMA optimize")
         conn.commit()
     finally:
         conn.close()

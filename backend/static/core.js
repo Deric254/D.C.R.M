@@ -23,6 +23,18 @@
   const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
   Object.assign(App, { $, $$ });
 
+  // A repeating job that does nothing while the window is hidden or minimised and runs at once when it comes back, so a
+  // weak computer isn't kept busy for nobody. `ms` may be a function so a screen can slow down when nothing is happening.
+  // Returns a function that stops it.
+  App.every = (fn, ms) => {
+    let t, stopped = false;
+    const next = () => { if (!stopped) t = setTimeout(run, typeof ms === 'function' ? ms() : ms); };
+    const run = async () => { clearTimeout(t); if (!document.hidden) { try { await fn(); } catch (_) {} } next(); };
+    const wake = () => { if (!document.hidden) run(); };
+    document.addEventListener('visibilitychange', wake);
+    next();
+    return () => { stopped = true; clearTimeout(t); document.removeEventListener('visibilitychange', wake); };
+  };
   const debounce = (fn, ms = 300) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
   App.debounce = debounce;
 
@@ -148,7 +160,7 @@
   }
   App.go = (view, params) => { location.hash = '#/' + view + (params ? '?' + new URLSearchParams(params) : ''); };
 
-  async function route(silent) {   // silent === true: redraw in place, keep the scroll position (hashchange passes an Event, which is not true)
+  async function route(silent) {   // silent === true: redraw in place and keep the scroll position (hashchange passes an Event, which is not true)
     if (document.body.classList.contains('locked')) return;   // signed out: only the sign-in is shown
     const { view, params } = parseHash();
     const v = App.views[view] || App.views.overview;
@@ -176,7 +188,9 @@
   async function readStatus() {
     try {
       const s = await api('/status');
+      const same = JSON.stringify(s) === JSON.stringify(App.state.status);
       App.state.status = s;
+      if (same) return;   // nothing changed: leave the page alone
       const pills = [];
       const snd = s.sender || {};
       if (s.campaigns_running || s.campaigns_paused) {
@@ -227,7 +241,9 @@
     });
     $('#dlg').addEventListener('click', (e) => { if (e.target === $('#dlg')) $('#dlg').close('cancel'); });
     await App.gate();   // nothing loads until someone has signed in
-    pollStatus(); setInterval(pollStatus, 4000);
+    pollStatus();
+    // quick while something is running, relaxed when everything is idle
+    App.every(pollStatus, () => { const s = App.state.status || {}; return s.job || s.campaigns_running || (s.sender && s.sender.state === 'sending') ? 4000 : 15000; });
     App.loadBrand().catch(() => {});
     if (App.desktop()) setTimeout(() => App.checkUpdate().catch(() => {}), 6000);
     route();

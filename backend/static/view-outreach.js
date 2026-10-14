@@ -74,9 +74,13 @@
       </div>`);
 
       // ---------------------------------------------------------------- list
+      let lastDrawn = '';
       async function drawList() {
         let rows; try { [rows, linked] = await Promise.all([api('/campaigns'), api('/status').then((x) => !!x.whatsapp_linked)]); } catch (_) { return; }
         known = rows;
+        const sig = JSON.stringify([rows, linked]);
+        if (sig === lastDrawn) return;   // nothing changed since the last look: leave the page alone
+        lastDrawn = sig;
         rows = rows.filter((c) => c.style !== 'single' || c.status !== 'done');   // one-lead WhatsApp sends show only while they are in progress
         render($('#clist'), rows.length ? html`<div class="tablewrap"><table class="t"><thead><tr><th>Campaign</th><th>Status</th><th style="width:170px">Progress</th><th>Failed</th><th>Replies</th><th></th></tr></thead><tbody>
           ${rows.map((c) => { const [lab, cls] = CSTATUS[c.status] || [c.status, '']; return html`<tr style="cursor:default">
@@ -96,7 +100,8 @@
           </tbody></table></div>` : html`<div class="empty"><strong>No campaigns yet</strong>Press New campaign, choose how to reach people, tick the leads and start.</div>`);
       }
       await drawList();
-      timer = setInterval(drawList, 5000);
+      // quick while a campaign is running, slow when none is; never while the window is hidden
+      timer = App.every(drawList, () => (known.some((c) => ['running', 'scheduled'].includes(c.status)) ? 5000 : 30000));
 
       $('#clist').addEventListener('click', async (e) => {
         const b = e.target.closest('button[data-act]'); if (!b) return;
@@ -182,7 +187,7 @@
 
       function bindForm() {
         const f = $('#cform'); if (!f) return;
-        let picked = new Set(), shown = [], total = 0, lastPreview = null;
+        let picked = new Set(), shown = [], total = 0, lastPreview = null, rowsShown = 100;   // all are loaded and can be ticked; 100 at a time are drawn
         const channel = () => f.elements.channel.value;
         const mode = () => f.elements.mode.value;
         // start on a way that is ready and has leads
@@ -199,18 +204,19 @@
 
         // ---- the leads, each one tickable
         const drawPick = () => {
-          render($('#pickhead'), html`<div class="small"><b>${picked.size}</b> of ${total} selected</div><div class="row right" style="gap:6px"><button type="button" class="btn small" id="pick-all">Select all shown</button><button type="button" class="btn small quiet" id="pick-none">Clear</button></div>`);
-          render($('#pick'), shown.length ? html`${shown.map((l) => html`<label><input type="checkbox" data-id="${l.id}" ${picked.has(l.id) ? 'checked' : ''}><span style="flex:1"><b>${l.name}</b> <span class="muted small">${[l.town, l.sector].filter(Boolean).join(' · ')}</span></span>${l.via ? html`<span class="chip">${CHLAB[l.via]}</span>` : ''}<span class="small muted">${l.contact || ''}</span></label>`)}`
+          render($('#pickhead'), html`<div class="small"><b>${picked.size}</b> of ${total} selected</div><div class="row right" style="gap:6px"><button type="button" class="btn small" id="pick-all">Select all ${shown.length}</button><button type="button" class="btn small quiet" id="pick-none">Clear</button></div>`);
+          render($('#pick'), shown.length ? html`${shown.slice(0, rowsShown).map((l) => html`<label><input type="checkbox" data-id="${l.id}" ${picked.has(l.id) ? 'checked' : ''}><span style="flex:1"><b>${l.name}</b> <span class="muted small">${[l.town, l.sector].filter(Boolean).join(' · ')}</span></span>${l.via ? html`<span class="chip">${CHLAB[l.via]}</span>` : ''}<span class="small muted">${l.contact || ''}</span></label>`)}${shown.length > rowsShown ? html`<div style="padding:8px;text-align:center"><button type="button" class="btn small" id="pick-more">Show ${Math.min(100, shown.length - rowsShown)} more <span class="muted">(${shown.length - rowsShown} not shown yet)</span></button></div>` : ''}`
             : html`<div class="empty" style="padding:18px"><strong>Nobody to show</strong>Everyone who can be reached this way has already been messaged, or no one matches the search.</div>`);
           $('#pick-all').onclick = () => { shown.forEach((l) => picked.add(l.id)); drawPick(); preview(); };
           $('#pick-none').onclick = () => { picked.clear(); drawPick(); preview(); };
+          if ($('#pick-more')) $('#pick-more').onclick = () => { rowsShown += 100; drawPick(); };
           if (total > shown.length) $('#pickhead').insertAdjacentHTML('beforeend', `<div class="small muted" style="width:100%">Showing the first ${shown.length} of ${total}. Narrow by sector, town or name to see the rest.</div>`);
         };
         $('#pick').addEventListener('change', (e) => { const id = +e.target.dataset.id; if (!id) return; e.target.checked ? picked.add(id) : picked.delete(id); render($('#pickhead').firstElementChild, html`<b>${picked.size}</b> of ${total} selected`); preview(); });
         const loadAudience = async (selectAll) => {
           try {
             const r = await api('/campaigns/audience', { method: 'POST', body: { channel: channel(), filters: audienceFilters(), limit: 1000 } });
-            shown = r.leads; total = r.total;
+            shown = r.leads; total = r.total; rowsShown = 100;
             render($('#preset-note'), preset ? html`<div class="notice" style="margin:0">You chose ${preset.length} lead${preset.length === 1 ? '' : 's'} on the Leads page. ${total} can be messaged now${total < preset.length ? ` (the rest were already messaged, or have no way to reach them)` : ''}. <a href="#" id="preset-clear">Show everyone instead</a></div>` : html``);
             if ($('#preset-clear')) $('#preset-clear').onclick = (e) => { e.preventDefault(); preset = null; loadAudience(true); };
             if (selectAll) picked = new Set(shown.map((l) => l.id)); else picked = new Set([...picked].filter((id) => shown.some((l) => l.id === id)));
@@ -304,7 +310,7 @@
         $('#draft').onclick = () => submit(false);
         syncForm(); loadAudience(true);
       }
-      return () => clearInterval(timer);
+      return () => timer();
     },
   };
 })();

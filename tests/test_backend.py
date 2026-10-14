@@ -10,7 +10,7 @@ import time
 import traceback
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +30,7 @@ import campaigns as C  # noqa: E402
 import jobs  # noqa: E402
 import scraper  # noqa: E402
 import enrich  # noqa: E402
-from util import days_ago, normalize_phone, now  # noqa: E402
+from util import days_ago, normalize_phone, now, today_start  # noqa: E402
 import auth  # noqa: E402
 import ed25519  # noqa: E402
 import owner_key  # noqa: E402
@@ -2760,6 +2760,305 @@ def ai_previews_for_a_best_way_campaign_are_written_for_the_way_each_lead_would_
     assert {o["lead"]: o["via"] for o in out} == {"Both Ways Chemist": "whatsapp", "Mail Only Chemist": "email"}
     assert next(o for o in out if o["via"] == "email")["subject"] == "Quick question"
     assert next(o for o in out if o["via"] == "email")["to"] == "mail@shop.test" and next(o for o in out if o["via"] == "whatsapp")["to"].startswith("+2547")
+
+
+# ======================================================== SPEED: the fast queries give the same answers as the slow ones
+def _random_world(n_leads=400, seed=11):
+    """Leads, campaigns, messages, replies and follow-ups with every awkward case mixed in."""
+    import random
+    rnd = random.Random(seed)
+    fresh()
+    sectors = ["Pharmacy", "Agrovet", "Hardware", "Salon"]
+    towns = ["Meru", "Kisii", "Embu"]
+    with db.db() as c:
+        ids = []
+        for i in range(n_leads):
+            phone = rnd.choice(["", "", f"07{rnd.randint(10000000, 99999999)}", f"07{rnd.randint(10000000, 99999999)}", f"064{rnd.randint(10000, 99999)}"])
+            r = L.add_lead(c, {"name": f"Shop {i}", "sector": rnd.choice(sectors), "town": rnd.choice(towns), "phone": phone,
+                               "email": f"s{i}@x{i % 30}.co.ke" if rnd.random() < 0.5 else ""}, merge=False)
+            if r["created"]:
+                ids.append(r["id"])
+        for lid in ids:
+            roll = rnd.random()
+            c.execute("UPDATE leads SET archived=?, do_not_contact=?, grade=?, status=?, email_bounced=?, deal_value=? WHERE id=?",
+                      (1 if roll < 0.05 else 0, 1 if 0.05 <= roll < 0.1 else 0, rnd.choice(["", "", "hot", "warm", "cold", "unclear"]),
+                       rnd.choice(["new", "new", "new", "contacted", "interested", "meeting", "won", "lost"]),
+                       1 if rnd.random() < 0.1 else 0, rnd.choice([0, 0, 1000, 25000]) , lid))
+            if rnd.random() < 0.15:
+                c.execute("INSERT INTO events(lead_id, ts, kind, detail) VALUES(?,?,?,?)", (lid, now(), "no_whatsapp", "not on whatsapp"))
+        camp_ids = []
+        for k in range(8):
+            status = rnd.choice(["running", "paused", "done", "done", "scheduled"])
+            camp_ids.append(c.execute("INSERT INTO campaigns(name, channel, subject, body, filters, status, created_at, followup_of, launched_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                                      (f"C{k}", rnd.choice(["email", "sms", "whatsapp", "auto"]), "s", "b", "{}", status, now(),
+                                       camp_ids[0] if k in (5, 6) else None, now())).lastrowid)
+        for lid in ids:
+            if rnd.random() < 0.5:
+                cid = rnd.choice(camp_ids)
+                st = rnd.choice(["sent", "sent", "queued", "failed", "skipped"])
+                sent_at = (datetime.now() - timedelta(days=rnd.randint(0, 9))).strftime("%Y-%m-%d %H:%M:%S") if st == "sent" else None
+                c.execute("INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, body, status, sent_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                          (lid, cid, "out", rnd.choice(["email", "sms", "whatsapp"]), "x", "b", st, sent_at, sent_at or now()))
+                if st == "sent":
+                    c.execute("UPDATE leads SET last_contacted_at=? WHERE id=?", (sent_at, lid))
+                    if rnd.random() < 0.3:
+                        mid = c.execute("SELECT MAX(id) FROM messages").fetchone()[0]
+                        c.execute("INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, body, status, grade, handled, reply_to, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                  (lid, cid, "in", "email", "x", "reply", "received", rnd.choice(["hot", "warm", "cold", "unclear", "auto", "bounce"]), rnd.choice([0, 1]), mid, now()))
+                        c.execute("UPDATE leads SET last_reply_at=? WHERE id=?", (now(), lid))
+            if rnd.random() < 0.1:
+                c.execute("UPDATE leads SET next_followup=? WHERE id=?", ((datetime.now() + timedelta(days=rnd.randint(-5, 5))).strftime("%Y-%m-%d"), lid))
+    return ids
+
+
+def _reference_campaign_stats(conn):
+    """The original, slow way: one scan of the messages per number."""
+    q = """SELECT c.*,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='sent') AS sent,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='queued') AS queued,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='failed') AS failed,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.status='skipped') AS skipped,
+      (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in' AND m.grade NOT IN ('auto','bounce')) AS replies,
+      (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in' AND m.grade='hot') AS hot,
+      (SELECT COUNT(DISTINCT m.lead_id) FROM messages m WHERE m.campaign_id=c.id AND m.direction='in' AND m.grade='warm') AS warm,
+      (SELECT COUNT(*) FROM campaigns k WHERE k.followup_of=c.id AND k.status IN ('scheduled','running','paused')) AS followups_waiting,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='email') AS n_email,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='sms') AS n_sms,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='whatsapp') AS n_whatsapp,
+      (SELECT COUNT(*) FROM messages m WHERE m.campaign_id=c.id AND m.direction='out' AND m.channel='whatsapp' AND m.status='queued') AS queued_whatsapp
+    FROM campaigns c ORDER BY c.id DESC"""
+    return [dict(r) for r in conn.execute(q)]
+
+
+def _reference_today(conn, wait_days=3, limit=40):
+    """The original Today: every matching lead is read and counted, then the first 40 kept."""
+    base = "l.archived=0 AND l.do_not_contact=0 AND l.status NOT IN ('won','lost')"
+    cols = ("l.id, l.name, l.town, l.sector, l.status, l.grade, l.is_mobile, l.email, l.email_bounced, l.next_followup, l.last_contacted_at, l.last_reply_at")
+    unanswered = ("(SELECT COUNT(*) FROM messages m WHERE m.lead_id=l.id AND m.direction='out' AND m.status='sent' "
+                  "AND m.sent_at > COALESCE(l.last_reply_at, '')) AS unanswered")
+    seen = set()
+
+    def run(sql, args=()):
+        out = []
+        for r in conn.execute(sql, args):
+            if r["id"] not in seen and len(out) < limit:
+                seen.add(r["id"]); out.append(dict(r))
+        return out
+    replies = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND EXISTS (SELECT 1 FROM messages i WHERE i.lead_id=l.id AND i.direction='in' AND i.handled=0 AND i.grade NOT IN ('auto','bounce')) "
+                  "AND (l.last_contacted_at IS NULL OR l.last_contacted_at <= l.last_reply_at) ORDER BY CASE l.grade WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END, l.last_reply_at DESC, l.id")
+    due = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND l.next_followup != '' AND l.next_followup <= ? ORDER BY l.next_followup, l.id", (datetime.now().strftime("%Y-%m-%d"),))
+    quiet = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND l.last_contacted_at IS NOT NULL AND l.last_contacted_at <= ? "
+                "AND (l.last_reply_at IS NULL OR l.last_reply_at < l.last_contacted_at) ORDER BY l.last_contacted_at, l.id", (days_ago(wait_days),))
+    return {"replies": replies, "due": due, "quiet": quiet, "wait_days": wait_days}
+
+
+@test
+def the_fast_campaign_statistics_and_today_give_exactly_the_old_answers():
+    _random_world(n_leads=1200)
+    with db.db() as c:
+        assert C.campaign_stats(c) == _reference_campaign_stats(c)
+        assert C.campaign_stats(c, statuses=("running", "paused")) == [r for r in _reference_campaign_stats(c) if r["status"] in ("running", "paused")]
+        one = _reference_campaign_stats(c)[3]
+        assert C.campaign_stats(c, one["id"]) == one and C.campaign_stats(c, 99999) is None
+        new, old = L.today_queue(c), _reference_today(c)
+        assert len(old["quiet"]) == 40, "the data must have more than 40 quiet leads for the limit to be tested"
+        for key in ("replies", "due", "quiet"):
+            assert new[key] == old[key], key
+        assert L.today_queue(c, wait_days=1, limit=7) == _reference_today(c, wait_days=1, limit=7)
+        # a lead never appears in two lists
+        ids = [r["id"] for k in ("replies", "due", "quiet") for r in new[k]]
+        assert len(ids) == len(set(ids))
+
+
+@test
+def the_one_pass_overview_gives_exactly_the_old_numbers():
+    import server
+    _random_world(seed=5)
+    with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+        d = cl.get("/api/dashboard").json()
+    with db.db() as c:
+        q = lambda sql, *a: c.execute(sql, a).fetchone()[0]
+        assert d["total"] == q("SELECT COUNT(*) FROM leads WHERE archived=0")
+        assert d["by_status"] == {r[0]: r[1] for r in c.execute("SELECT status, COUNT(*) FROM leads WHERE archived=0 GROUP BY status")}
+        assert d["by_grade"] == {(r[0] or "none"): r[1] for r in c.execute("SELECT grade, COUNT(*) FROM leads WHERE archived=0 GROUP BY grade")}
+        assert d["with_phone"] == q("SELECT COUNT(*) FROM leads WHERE archived=0 AND phone_norm IS NOT NULL")
+        assert d["with_mobile"] == q("SELECT COUNT(*) FROM leads WHERE archived=0 AND is_mobile=1")
+        assert d["with_email"] == q("SELECT COUNT(*) FROM leads WHERE archived=0 AND email IS NOT NULL")
+        assert d["dnc"] == q("SELECT COUNT(*) FROM leads WHERE do_not_contact=1") and d["archived"] == q("SELECT COUNT(*) FROM leads WHERE archived=1")
+        assert d["won_value"] == q("SELECT COALESCE(SUM(deal_value), 0) FROM leads WHERE archived=0 AND status='won'")
+        assert d["open_value"] == q("SELECT COALESCE(SUM(deal_value), 0) FROM leads WHERE archived=0 AND status IN ('interested','meeting')")
+        assert d["contacted"] == q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='out' AND status='sent'")
+        assert d["replied"] == q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='in' AND grade NOT IN ('auto','bounce') "
+                                 "AND lead_id IN (SELECT lead_id FROM messages WHERE direction='out' AND status='sent')")
+        for ch in ("email", "sms", "whatsapp"):
+            assert d["channels"][ch]["contacted"] == q("SELECT COUNT(DISTINCT lead_id) FROM messages WHERE direction='out' AND status='sent' AND channel=?", ch)
+            assert d["channels"][ch]["replied"] == q("SELECT COUNT(DISTINCT i.lead_id) FROM messages i JOIN messages o ON o.id = i.reply_to "
+                                                     "WHERE i.direction='in' AND i.grade NOT IN ('auto','bounce') AND o.channel=?", ch)
+            assert d["sent_today"][ch] == q("SELECT COUNT(*) FROM messages WHERE direction='out' AND channel=? AND status='sent' AND sent_at >= ?", ch, today_start())
+        assert d["campaigns"] == [r for r in _reference_campaign_stats(c) if r["status"] in ("running", "paused")][:5]
+        assert d["total"] > 100 and d["contacted"] > 50 and d["replied"] > 5      # the data really exercises every number
+
+
+@test
+def the_sql_way_to_reach_a_lead_always_agrees_with_pick_channel():
+    _random_world(seed=3)
+    orders = ["whatsapp,email,sms", "email,whatsapp,sms", "sms,email,whatsapp", "email,sms,whatsapp"]
+    ready_sets = [(True, True, True), (True, False, True), (False, True, False), (True, True, False), (False, False, True)]
+    for order in orders:
+        for linked, email_ok, sms_ok in ready_sets:
+            db.set_internal("whatsapp_linked", linked)
+            configure(reach_order=order, smtp_host="127.0.0.1" if email_ok else "", from_email="a@b.co" if email_ok else "",
+                      sms_gateway_url="127.0.0.1:1" if sms_ok else "")
+            with db.db() as c:
+                s = db.get_settings(c)
+                usable = C.usable_channels(s)
+                rows = c.execute("SELECT * FROM leads").fetchall()
+                no_wa = C._no_whatsapp_ids(c)
+                python = {r["id"]: C.pick_channel(c, r, s, usable) for r in rows}
+                assert python == {r["id"]: C.pick_channel(c, r, s, usable, no_whatsapp=no_wa) for r in rows}   # the batch shortcut is exact
+                sql = {r[0]: r[1] for r in c.execute(f"SELECT l.id, {C._way_sql(usable)} FROM leads l")}
+                assert sql == python, (order, linked, email_ok, sms_ok)
+                assert {i for i, w in python.items() if w} == {r[0] for r in c.execute(f"SELECT l.id FROM leads l WHERE {C._any_way_sql(usable)}")}
+                # counts, the list and the preview all agree with the per-lead choice, on the audience that really is offered
+                offered = C._auto_rows(c, C.build_audience(c, "auto", {}, s) if False else c.execute(
+                    f"SELECT l.* FROM leads l WHERE {' AND '.join(C._audience_where('auto', {})[0])} ORDER BY l.id", C._audience_where("auto", {})[1]).fetchall(), s)
+                assert C.count_audience(c, "auto", {}) == len(offered)
+                lst = C.audience_list(c, "auto", {}, 1000)
+                assert lst["total"] == len(offered) and {x["id"]: x["via"] for x in lst["leads"]} == {r["id"]: ch for r, ch in offered}
+                p = C.preview(c, "auto", "", "", {}, style="ready")
+                want = {}
+                for _, ch in offered:
+                    want[ch] = want.get(ch, 0) + 1
+                assert p["ways"] == want and p["matching"] == p["will_send"] == len(offered)
+                rc = C.reach_counts(c)           # the one-pass counts equal the count of each way on its own
+                assert {ch: rc[ch]["leads"] for ch in C.CHANNELS} == {ch: C.count_audience(c, ch, {}) for ch in C.CHANNELS}
+    db.set_internal("whatsapp_linked", False)
+
+
+# ======================================================== LIGHT MODE: a small computer runs one browser at a time
+@test
+def light_mode_switches_on_by_itself_for_a_small_computer_and_can_be_forced_either_way():
+    import perf
+    weak_cores = {"cores": 2, "ram_mb": 16000, "weak": True}
+    weak_ram = {"cores": 8, "ram_mb": 4096, "weak": True}
+    strong = {"cores": 8, "ram_mb": 16000, "weak": False}
+    unknown_ram = {"cores": 4, "ram_mb": None, "weak": False}
+    assert perf.light_mode({"light_mode": "auto"}, weak_cores) and perf.light_mode({"light_mode": "auto"}, weak_ram)
+    assert not perf.light_mode({"light_mode": "auto"}, strong) and not perf.light_mode({"light_mode": "auto"}, unknown_ram)
+    assert perf.light_mode({"light_mode": "on"}, strong) and not perf.light_mode({"light_mode": "off"}, weak_cores)
+    m = perf.machine()
+    assert m["cores"] >= 1 and isinstance(m["weak"], bool) and m == perf.machine()
+    # the rule that decides "weak" is exactly the documented one
+    assert perf.WEAK_CORES == 2 and perf.WEAK_RAM_MB == 4096
+
+
+@test
+def on_a_small_computer_the_lead_search_and_whatsapp_never_open_two_browsers_at_once():
+    import server
+    fresh(); configure(); db.set_internal("whatsapp_linked", True)
+    _wa_leads(2)
+    with db.db() as c:
+        C.create_campaign(c, "WA", "whatsapp", "", "", {}, launch=True, style="ready")
+    spawned = []
+    real_spawn, jobs.spawn = jobs.spawn, lambda jid, kind: spawned.append(kind)
+    try:
+        for mode, expect_wait in (("on", True), ("off", False)):
+            configure(light_mode=mode)
+            spawned.clear()
+            with db.db() as c:
+                c.execute("DELETE FROM jobs")
+                sid = jobs.create_job(c, "scrape", {})                      # a lead search has the browser
+            sender = C.Sender()
+            wait = sender._whatsapp_tick(db.get_settings())
+            assert (spawned == []) == expect_wait, (mode, spawned)           # WhatsApp waits (on) or goes ahead (off)
+            assert (wait == 15.0) == expect_wait
+            if expect_wait:
+                assert "lead search" in sender.status["detail"]
+            with db.db() as c:
+                c.execute("UPDATE jobs SET status='done' WHERE id=?", (sid,))
+        # the other way: a lead search cannot start while WhatsApp has the browser, and says why
+        with db.db() as c:
+            c.execute("DELETE FROM jobs")
+            jobs.create_job(c, "whatsapp", {})
+        body = {"searches": [{"category": "Pharmacy", "town": "Meru"}], "max_per_search": 5, "headless": True, "enrich": False}
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            configure(light_mode="on")
+            r = cl.post("/api/jobs/scrape", json=body)
+            assert r.status_code == 409 and "WhatsApp is open" in r.json()["detail"], r.text
+            configure(light_mode="off")
+            spawned.clear()
+            assert cl.post("/api/jobs/scrape", json=body).status_code == 200 and "scrape" in spawned      # off: no restriction
+            # settings and health
+            assert cl.put("/api/settings", json={"light_mode": "sometimes"}).status_code == 400
+            assert cl.put("/api/settings", json={"light_mode": "on"}).status_code == 200
+            h = cl.get("/api/health").json()
+            assert h["machine"]["light_mode"] is True and h["machine"]["cores"] >= 1
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            with db.db() as c:   # made once the app is running (start-up clears out jobs left over from before)
+                c.execute("DELETE FROM jobs")
+                jobs.create_job(c, "scrape", {})
+            r = cl.post("/api/whatsapp/link")
+            with db.db() as c:
+                seen_jobs = [(x["kind"], x["status"]) for x in c.execute("SELECT kind, status FROM jobs")]
+            assert r.status_code == 400 and "lead search is running" in r.json()["detail"], (r.text, seen_jobs)
+    finally:
+        jobs.spawn = real_spawn
+
+
+# ======================================================== SPEED: work done, counted in database steps (the same on any computer)
+def _vm_work(conn, fn):
+    """How many thousands of database steps fn() takes. Unlike a stopwatch this does not depend on how fast the computer is."""
+    ticks = [0]
+    conn.set_progress_handler(lambda: ticks.__setitem__(0, ticks[0] + 1) or 0, 1000)
+    try:
+        fn()
+    finally:
+        conn.set_progress_handler(None, 0)
+    return ticks[0]
+
+
+@test
+def the_screens_do_a_small_fixed_amount_of_work_however_many_leads_there_are():
+    _random_world(n_leads=3000)
+    with db.db() as c:
+        # the campaign list asks the database a fixed number of questions, however many campaigns there are
+        asked = []
+        c.set_trace_callback(lambda sql: asked.append(sql))
+        C.campaign_stats(c)
+        c.set_trace_callback(None)
+        n_campaigns = c.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0]
+        assert n_campaigns >= 8 and len(asked) <= 3, (n_campaigns, len(asked))
+        # the Leads page reads 50 rows in whatever order, not the whole table: the work does not grow with the lead count
+        for sort in ("created_desc", "created_asc", "name", "updated", "last_reply"):
+            w3 = _vm_work(c, lambda: L.list_leads(c, page=1, page_size=50, sort=sort))
+            assert w3 < 15, (sort, w3)
+        plan = " ".join(r[3] for r in c.execute("EXPLAIN QUERY PLAN SELECT l.* FROM leads l WHERE l.archived = 0 ORDER BY l.name COLLATE NOCASE ASC LIMIT 50"))
+        assert "TEMP B-TREE" not in plan, plan                   # no sorting of every lead on every page view
+        for sql in ("SELECT l.* FROM leads l WHERE l.archived = 0 ORDER BY l.id DESC LIMIT 50", "SELECT l.* FROM leads l WHERE l.archived = 0 ORDER BY l.updated_at DESC LIMIT 50",
+                    "SELECT l.* FROM leads l WHERE l.archived = 0 ORDER BY l.last_reply_at DESC LIMIT 50"):
+            assert "TEMP B-TREE" not in " ".join(r[3] for r in c.execute("EXPLAIN QUERY PLAN " + sql)), sql
+        # twice the leads: the Leads page and Today still do about the same work
+        small = (_vm_work(c, lambda: L.list_leads(c, page=1, page_size=50)), _vm_work(c, lambda: L.today_queue(c)))
+    _random_world(n_leads=6000, seed=2)
+    with db.db() as c:
+        big = (_vm_work(c, lambda: L.list_leads(c, page=1, page_size=50)), _vm_work(c, lambda: L.today_queue(c)))
+    with db.db() as c:
+        old_today_big = _vm_work(c, lambda: _reference_today(c))
+    assert big[1] * 10 < old_today_big, (big[1], old_today_big)       # Today: at least ten times less work than before (about 30 times in practice)
+    assert big[0] < 40 and small[0] < 40, (small, big)                # the Leads page: a few thousand steps (counting the total is the only part that grows)
+
+
+@test
+def the_database_is_set_up_for_a_slow_disk_and_the_needed_indexes_exist():
+    with db.db() as c:
+        assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert c.execute("PRAGMA synchronous").fetchone()[0] == 1          # NORMAL
+        assert c.execute("PRAGMA temp_store").fetchone()[0] == 2           # in memory
+        assert c.execute("PRAGMA cache_size").fetchone()[0] == -16000
+        have = {r[1] for r in c.execute("SELECT * FROM sqlite_master WHERE type='index'")}
+    for name in ("ix_leads_archived_id", "ix_leads_archived_name", "ix_leads_archived_updated", "ix_leads_archived_reply",
+                 "ix_leads_contacted", "ix_msg_lead_dir", "ix_msg_sent_lead", "ux_msg_campaign_lead", "ix_leads_followup"):
+        assert name in have, name
 
 
 if __name__ == "__main__":

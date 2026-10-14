@@ -10,6 +10,7 @@ Leads are archived, never deleted, so removed leads can't come back either.
 """
 import csv
 import io
+import json
 import re
 import sqlite3
 from datetime import datetime
@@ -161,31 +162,40 @@ def get_lead(conn, lead_id: int):
 
 def today_queue(conn, wait_days: int = 3, limit: int = 40) -> dict:
     """Who needs you today: replies you have not answered yet, follow-ups that have come due, and leads we messaged
-    a few days ago who have not answered. A lead appears in the first list that applies, never twice."""
+    a few days ago who have not answered. A lead appears in the first list that applies, never twice.
+    Only the rows that are shown are read: the database stops after `limit` of each list."""
     base = "l.archived=0 AND l.do_not_contact=0 AND l.status NOT IN ('won','lost')"
     cols = ("l.id, l.name, l.town, l.sector, l.status, l.grade, l.is_mobile, l.email, l.email_bounced, "
             "l.next_followup, l.last_contacted_at, l.last_reply_at")
-    unanswered = ("(SELECT COUNT(*) FROM messages m WHERE m.lead_id=l.id AND m.direction='out' AND m.status='sent' "
-                  "AND m.sent_at > COALESCE(l.last_reply_at, '')) AS unanswered")
     seen = set()
 
     def run(sql, args=()):
         out = []
-        for r in conn.execute(sql, args):
+        # room for leads that already appeared in an earlier list, so `limit` new ones are still found
+        for r in conn.execute(f"{sql} LIMIT {limit + len(seen)}", args):
             if r["id"] not in seen and len(out) < limit:
                 seen.add(r["id"])
                 out.append(dict(r))
         return out
 
-    replies = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND EXISTS (SELECT 1 FROM messages i "
-                  "WHERE i.lead_id=l.id AND i.direction='in' AND i.handled=0 AND i.grade NOT IN ('auto','bounce')) "
+    replies = run(f"SELECT {cols} FROM leads l WHERE {base} AND l.id IN (SELECT i.lead_id FROM messages i "
+                  "WHERE i.direction='in' AND i.handled=0 AND i.grade NOT IN ('auto','bounce')) "
                   "AND (l.last_contacted_at IS NULL OR l.last_contacted_at <= l.last_reply_at) "
-                  "ORDER BY CASE l.grade WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END, l.last_reply_at DESC")
-    due = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND l.next_followup != '' AND l.next_followup <= ? "
-              "ORDER BY l.next_followup", (datetime.now().strftime("%Y-%m-%d"),))
-    quiet = run(f"SELECT {cols}, {unanswered} FROM leads l WHERE {base} AND l.last_contacted_at IS NOT NULL "
+                  "ORDER BY CASE l.grade WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END, l.last_reply_at DESC, l.id")
+    due = run(f"SELECT {cols} FROM leads l WHERE {base} AND l.next_followup != '' AND l.next_followup <= ? "
+              "ORDER BY l.next_followup, l.id", (datetime.now().strftime("%Y-%m-%d"),))
+    quiet = run(f"SELECT {cols} FROM leads l WHERE {base} AND l.last_contacted_at IS NOT NULL "
                 "AND l.last_contacted_at <= ? AND (l.last_reply_at IS NULL OR l.last_reply_at < l.last_contacted_at) "
-                "ORDER BY l.last_contacted_at", (days_ago(wait_days),))
+                "ORDER BY l.last_contacted_at, l.id", (days_ago(wait_days),))
+    shown = replies + due + quiet
+    counts = {}
+    if shown:   # messages sent since they last answered, counted for the shown leads only
+        counts = {r[0]: r[1] for r in conn.execute(
+            "SELECT m.lead_id, COUNT(*) FROM messages m JOIN leads l ON l.id = m.lead_id "
+            "WHERE m.lead_id IN (SELECT value FROM json_each(?)) AND m.direction='out' AND m.status='sent' "
+            "AND m.sent_at > COALESCE(l.last_reply_at, '') GROUP BY m.lead_id", (json.dumps([r["id"] for r in shown]),))}
+    for r in shown:
+        r["unanswered"] = counts.get(r["id"], 0)
     return {"replies": replies, "due": due, "quiet": quiet, "wait_days": wait_days}
 
 

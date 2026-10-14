@@ -110,6 +110,7 @@
 
         <section class="panel"><div class="panel-head"><h2>Limits and sending hours</h2></div>
           <div class="panel-body stack" style="gap:14px">
+            ${select(s, 'light_mode', 'Light mode (for a slow computer)', [['auto', 'Automatic'], ['on', 'Always on'], ['off', 'Always off']], health.machine ? `This computer: ${health.machine.cores} processor core${health.machine.cores === 1 ? '' : 's'}${health.machine.ram_mb ? `, ${(health.machine.ram_mb / 1024).toFixed(1)} GB memory` : ''}. Light mode is ${health.machine.light_mode ? 'ON' : 'off'} now. When on, only one browser runs at a time: a lead search and WhatsApp take turns, because each browser needs about 0.7 GB.` : '')}
             <div class="grid2">${field(s, 'email_daily_cap', 'Emails per day', { type: 'number', min: 0, hint: 'Gmail allows about 500. Start low while your address builds a reputation.' })}${field(s, 'sms_daily_cap', 'Texts per day', { type: 'number', min: 0 })}
               ${field(s, 'email_delay_sec', 'Seconds between emails', { type: 'number', min: 0, hint: 'A little random variation is added.' })}${field(s, 'sms_delay_sec', 'Seconds between texts', { type: 'number', min: 30, hint: 'At least 30: Android blocks apps that send faster.' })}</div>
             ${check(s, 'send_window_enabled', 'Only send during these hours')}

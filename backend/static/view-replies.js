@@ -92,8 +92,7 @@
       }
 
       status(); await load();
-      const t = setInterval(() => { status(); if (!$('#dlg').open) load(); }, 15000);
-      return () => clearInterval(t);
+      return App.every(() => { status(); if (!$('#dlg').open) return load(); }, 15000);
     },
   };
 })();
