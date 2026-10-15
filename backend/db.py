@@ -266,6 +266,38 @@ def with_retry(fn, tries: int = 6):
             time.sleep(1.5 * (attempt + 1))
 
 
+BIG_DATABASE = 50_000   # rows in leads or messages from which planner statistics pay off
+
+
+def refresh_planner_stats(conn, force: bool = False, big: int = BIG_DATABASE) -> bool:
+    """On a big database, teach SQLite how big the tables really are, so it picks the fastest plan for each question
+    (a screen that took 2 seconds at a million leads takes 0.08). Only plans change, never an answer.
+
+    Small databases are deliberately left alone: statistics taken while a table is nearly empty make SQLite plan for a
+    one-row table, which is far slower once it fills up, whereas with none it plans sensibly for any size.
+    Re-done when a table has grown or shrunk by a quarter (and by at least 500 rows), or when never done. It reads every
+    row once (about 1.5 seconds per million leads on a fast computer), so the server runs it in the background; a sampled
+    version is quicker but plans measurably worse. Returns True if it ran."""
+    try:
+        counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("leads", "messages")}
+        if not force and max(counts.values()) < big:
+            return False
+        known = {r[0]: int(str(r[1]).split()[0]) for r in conn.execute(
+            "SELECT idx, stat FROM sqlite_stat1 WHERE idx IN ('ix_leads_archived_id', 'ix_msg_lead')")} \
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='sqlite_stat1'").fetchone() else {}
+        stale = force or not known
+        for idx, table in (("ix_leads_archived_id", "leads"), ("ix_msg_lead", "messages")):
+            before = known.get(idx, 0)
+            if abs(counts[table] - before) >= 500 and abs(counts[table] - before) * 4 >= max(before, 1):
+                stale = True
+        if not stale:
+            return False
+        conn.execute("ANALYZE")
+        return True
+    except sqlite3.Error:
+        return False   # never let this stop the app from starting
+
+
 def init_db():
     conn = connect()
     try:

@@ -24,6 +24,7 @@ import leads as L
 import messaging
 import perf
 from messaging import SendError
+from resultcache import ResultCache
 from util import now, parent_alive, today_start
 from version import VERSION
 
@@ -143,7 +144,12 @@ class AIDraftIn(BaseModel):
 
 
 # ------------------------------------------------------------------------- app
+# POSTs that only look something up, so they don't invalidate remembered answers
+_READ_ONLY_POSTS = {"/api/campaigns/audience", "/api/campaigns/preview", "/api/campaigns/ai-samples", "/api/campaigns/ai-plan"}
+
+
 def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
+    cache = ResultCache()
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     allowed_origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}",
                        "tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"}
@@ -163,6 +169,21 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                     if not parent_alive(parent_pid):
                         os._exit(0)
             threading.Thread(target=watch, daemon=True).start()
+
+        def keep_stats_fresh():   # as leads and messages pile up, let the database re-learn how they are spread
+            time.sleep(20)        # never in the way of starting up
+            while True:
+                try:
+                    conn = db.connect()
+                    try:
+                        db.refresh_planner_stats(conn)
+                        conn.commit()
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+                time.sleep(600)
+        threading.Thread(target=keep_stats_fresh, daemon=True).start()
         yield
         app.state.sender.stop()
         app.state.poller.stop()
@@ -181,6 +202,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         if request.method not in ("GET", "HEAD", "OPTIONS") and origin and origin not in allowed_origins:
             return JSONResponse({"detail": "Forbidden origin"}, status_code=403)
         resp = await call_next(request)
+        if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path not in _READ_ONLY_POSTS:
+            cache.bump()   # something was changed: remembered dashboard answers are out of date
         if not request.url.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
         return resp
@@ -239,6 +262,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
 
     @app.get("/api/dashboard")
     def dashboard():
+        return cache.get("dashboard", 30, _dashboard)
+
+    def _dashboard():
         with db.db() as conn:
             q = lambda sql, *a: conn.execute(sql, a).fetchone()[0]
             # every lead count in ONE pass over the leads table (it used to be a pass per number)
@@ -461,8 +487,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     # --------------------------------------------------------------- campaigns
     @app.get("/api/campaigns")
     def list_campaigns():
-        with db.db() as conn:
-            return C.campaign_stats(conn)
+        def compute():
+            with db.db() as conn:
+                return C.campaign_stats(conn)
+        return cache.get("campaigns", 20, compute)
 
     @app.post("/api/campaigns/preview")
     def preview_campaign(body: CampaignIn):
@@ -489,8 +517,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
 
     @app.get("/api/campaigns/reach")
     def campaign_reach():
-        with db.db() as conn:
-            return C.reach_counts(conn)
+        def compute():
+            with db.db() as conn:
+                return C.reach_counts(conn)
+        return cache.get("reach", 60, compute)
 
     @app.post("/api/campaigns/audience")
     def campaign_audience(body: AudienceIn):
