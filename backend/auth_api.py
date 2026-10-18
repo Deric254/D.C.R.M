@@ -4,6 +4,7 @@ import time
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 import auth
 import db
@@ -98,22 +99,33 @@ def install(app):
     async def _auth_error(_, e):
         return JSONResponse({"detail": str(e), "auth": "login" if e.status == 401 else "denied"}, status_code=e.status)
 
+    def _identify(token):
+        """Who is signed in. This runs in a worker thread, never in the event loop (a wait for the database in the event loop
+        freezes EVERY screen), and with a short wait: its writes are housekeeping that can be skipped."""
+        with db.db() as conn:
+            conn.execute("PRAGMA busy_timeout=300")
+            user = auth.session_user(conn, token)
+            if user and user["role"] != "owner" and not _licence_state(conn)["ok"]:
+                user = None   # the licence ran out while signed in
+            return user
+
+    def _unfinished(user):
+        with db.db() as conn:
+            conn.execute("PRAGMA busy_timeout=300")
+            return user["must_change"] or not auth.has_questions(conn, user["id"])
+
     @app.middleware("http")
     async def gate(request: Request, call_next):
         path = request.url.path
         request.state.user = None
         token = request.cookies.get(auth.COOKIE)
         if token:
-            with db.db() as conn:
-                request.state.user = auth.session_user(conn, token)
-                if request.state.user and request.state.user["role"] != "owner" and not _licence_state(conn)["ok"]:
-                    request.state.user = None   # the licence ran out while signed in
+            request.state.user = await run_in_threadpool(_identify, token)
         if path.startswith("/api/") and not path.startswith(PUBLIC):
             user = request.state.user
             if not user:
                 return JSONResponse({"detail": "Please sign in.", "auth": "login"}, status_code=401)
-            with db.db() as conn:
-                unfinished = user["must_change"] or not auth.has_questions(conn, user["id"])
+            unfinished = await run_in_threadpool(_unfinished, user)
             if unfinished:
                 return JSONResponse({"detail": "Finish setting up your account first.", "auth": "finish"}, status_code=403)
         return await call_next(request)

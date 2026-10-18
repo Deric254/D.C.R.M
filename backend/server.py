@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import ai
+import auth
 import auth_api
+import backup
 import branding
 import campaigns as C
 import config
@@ -156,7 +158,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        db.init_db()
+        backup.open_database()
         jobs.reconcile_stale()
         app.state.sender = C.Sender()
         app.state.poller = C.Poller()
@@ -184,6 +186,26 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                     pass
                 time.sleep(600)
         threading.Thread(target=keep_stats_fresh, daemon=True).start()
+
+        def keep_backups():       # a safety copy every day (or as set), without anyone having to remember
+            time.sleep(120)       # never in the way of starting up
+            while True:
+                try:
+                    s = db.get_settings()
+                    if backup.auto_due(s) and not backup.busy():
+                        backup.start("backup", lambda progress: backup.run_auto(s, progress))
+                except Exception:
+                    pass
+                time.sleep(600)
+        threading.Thread(target=keep_backups, daemon=True).start()
+
+        def check_health():       # is the data file itself in good shape? checked once per start, out of the way
+            time.sleep(45)
+            try:
+                backup.health_check()
+            except Exception:
+                pass
+        threading.Thread(target=check_health, daemon=True).start()
         yield
         app.state.sender.stop()
         app.state.poller.stop()
@@ -201,6 +223,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         origin = request.headers.get("origin")
         if request.method not in ("GET", "HEAD", "OPTIONS") and origin and origin not in allowed_origins:
             return JSONResponse({"detail": "Forbidden origin"}, status_code=403)
+        if (backup.maintenance.is_set() and request.method not in ("GET", "HEAD", "OPTIONS")
+                and request.url.path.startswith("/api/") and not request.url.path.startswith(("/api/backups", "/api/auth/"))):
+            return JSONResponse({"detail": "Restoring your data. This takes a minute, please wait.", "maintenance": True}, status_code=503)
         resp = await call_next(request)
         if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path not in _READ_ONLY_POSTS:
             cache.bump()   # something was changed: remembered dashboard answers are out of date
@@ -849,8 +874,14 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         return {"ok": True}
 
     # ----------------------------------------------------------- backup / hooks
+    def owner_only(request: Request):
+        user = request.state.user
+        if not user or user["role"] != "owner":
+            raise auth.AuthError("Only the owner account can do that.", 403)
+
     @app.get("/api/backup")
-    def backup():
+    def raw_backup(request: Request):
+        owner_only(request)   # a raw copy holds password hashes, the licence and saved passwords
         fd, tmp = tempfile.mkstemp(suffix=".sqlite3")
         os.close(fd)
         src = db.connect()
@@ -863,6 +894,83 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         name = f"dericbi-crm-backup-{datetime.now():%Y%m%d-%H%M}.sqlite3"
         return FileResponse(tmp, filename=name, media_type="application/octet-stream",
                             background=_Cleanup(tmp))
+
+    # ----------------------------------------------------------- backups you can restore, and moving to another computer
+    @app.get("/api/backups")
+    def backups_list(request: Request):
+        owner_only(request)
+        s = db.get_settings()
+        import shutil
+        return {"items": backup.list_backups(), "dir": str(backup.backups_dir()), "status": backup.status(),
+                "auto": {"on": bool(s.get("backup_auto", True)), "hours": s.get("backup_hours"), "keep": s.get("backup_keep"),
+                         "external": s.get("backup_dir") or "", "due": backup.auto_due(s)},
+                "free_mb": shutil.disk_usage(backup.backups_dir()).free // 1_000_000,
+                "health": dict(backup.HEALTH), "notice": backup.notice()}
+
+    @app.post("/api/backups/dismiss-notice")
+    def backups_dismiss(request: Request):
+        owner_only(request)
+        backup.dismiss_notice()
+        return {"ok": True}
+
+    @app.get("/api/backups/status")
+    def backups_status(request: Request):
+        owner_only(request)
+        return backup.status()
+
+    class BackupIn(BaseModel):
+        include_secrets: bool = False
+
+    @app.post("/api/backups/create")
+    def backups_create(body: BackupIn, request: Request):
+        owner_only(request)
+        backup.start("backup", lambda progress: backup.create_package(include_secrets=body.include_secrets, label="manual", progress=progress))
+        return {"started": True}
+
+    @app.get("/api/backups/{name}/download")
+    def backups_download(name: str, request: Request):
+        owner_only(request)
+        path = backup.safe_path(name)
+        return FileResponse(str(path), filename=path.name, media_type="application/octet-stream")
+
+    @app.delete("/api/backups/{name}")
+    def backups_delete(name: str, request: Request):
+        owner_only(request)
+        backup.safe_path(name).unlink()
+        return {"ok": True}
+
+    @app.post("/api/backups/{name}/restore")
+    def backups_restore(name: str, request: Request):
+        owner_only(request)
+        path = backup.safe_path(name)
+        backup.start("restore", lambda progress: backup.restore(path, progress, after=cache.bump))
+        return {"started": True}
+
+    @app.put("/api/backups/upload")
+    async def backups_upload(request: Request, name: str = ""):
+        """A backup file brought from another computer: streamed to disk, then checked before it is listed."""
+        owner_only(request)
+        from starlette.concurrency import run_in_threadpool
+        import re
+        base = re.sub(r"[^A-Za-z0-9._-]", "-", os.path.basename(name or "backup.zip"))[:80].lstrip(".-") or "backup.zip"
+        if not base.lower().endswith((".zip", ".sqlite3")):
+            base += ".zip"
+        try:
+            size = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            size = 0
+        backup._need_space(backup.backups_dir(), size * 2 + 20_000_000, "receive that file")
+        final = backup.backups_dir() / f"uploaded-{datetime.now():%Y%m%d-%H%M%S}-{base}"
+        part = final.with_name(final.name + ".part")
+        try:
+            with open(part, "wb") as f:
+                async for chunk in request.stream():
+                    await run_in_threadpool(f.write, chunk)
+            await run_in_threadpool(backup.describe, part)   # refuse anything that is not a usable backup
+            os.replace(part, final)
+        finally:
+            part.unlink(missing_ok=True)
+        return {"name": final.name}
 
     # ---------------------------------------------------------------- front end
     static = config.static_dir()

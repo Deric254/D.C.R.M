@@ -30,6 +30,7 @@ jobs:
       - run: python tests/test_ui_guards.py
       - run: python tests/test_message_craft.py
       - run: python tests/test_scale_guards.py
+      - run: python tests/test_backup.py
 
   build:
     needs: test

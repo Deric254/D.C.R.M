@@ -81,6 +81,16 @@ On **Outreach**, tick **Let the AI write each message for each person**. The mes
 - **Never half-written:** a message with a leftover `{blank}` or no email subject is not sent. If the AI is busy or out of free limit the message waits and retries; if no AI key is set the campaign pauses.
 - **The log:** the exact text of every message is kept. Open a campaign's **Details** to read what each lead got, or open the lead to see it in their history.
 
+## Backups, recovery and moving to another computer
+
+**Settings > Backups and moving to another computer** (owner only). A backup is your whole business in one file: leads, messages, campaigns, history, settings and logo. It never holds sign-in accounts, security answers or this computer's licence, so restoring one cannot change who may sign in or copy a licence to another computer. Saved passwords and API keys are left out unless you tick the box when you make the backup (then keep that file private).
+
+- **Automatic backups**: one a day (settable), the newest 7 kept, in the `backups` folder inside your data folder. Set a second folder (a USB stick or a synced cloud folder) to keep a copy that survives this computer.
+- **Restore**: press Restore next to a backup. First a safety copy of what is there now is saved, then everything is replaced in one step: it all happens or none of it does. A backup that is damaged, was changed after it was made, or comes from a newer version of the app is refused before anything is touched.
+- **Moving to another computer**: install the app there and sign in, then in Settings choose the backup file under "Bring a backup from another computer" and press Restore. Campaigns that were running come back **paused**, and messages caught mid-send come back as "check before retrying", so two computers never message the same people. Turn sending off on the old computer first. WhatsApp has to be connected again, and a customer's new computer needs its own licence.
+- **A damaged data file**: if the data file can no longer be opened, the app sets it aside (it is kept, not deleted), starts a fresh one and restores the newest backup. The Backups panel says what happened. Accounts are not part of a backup, so they are made again.
+- Measured at about a million leads (five million records in all): a backup takes about half a minute (219 MB), a restore about forty seconds, and the app stays responsive while they run.
+
 ## Speed on a slow computer
 
 The app was measured on a deliberately starved computer (one processor core shared with a CPU-hungry program, and for the browser a further 6x slowdown) with a large database: 30,000 leads, 40 campaigns, 30,000 messages. Run the same measurements yourself:

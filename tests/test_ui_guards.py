@@ -45,6 +45,14 @@ check(bool(timer), "view-overview.js: expected the 30-second refresh timer")
 check(all("App.refreshQuiet()" in ln and "App.refresh()" not in ln for ln in timer),
       "view-overview.js: the timer must call App.refreshQuiet(), not App.refresh() (that jumps the page to the top)")
 
+# 3. the Settings screen draws itself at once, so everything that drawing uses must be defined above that first call
+settings = read("view-settings.js")
+first_draw = settings.index("\n      draw();")
+for helper in ("const drawBackups", "const backupAction", "const waitOp", "const updateBox", "const draw "):
+    at = settings.find(helper)
+    check(0 <= at < first_draw or helper == "const draw ", f"view-settings.js: '{helper}' must be defined before the first draw() (otherwise the whole Settings page crashes on load)")
+check(settings.index("const drawBackups") < settings.index("const draw "), "view-settings.js: drawBackups must be defined before draw")
+
 if problems:
     print("UI guard FAILED:")
     for p in problems:

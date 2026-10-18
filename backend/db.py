@@ -182,15 +182,24 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 """
 
-DEFAULT_PITCH = (
+# The pitch a copy that was never edited used to carry (third person, no brand): a saved copy of it is dropped on start-up so
+# the current one below applies.
+OLD_DEFAULT_PITCH = (
     "Deric Marangu is a data analyst. He helps local businesses use their own sales and stock records to see "
     "what is selling, what is not, and where money is being lost, so they can decide with facts. He also has "
     "ready-made tools that he customises to each business."
+)
+DEFAULT_PITCH = (
+    "I'm Deric Marangu, a data analyst, and I run DericBI. I help local businesses use their own sales and stock records "
+    "to see what is selling, what is not, and where money is being lost, so they can decide with facts. I also have "
+    "ready-made tools that I adapt to each business. You pay only when you are satisfied with my work."
 )
 
 SETTING_DEFAULTS = {
     # identity
     "sender_name": "Deric Marangu",
+    "brand_name": "DericBI",   # the business name the AI writes from ("I'm Deric, from DericBI")
+    "backup_auto": True, "backup_hours": 24, "backup_keep": 7, "backup_dir": "",   # automatic backups, and an optional second folder (a USB stick, a synced folder)
     "slogan": "",
     # where every message tells people to find you (placeholders {website} {email} {whatsapp})
     "contact_website": "https://dericbi.vercel.app", "contact_email": "dericmarangu@gmail.com",
@@ -315,7 +324,7 @@ def init_db():
             if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         # Settings still on the old built-in defaults move to the current ones (anything the owner wrote is kept).
-        for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("sms_delay_sec", 4),
+        for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("ai_pitch", OLD_DEFAULT_PITCH), ("sms_delay_sec", 4),
                          ("optout_suffix_sms", " Reply STOP to opt out.")):
             conn.execute("DELETE FROM settings WHERE key=? AND value=?", (key, json.dumps(old)))
         # Let the database learn how the data is spread, so it picks the fastest index for each query. Done once; after that

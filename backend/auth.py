@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import time
 import unicodedata
 from datetime import date, timedelta
@@ -304,11 +305,20 @@ def session_user(conn, token):
     t = int(time.time())
     if not row or not row["active"] or t - row["seen_ts"] > SESSION_IDLE or t - row["created_ts"] > SESSION_MAX:
         if row:
-            conn.execute("DELETE FROM sessions WHERE token_hash=?", (_hash_token(token),))
+            _bookkeeping(conn, "DELETE FROM sessions WHERE token_hash=?", (_hash_token(token),))
         return None
     if t - row["seen_ts"] > 60:
-        conn.execute("UPDATE sessions SET seen_ts=? WHERE token_hash=?", (t, _hash_token(token)))
+        _bookkeeping(conn, "UPDATE sessions SET seen_ts=? WHERE token_hash=?", (t, _hash_token(token)))
     return conn.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
+
+
+def _bookkeeping(conn, sql, args):
+    """A housekeeping write on the sign-in check. If another part of the app has the database busy it is simply skipped (it is
+    repeated on the next request): signing in must never wait behind an import or a lead search."""
+    try:
+        conn.execute(sql, args)
+    except sqlite3.OperationalError:
+        pass
 
 
 def end_session(conn, token):

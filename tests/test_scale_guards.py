@@ -1,4 +1,8 @@
-"""Guards for what keeps the app smooth on big databases. Run: python tests/test_scale_guards.py
+"""Guards for what keeps the app smooth, and responsive, on big databases. Run: python tests/test_scale_guards.py
+
+0. The sign-in check on every request must never freeze the whole app: it may not touch the database inside the async
+   event loop, and while another part of the app holds the database it must give up its housekeeping write quickly.
+   (Before this, one waiting write froze every screen, including pages that need no sign-in, for as long as 30 seconds.)
 
 1. The result cache (backend/resultcache.py): only slow answers are remembered, for a limited time, and every change made
    through the app forgets them at once. Small databases must behave exactly as before.
@@ -6,10 +10,13 @@
    or queries are several times slower; on a small one it must NOT be told (statistics from a nearly empty database make
    it plan for one row). Only plans change, never answers.
 """
+import ast
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -164,10 +171,58 @@ def refreshing_statistics_never_stops_the_app_from_starting():
     assert db.refresh_planner_stats(Broken()) is False
 
 
+def fresh_data_dir():
+    """A brand-new, empty data folder for a test that needs its own owner account."""
+    d = tempfile.mkdtemp(prefix="dericbi-scale-")
+    os.environ["DERICBI_DATA"] = d
+    config.set_data_dir(d)
+    return d
+
+
+@test
+def the_sign_in_gate_never_touches_the_database_inside_the_event_loop():
+    tree = ast.parse((ROOT / "backend" / "auth_api.py").read_text(encoding="utf-8"))
+    gate = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "gate")
+    used = {f"{c.func.value.id}.{c.func.attr}" for c in ast.walk(gate) if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+            and isinstance(c.func.value, ast.Name)}
+    assert not {"db.db", "db.connect", "auth.session_user", "auth.has_questions"} & used, f"the async gate calls the database directly: {used}"
+    assert sum(1 for c in ast.walk(gate) if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "run_in_threadpool") >= 2, \
+        "the gate must hand its database work to a worker thread"
+
+
+@test
+def while_the_database_is_busy_a_signed_in_request_is_not_held_up_for_it():
+    from fastapi.testclient import TestClient
+    fresh_data_dir()
+    import server
+    key, pub = auth.make_owner_key()
+    owner_key.OWNER_PUBLIC_KEY = pub
+    qs = [{"q": auth.QUESTIONS[i], "a": a} for i, a in enumerate(("Kamunyaka Primary", "Kisii", "Otieno"))]
+    path = str(config.db_path())
+    with TestClient(server.create_app(port=8766), base_url="http://127.0.0.1:8766") as cl:
+        r = cl.post("/api/auth/setup", json={"mode": "owner", "username": "Deric Marangu", "password": "Maize&Tractor#2468",
+                                             "questions": qs, "owner_key": key})
+        assert r.status_code == 200, r.text
+        c = sqlite3.connect(path, timeout=30); c.execute("UPDATE sessions SET seen_ts = seen_ts - 120"); c.commit(); c.close()
+        held = threading.Event()
+
+        def writer():
+            w = sqlite3.connect(path, timeout=30, isolation_level=None)
+            w.execute("BEGIN IMMEDIATE"); held.set(); time.sleep(4); w.execute("COMMIT"); w.close()
+        t = threading.Thread(target=writer); t.start(); held.wait(5)
+        started = time.time()
+        r = cl.get("/api/status")
+        took = time.time() - started
+        t.join()
+        assert r.status_code == 200, r.text
+        assert took < 2.0, f"a signed-in request waited {took:.1f} s behind another writer; it must skip its housekeeping write instead"
+
+
 # ------------------------------------------------------------------ through the real app
 @test
 def through_the_app_a_change_you_make_shows_at_once_but_a_background_change_waits_for_the_timer():
     from fastapi.testclient import TestClient
+    fresh_data_dir()
     import server
     key, pub = auth.make_owner_key()
     owner_key.OWNER_PUBLIC_KEY = pub

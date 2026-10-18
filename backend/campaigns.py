@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
 import ai
+import backup
 import db
 import jobs
 import leads as L
@@ -962,6 +963,12 @@ def write_for_lead(row, lead: dict, s: dict):
             draft = ai.draft_for_lead(s, lead, ch, row["brief"], avoid, limit=room)
         except ai.AIError as e:
             raise SendError(str(e), "transient")
+        if draft.get("too_long") and ch in ("email", "whatsapp"):
+            # still too big after one rewrite: a good short ready-made message beats a long one
+            ready_subject, ready_body, problem = compose(ch, "ready", "", "", lead, s, row["id"], int(row["step"] or 0))
+            if problem:
+                raise SendError("The AI's message stayed too long. " + problem, "transient")
+            return ready_subject, ready_body
         subject = messaging.render_template(draft["subject"], lead, s, ch) if ch == "email" else ""
         text = messaging.render_template(draft["body"], lead, s, ch)
         if ch == "email" and not subject.strip():
@@ -1031,6 +1038,14 @@ class Sender(threading.Thread):
         return start <= at.time() <= end
 
     def tick(self) -> float:
+        if not backup.enter_work():   # a restore is running: stand still until it is done
+            return 2.0
+        try:
+            return self._tick()
+        finally:
+            backup.exit_work()
+
+    def _tick(self) -> float:
         s = db.get_settings()
         if time.time() - self.last_release >= 60:   # follow-ups that came due since last minute
             self.last_release = time.time()
@@ -1251,6 +1266,14 @@ class Poller(threading.Thread):
         self.stop_event.set()
 
     def poll_now(self) -> dict:
+        if not backup.enter_work():   # a restore is running: the inbox is checked again right after
+            return {"at": now(), "ok": True, "message": "Waiting for a restore to finish", "stats": {}}
+        try:
+            return self._poll_now()
+        finally:
+            backup.exit_work()
+
+    def _poll_now(self) -> dict:
         with self.lock:
             s = db.get_settings()
             try:

@@ -46,6 +46,29 @@ SYSTEM = (
 )
 
 
+def _first(name: str) -> str:
+    return (name or "").strip().split(" ")[0] if (name or "").strip() else ""
+
+
+def _voice(s: dict) -> str:
+    """Who is writing. Outreach comes from one person, in the first person, from their own business: never from 'a team'."""
+    name = (s.get("sender_name") or "").strip() or "the owner"
+    brand = (s.get("brand_name") or "").strip()
+    who = f"{name}, who runs {brand}" if brand and brand.lower() != name.lower() else name
+    return (
+        f"You write outreach messages as {who}, to the owner of a local business in Kenya who has never heard of me. "
+        "I am one person, not a company: write in the first person ('I', 'my'), never 'we' and never 'the team'. "
+        "The voice is calm, warm and direct and respects their time, like a neighbour who is good with numbers: plain words, "
+        "short sentences. Be specific to them, and never invent facts about them, their results or my offer. "
+        "Reply in the language the other person uses (English or Swahili); default to English. "
+        "Output only the message, with no preface, no quotation marks and no notes."
+    )
+
+
+def _pays_when_satisfied(s) -> bool:
+    return bool(s) and bool(re.search(r"satisf", str(s.get("ai_pitch") or ""), re.I))
+
+
 class AIError(Exception):
     pass
 
@@ -185,7 +208,9 @@ def _split_subject(text: str):
 
 def _context(s: dict, extra: str) -> str:
     pitch = s["ai_pitch"].strip() or "not described, so keep the offer general"
-    return f"Sender: {s['sender_name']}. What we offer: {pitch}.\n{extra}"
+    brand = (s.get("brand_name") or "").strip()
+    who = s["sender_name"] + (f" (owner of {brand})" if brand and brand.lower() != s["sender_name"].strip().lower() else "")
+    return f"Sender: {who}. What I offer: {pitch}\n{extra}"
 
 
 def _convo(lead: dict) -> list:
@@ -224,20 +249,23 @@ def _angle(sector: str) -> str:
     return "what is selling and what is not, where money leaks, and what to do next"
 
 
-def _stage(lead: dict) -> str:
+def _stage(lead: dict, s: dict = None) -> str:
     """What this message is: a first hello, a reply, or a follow-up to something we sent that got no answer."""
     convo = _convo(lead)
+    pays = _pays_when_satisfied(s)
     if not convo:
-        return ("This is the FIRST message to someone who does not know us (a cold lead), so it has to earn a reply. Build it in "
-                "this order, in plain, warm, human words: (1) greet them by their business name; (2) one sincere line of "
-                "appreciation that is TRUE: respect for the work of running this kind of business, or one real detail from the "
-                "facts or notes above, never invented praise, ratings, reviews, years or results; (3) in one sentence say who we "
-                "are and what we do, and how it helps THIS kind of business, using the angle below as something we can look into "
-                "together; mention ready-made tools we adapt to their business only if the offer says so; (4) invite them to reply "
-                "if they would like to improve that, or to try a different way of doing it; (5) if what we offer says they pay only "
-                "when satisfied (or any similar term), say so plainly in one short line, otherwise say nothing about price; "
-                "(6) end with ONE easy next step. In a text or WhatsApp keep (1), (3) and (6), and add (4) and (5) only if there "
-                "is room.")
+        close = ("invite them to reply if they would like to improve that or try a different way"
+                 + (", and say plainly that they pay only when they are satisfied with my work" if pays else
+                    "; if what I offer says they pay only when satisfied (or any similar term), say so in one short line, "
+                    "otherwise say nothing about price")
+                 + ", then ask ONE easy question")
+        return ("This is the FIRST message to someone who has never heard of me (a cold lead). Write it as one flowing note of "
+                "four parts: (1) greet them by their business name; (2) one honest line that shows I noticed them, using only "
+                "what is true from the facts above (their kind of business in their town, or something in the notes), never "
+                "invented praise, ratings or reviews; (3) in one plain sentence, what I do and how it helps a business like "
+                "theirs, using the angle below as something I can look into with them; "
+                f"(4) {close}. "
+                "On a text or WhatsApp keep (1), (3) and the question, and add (2) and the invitation only if there is room.")
     last = convo[-1]
     if last["direction"] == "in":
         return "They replied. Answer exactly what they said first, then offer one clear next step."
@@ -248,12 +276,13 @@ def _stage(lead: dict) -> str:
         waiting += 1
     when = (last["sent_at"] or last["created_at"] or "")[:10]
     how = CHANNEL_NAMES.get(last["channel"], last["channel"])
-    task = (f"We have had NO reply to our {how} message of {when} ({waiting} unanswered so far). Write a short follow-up that "
-            "refers to it naturally, gives one small genuinely useful insight for this kind of business (never a claim about "
-            "them), takes a NEW angle instead of repeating it, keeps any 'pay only when satisfied' term from the offer in one "
-            "short line if the offer has one, and asks one easy question that can be answered in a word.")
+    task = (f"I have had NO reply to our {how} message of {when} ({waiting} unanswered so far). Write a short follow-up that "
+            "refers to it naturally, adds one small, genuinely useful insight for this kind of business (never a claim about "
+            "them), takes a NEW angle instead of repeating it, "
+            + ("keeps the pay-only-when-satisfied line in one short sentence, " if pays else "")
+            + "and asks one easy question that can be answered in a word.")
     if waiting >= 3:
-        task += " This is the last note: be gracious and say we will not keep messaging, and that they can reach us any time."
+        task += " This is the last note: be gracious, say I will not keep messaging, and that they can reach me any time."
     return task
 
 
@@ -299,7 +328,7 @@ def draft_template(s: dict, channel: str, brief: str) -> dict:
     if channel not in ("sms", "email", "whatsapp"):
         raise ValueError("Channel must be email, sms or whatsapp")
     form = _form(channel, 100 if channel == "sms" else 0)
-    text = ask(s, SYSTEM, _context(s, (
+    text = ask(s, _voice(s), _context(s, (
         f"Extra guidance: {brief.strip() or 'none'}.\n"
         f"Write one message that will be sent to many local businesses. {form} {CRAFT} "
         "Use the placeholders {name}, {town}, {sector}, {pain} (the money-losing problem typical for that kind of business), "
@@ -312,20 +341,65 @@ def draft_template(s: dict, channel: str, brief: str) -> dict:
 
 FORMS = {
     "sms": "A text message.",
-    "whatsapp": "A WhatsApp message in a warm, conversational voice, plain text, at most 300 characters, no subject line.",
-    "email": "An email: first line 'Subject: ...', then a blank line, then a body under 120 words.",
+    "whatsapp": "A WhatsApp message in a warm, conversational voice, plain text, at most 300 characters (aim for about 240), no subject line.",
+    "email": "An email: first line 'Subject: ...' (at most 6 words, specific to them, no hype), then a blank line, then the body. "
+             "The whole body, greeting and sign-off included, must be at most 75 words.",
 }
+EMAIL_WORDS = 85        # what is accepted; the form above asks for a little less
+EMAIL_SUBJECT_WORDS = 9
+WHATSAPP_CHARS = 300
 
-# How a message is built so it is read and answered: a real pain point, a curiosity gap, one easy step, nothing made up.
+# How a message is written so it is read and answered. Short on purpose: a long list of rules makes long, stiff messages.
 CRAFT = (
-    "Write like a skilled, honest salesperson who respects the reader: (1) greet them briefly by name, then name ONE specific "
-    "pain point owners of this kind of business feel, as a question or an observation, never an accusation; (2) open a curiosity gap by hinting at what can be seen or fixed "
-    "without giving the whole answer; (3) make it about them, using their business name or town; (4) end with ONE easy, "
-    "low-effort next step (reply YES, message on WhatsApp, or take a 2-minute look at the website); (5) warm, human, plain "
-    "words; no hype, no ALL CAPS, at most one exclamation mark, no spam words such as free money, guaranteed, urgent, act now "
-    "or winner; (6) never invent numbers, testimonials, prices, results or facts about their business, and never say you saw "
-    "their work, reviews or results unless the facts above say so; (7) lower the risk: replying commits them to nothing."
+    "Plain words a shop owner uses every day, short sentences, one idea and ONE easy question. Never open with 'I hope this "
+    "finds you well', 'My name is' or 'I am writing to'. No jargon (leverage, solutions, optimise, insights, data-driven, "
+    "streamline), no lists, no bold, no emojis, no exclamation marks, no ALL CAPS, no spam words (free money, guaranteed, "
+    "urgent, act now, winner, limited offer). Do not flatter, and never say I saw their work, reviews, shop or website unless "
+    "the facts say so. Never invent numbers, prices, testimonials, results or guarantees about them or about my offer. "
+    "Replying must commit them to nothing, so make the next step tiny: reply YES, or a one-word answer."
 )
+
+
+def _example(s: dict, channel: str, convo: list) -> str:
+    """A short sample of the tone and the length, for a different business, so the AI copies the feel and not the words."""
+    if channel not in ("email", "whatsapp") or (convo and convo[-1]["direction"] == "in"):
+        return ""
+    name = (s.get("sender_name") or "").strip() or "Deric"
+    first = _first(name) or name
+    brand = (s.get("brand_name") or "").strip() or name
+    pays = _pays_when_satisfied(s)
+    site, wa = (s.get("contact_website") or "").strip(), (s.get("contact_whatsapp") or "").strip()
+    line = "\n\n" + " | ".join(x for x in (f"Website: {site}" if site else "", f"WhatsApp: {wa}" if wa else "") if x) if (site or wa) else ""
+    if not convo:
+        if channel == "email":
+            return ("Subject: quick idea for Kamau Pharmacy\n\nHello Kamau Pharmacy,\n\nRunning a pharmacy in Meru takes real work, "
+                    f"and I respect that. I'm {name}, a data analyst at {brand}. I help pharmacies use their own sales records to "
+                    "see which medicines run out or expire unsold.\n\nIf you'd like to improve that, or try a different "
+                    "way, just reply and I'll show you."
+                    + (" You pay only if you're satisfied with my work." if pays else "") + f" Worth a quick look?\n\n{first}{line}")
+        return (f"Hello Kamau Pharmacy, {first} from {brand}. Running a pharmacy takes real work, and I respect that. "
+                "I help pharmacies see which medicines run out or expire unsold, from their own records. To improve that or try "
+                "another way, reply YES and I'll show you." + (" You pay only if you're satisfied." if pays else ""))
+    if channel == "email":
+        return ("Subject: re: quick idea for Kamau Pharmacy\n\nHello Kamau Pharmacy,\n\nA short follow-up. Pharmacies often find "
+                "that the medicines that sell fastest are not the ones they reorder first, and it shows clearly in their own "
+                f"records. Happy to show you how it looks for yours. Worth a look?\n\n{first}{line}")
+    return (f"Hello Kamau Pharmacy, {first} again. One thing I see often: the fastest-selling medicines are not always the first "
+            "ones reordered. Want me to show you how it looks in your own records?")
+
+
+def _too_long(channel: str, subject: str, body: str) -> str:
+    """'' when a draft is within the agreed length, otherwise what is wrong with it (in words the AI is told)."""
+    if channel == "email":
+        words = len(re.findall(r"\S+", re.sub(r"(?im)^\s*(website|whatsapp|email|phone|call|tel)\b[^\n]*$", "", body)))
+        sub = len(re.findall(r"\S+", subject))
+        if words > EMAIL_WORDS:
+            return f"{words} words; the most allowed is 75"
+        if sub > EMAIL_SUBJECT_WORDS:
+            return f"a subject of {sub} words; the most allowed is 6"
+    elif channel == "whatsapp" and len(body) > WHATSAPP_CHARS:
+        return f"{len(body)} characters; the most allowed is {WHATSAPP_CHARS}"
+    return ""
 
 
 def _form(channel: str, limit: int = 0) -> str:
@@ -343,29 +417,46 @@ def _contact(s: dict, channel: str) -> str:
         return f"Contact (use exactly ONE, the website or the WhatsApp number): {short or 'none'} / WhatsApp {wa.replace(' ', '') or 'none'}."
     if channel == "whatsapp":
         return f"Website to mention if useful: {site or 'none'}. They are already on WhatsApp, so do not repeat the number."
-    return f"Contact details to include at the end: website {site or 'none'}, WhatsApp {wa or 'none'}, email {mail or 'none'}."
+    return (f"Contact details: finish the email with ONE short line such as 'Website: {site or 'none'} | WhatsApp: {wa or 'none'} | "
+            f"Email: {mail or 'none'}' (that line does not count toward the 75 words).")
 
 
 def draft_for_lead(s: dict, lead: dict, channel: str, notes: str, avoid: str = "", limit: int = 0) -> dict:
     """A first message, a reply, or a follow-up that fits the conversation so far, for one lead.
-    `avoid` is another message to word differently from (used when a draft came out too alike)."""
+    `avoid` is another message to word differently from (used when a draft came out too alike).
+    An email or WhatsApp message that comes out too long is sent back once to be shortened; if it is still too long the
+    result carries "too_long": True so the sender can use a ready-made message instead of one that is too big."""
     if channel not in FORMS:
         raise ValueError("Channel must be email, sms or whatsapp")
     if lead["do_not_contact"]:
         raise ValueError("This lead asked not to be contacted.")
     thread = _thread(lead, 10)
-    text = ask(s, SYSTEM, _context(s, (
+    example = _example(s, channel, _convo(lead))
+    prompt = _context(s, (
         f"{_lead_facts(lead)}\n"
         f"Conversation so far:\n{thread or '(none yet)'}\n"
-        f"Our rough notes or instructions for this message: {notes.strip() or 'none'}.\n"
-        f"{_stage(lead)} {_form(channel, limit)} {CRAFT} {_contact(s, channel)} "
-        f"Write the final text with real names, no placeholders, speaking as {s['sender_name']} "
-        "in the first person and signing off with the first name only. "
-        f"What we can help a business like theirs find out (offer it as something we can look into together, never claim it is a fact about them): {_angle(lead['sector'])}. "
-        "Use only the facts above, and weave in one or two real details about them (their town, type of business, or something from the conversation) "
-        "so it reads as written for them alone. Do not add an opt-out line; the app adds it."
-        + (f"\nWord it very differently from this message, with another opening and another structure: {avoid[:400]}" if avoid else ""))))
+        f"My rough notes or instructions for this message: {notes.strip() or 'none'}.\n"
+        f"THE JOB: {_stage(lead, s)}\n"
+        f"FORM: {_form(channel, limit)}\n"
+        f"STYLE: {CRAFT}\n"
+        f"{_contact(s, channel)}\n"
+        f"What I can help a business like theirs find out (offer it as something I can look into with them, never as a fact "
+        f"about them): {_angle(lead['sector'])}.\n"
+        + (f"Tone and length example, for a different business (write fresh words for THIS lead and never reuse its sentences):\n{example}\n" if example else "")
+        + f"Write the final text with real names and no placeholders, in the first person as {s['sender_name']}, signing off "
+        "with my first name only. Weave in one or two real details about them (their town, their kind of business, or something "
+        "from the conversation) so it reads as written for them alone. Do not add an opt-out line; the app adds it."
+        + (f"\nWord it very differently from this message, with another opening and another structure: {avoid[:400]}" if avoid else "")))
+    text = ask(s, _voice(s), prompt)
     subject, body = _split_subject(text) if channel == "email" else ("", text)
+    problem = _too_long(channel, subject, body)
+    if problem:
+        text = ask(s, _voice(s), prompt + f"\n\nThis draft is too long ({problem}):\n{text}\n"
+                   "Rewrite it shorter, inside the limit: cut the weakest sentence, keep the greeting and the closing question. "
+                   "Output only the new message.")
+        subject, body = _split_subject(text) if channel == "email" else ("", text)
+        if _too_long(channel, subject, body):
+            return {"subject": subject, "body": body, "too_long": True}
     return {"subject": subject, "body": body}
 
 

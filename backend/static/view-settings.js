@@ -43,7 +43,7 @@
       let [s, health, st] = await Promise.all([api('/settings'), api('/health'), api('/status')]);
       const form = () => html`<div id="account-panels" class="stack" style="max-width:860px;margin-bottom:16px"></div><form id="sform" class="stack" style="max-width:860px">
         <section class="panel"><div class="panel-head"><h2>Your business</h2></div><div class="panel-body">
-          ${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}
+          <div class="grid2">${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}${field(s, 'brand_name', 'Business name', { hint: 'The AI writes as you, from this business ("I\'m Deric, from DericBI").' })}</div>
           <div class="grid2" style="margin-top:14px">${field(s, 'contact_website', 'Your website', { hint: 'Written into messages as {website}.' })}${field(s, 'contact_whatsapp', 'Your WhatsApp number', { hint: 'Written into messages as {whatsapp}.' })}
             ${field(s, 'contact_email', 'Your email', { hint: 'Written into messages as {email}.' })}</div></div></section>
 
@@ -153,16 +153,95 @@
         <section class="panel"><div class="panel-head"><h2>Your data</h2></div>
           <div class="panel-body stack" style="gap:12px">
             <div class="small muted">Everything is stored on this computer in <code>${health.data_dir}</code>. Passwords are stored there too, so keep backups private.</div>
-            <div><button type="button" class="btn" id="backup">Download a backup</button></div>
+            <div><button type="button" class="btn" id="backup">Download a full copy of the database (advanced)</button> <span class="muted small">Owner only. It includes accounts, the licence and saved passwords: use "Backups" below to move to another computer.</span></div>
+          </div></section>
+
+        <section class="panel" id="backups-panel"><div class="panel-head"><h2>Backups and moving to another computer</h2></div>
+          <div class="panel-body stack" style="gap:12px">
+            <div class="small muted">A backup is your whole business in one file: leads, messages, campaigns, history, settings and logo. Use it to recover from a mistake or a broken computer, or to move to another computer. Sign-in accounts and this computer's licence are never in it.</div>
+            <div id="bk-notice"></div>
+            <div id="bk-body" class="stack" style="gap:12px"><p class="muted small">Loading…</p></div>
+            <div class="stack" style="gap:8px">
+              ${check(s, 'backup_auto', 'Make a backup automatically')}
+              <div class="grid2">${field(s, 'backup_hours', 'Every (hours)', { type: 'number', min: 1 })}${field(s, 'backup_keep', 'Keep the newest', { type: 'number', min: 1, hint: 'Older automatic backups are deleted. Backups you make yourself are never deleted.' })}</div>
+              ${field(s, 'backup_dir', 'Also copy each automatic backup to this folder', { hint: 'For example a USB stick or a synced cloud folder, so a copy survives if this computer does not. Leave empty for none. Save settings to apply.' })}
+            </div>
           </div></section>
 
         <div class="row"><button class="btn primary" type="submit">Save settings</button><span class="muted small" id="saved"></span></div>
       </form>`;
+      // ---- backups, restore, and moving to another computer
+      const size = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
+      const stamp = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
+      const nice = (n) => Number(n || 0).toLocaleString();
+      const KIND = { auto: 'Automatic', manual: 'Made by you', 'before-restore': 'Safety copy before a restore', 'older backup': 'Older copy of the data file' };
+      const drawBackups = async () => {
+        const box = $('#bk-body'); if (!box) return;
+        let bk;
+        try { bk = await api('/backups'); }
+        catch (err) { render(box, html`<p class="muted small">${err.status === 403 ? 'Only the owner account can manage backups.' : err.message}</p>`); return; }
+        if (!$('#bk-body')) return;   // left this page while it loaded
+        const n = bk.notice;
+        render($('#bk-notice'), n ? html`<div class="notice bad" style="margin:0"><b>Your data file was damaged and has been set aside${n.restored_from ? ', and your latest backup was restored' : ''}.</b>
+            <div class="small">${n.restored_from ? `Restored from ${n.restored_from}. Anything after that backup is not in it.` : 'There was no backup to restore, so you are starting empty.'} The damaged file was kept as <code>${n.aside}</code> in your data folder. Sign-in accounts are not part of a backup, so they had to be made again.</div>
+            <div><button type="button" class="btn small" data-bk="dismiss">OK, I understand</button></div></div>`
+          : bk.health && bk.health.ok === false ? html`<div class="notice bad" style="margin:0"><b>The health check found a problem in your data file.</b> ${bk.health.detail} Make a backup now, and restore your latest one if things look wrong.</div>` : '');
+        render(box, html`
+          <div class="small muted">Backups folder: <code>${bk.dir}</code> · ${nice(bk.free_mb)} MB free · ${bk.auto.on ? `automatic backup on, every ${bk.auto.hours} h, keeping ${bk.auto.keep}` : 'automatic backup is off'}${bk.auto.external ? html` · second copy to <code>${bk.auto.external}</code>` : ''}</div>
+          <div class="row" style="gap:12px;flex-wrap:wrap;align-items:center"><button type="button" class="btn primary" data-bk="now">Back up now</button>
+            <label class="check"><input type="checkbox" id="bk-secrets">Include my saved passwords and API keys (then keep the file private)</label></div>
+          <div id="bk-status"></div>
+          <div>${bk.items.length ? bk.items.map((b) => html`<div class="row" style="justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--line,#ddd);flex-wrap:wrap">
+              <div><b>${KIND[b.label] || b.label}</b> · ${stamp(b.created)} · ${size(b.bytes)}${b.includes_secrets ? ' · includes passwords' : ''}
+                <div class="small muted">${b.error ? b.error : `${nice(b.counts.leads)} leads, ${nice(b.counts.messages)} messages, ${nice(b.counts.campaigns)} campaigns`}</div></div>
+              <div class="row" style="gap:6px">${b.error ? '' : html`<button type="button" class="btn small" data-bk="restore" data-name="${b.name}">Restore</button><button type="button" class="btn small" data-bk="download" data-name="${b.name}">Download</button>`}<button type="button" class="btn small" data-bk="delete" data-name="${b.name}">Delete</button></div></div>`)
+            : html`<p class="muted small">No backups yet. Press Back up now.</p>`}</div>
+          <div class="stack" style="gap:6px"><b>Bring a backup from another computer</b>
+            <input type="file" id="bk-file" accept=".zip,.sqlite3">
+            <div class="small muted">To move to a new computer: install the app there and sign in, choose the file here, then press Restore next to it. Campaigns that were running come back paused, so two computers never message the same people: check them, then resume. WhatsApp has to be connected again on the new computer, and a customer's new computer needs its own licence.</div></div>`);
+      };
+      const waitOp = async (label) => {
+        for (;;) {
+          if (!$('#bk-status')) return null;   // left this page
+          const st = await api('/backups/status');
+          render($('#bk-status'), html`<div class="notice" style="margin:0"><b>${label}</b> ${st.step}…</div>`);
+          if (st.op && !st.running) return st;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      };
+      const backupAction = async (btn) => {
+        const what = btn.dataset.bk, name = btn.dataset.name;
+        if (what === 'dismiss') { await api('/backups/dismiss-notice', { method: 'POST' }); return drawBackups(); }
+        if (what === 'download') return App.download('/api/backups/' + encodeURIComponent(name) + '/download');
+        if (what === 'delete') {
+          if (!(await App.confirm('Delete this backup file? This cannot be undone.', 'Delete'))) return;
+          await api('/backups/' + encodeURIComponent(name), { method: 'DELETE' }); toast('Backup deleted'); return drawBackups();
+        }
+        if (what === 'now') {
+          btn.disabled = true;
+          await api('/backups/create', { method: 'POST', body: { include_secrets: !!($('#bk-secrets') && $('#bk-secrets').checked) } });
+          const st = await waitOp('Making the backup.');
+          if (!st) return;
+          if (st.error) { toast(st.error, true, 9000); return drawBackups(); }
+          toast(`Backup saved (${size(st.result.bytes)}). Press Download next to it to take it to another computer.`, false, 8000); return drawBackups();
+        }
+        if (what === 'restore') {
+          if (!(await App.confirm('Replace everything in this app (leads, messages, campaigns, history and settings) with this backup? A safety copy of what is here now is saved first. Campaigns that were running come back paused.', 'Restore'))) return;
+          btn.disabled = true;
+          await api('/backups/' + encodeURIComponent(name) + '/restore', { method: 'POST' });
+          const st = await waitOp('Restoring.');
+          if (!st) return;
+          if (st.error) { toast(st.error, true, 12000); return drawBackups(); }
+          const r = st.result;
+          toast(`Restored ${nice(r.restored.leads)} leads and ${nice(r.restored.messages)} messages.` + (r.paused_campaigns ? ` ${r.paused_campaigns} campaign(s) were paused: check them, then resume.` : ''), false, 12000);
+          setTimeout(() => location.reload(), 2500);
+        }
+      };
       const updateBox = () => render($('#update-box'), !App.desktop()
         ? html`<p class="muted small">Updates are installed from the desktop app.</p>`
         : html`<div class="row"><button type="button" class="btn" id="check-update">Check for updates</button>
             ${App.state.update ? html`<button type="button" class="btn primary" id="install-update">Install version ${App.state.update.version} and restart</button>` : ''}</div>`);
-      const draw = () => { render(el, form()); updateBox(); App.renderAccount($('#account-panels')).catch(fail); };
+      const draw = () => { render(el, form()); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); };
       draw();
 
       const save = async () => {
@@ -175,6 +254,7 @@
         try { await save(); toast('Settings saved'); draw(); App.loadBrand(); } catch (err) { fail(err); }
       });
       const refreshLogo = () => { App.showLogo($('#logo-preview'), true); return App.loadBrand(); };
+
       el.addEventListener('change', async (e) => {
         if (e.target.id === 'mail-preset' && MAIL[e.target.value]) {
           const m = MAIL[e.target.value], f = $('#sform').elements;
@@ -182,11 +262,22 @@
           [f.imap_host.value, f.imap_port.value, f.imap_security.value] = m.imap;
           toast('Servers filled in. Add your email address and app password, then save.'); return;
         }
+        if (e.target.id === 'bk-file') {
+          const f = e.target.files[0]; if (!f) return;
+          try {
+            render($('#bk-status'), html`<div class="notice" style="margin:0">Receiving ${f.name} (${size(f.size)}) and checking it…</div>`);
+            await api('/backups/upload?name=' + encodeURIComponent(f.name), { method: 'PUT', body: f, timeout: 3600000 });
+            toast('File received and checked. Press Restore next to it to use it.', false, 8000);
+          } catch (err) { fail(err); }
+          e.target.value = ''; await drawBackups(); return;
+        }
         const file = e.target.id === 'logo-file' && e.target.files[0]; if (!file) return;
         try { await api('/branding/logo', { method: 'PUT', body: file }); await refreshLogo(); toast('Logo updated'); } catch (err) { fail(err); }
         e.target.value = '';
       });
       el.addEventListener('click', async (e) => {
+        const bkBtn = e.target.closest && e.target.closest('[data-bk]');
+        if (bkBtn) { try { await backupAction(bkBtn); } catch (err) { fail(err); } finally { if (bkBtn.isConnected) bkBtn.disabled = false; } return; }
         const id = e.target.id; if (!id) return;
                 try {
           if (id === 'gm-connect') {
