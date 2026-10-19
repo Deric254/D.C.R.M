@@ -65,24 +65,26 @@ SMS = {
 }
 
 # WhatsApp: a little more room, still short enough to be read in one glance.
+# Written from the owner's own message: calm, no pressure, and clear on how and when they pay. {pain} is what this kind of business
+# really loses; nothing here depends on {sector} or {town}, which can be blank.
 WHATSAPP = {
-    g: (f"Hello {{name}}, {{sender}} here. Running a business like yours takes real work, and I respect that. "
-        f"I'm a data analyst, and I help businesses see {PAIN[g]} from their own records so they can fix it. "
-        "If you'd like to improve this, or try a different way of tracking it, reply YES and I'll show you what it could look "
-        "like for you. You only pay if you're satisfied with my work. More: {website}")
+    g: (f"Hi {{name}}, {{first}} here. I came across {{name}} online and was impressed by what you're doing. "
+        f"I'm a Business Intelligence specialist and I help small businesses see where money is being lost, for example {PAIN[g]}, "
+        "plus their best sales periods and the products customers buy together. "
+        "Would you like to see what your own records could reveal? Just reply. If not, no response is needed. "
+        "You only pay when you see value. More: {website}")
     for g in PAIN
 }
 
-# Emails: (subject, body). The opt-out footer is added when sending.
 EMAIL = {
     g: (f"{{name}}: a quick idea about {PAIN[g]}",
-        "Hi {name},\n\nI came across {name} while looking at local businesses. Running one takes real effort, and I respect that.\n\n"
-        f"I'm {{sender}}, a data analyst. I help businesses like yours see {PAIN[g]} from their own sales and stock records, "
-        "so you can decide with facts instead of guesses.\n\n"
-        "If you'd like to improve this, or try a different way of tracking it, just reply YES and I'll show you what it could "
-        "look like for {name}. You only pay if you're satisfied with my work.\n\n"
-        "Worth a quick look? Or reach me directly:\n"
-        "Website: {website}\nWhatsApp: {whatsapp}\nEmail: {email}\n\n{sender}")
+        "Hi {name},\n\nI came across {name} online and was impressed by what you're doing.\n\n"
+        "I'm {first}, a Business Intelligence specialist. I help small businesses turn their data into better decisions and show "
+        f"where money is being lost. For a business like yours, that can mean seeing {PAIN[g]}, your best sales periods, and the "
+        "products customers buy together.\n\n"
+        "I can provide a ready-to-use tracking system or a short report on what needs attention first.\n\n"
+        "Would you like to see what your records could reveal? Just reply. If not, no response is needed. "
+        "You only pay when you see value.\n\n{first}\n\nWebsite: {website} | WhatsApp: {whatsapp}")
     for g in PAIN
 }
 

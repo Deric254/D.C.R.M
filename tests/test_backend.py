@@ -1460,7 +1460,7 @@ def whatsapp_is_logged_and_replies_are_matched_to_the_message_they_answer():
     fresh()
     import ai
     s = db.get_settings()
-    assert s["sender_name"] == "Deric Marangu" and "data analyst" in s["ai_pitch"]
+    assert s["sender_name"] == "Deric Marangu" and "Business Intelligence" in s["ai_pitch"]
     with db.db() as c:
         a = L.add_lead(c, {"name": "Meru Chemist", "town": "Meru", "sector": "Pharmacy", "phone": "0700000101"})["id"]
         nm = L.add_lead(c, {"name": "Landline Shop", "town": "Meru", "phone": "020 2000000"})["id"]
@@ -1496,7 +1496,7 @@ def whatsapp_is_logged_and_replies_are_matched_to_the_message_they_answer():
         finally:
             ai.ask = real_ask
         p = seen["prompt"]
-        assert d["subject"] == "" and "Deric Marangu" in p and "data analyst" in p and "medicines" in p
+        assert d["subject"] == "" and "Deric Marangu" in p and "Business Intelligence" in p and "medicines" in p
         assert "Us by WhatsApp" in p and "Them by WhatsApp" in p and "300 characters" in p and "dericbi.vercel.app" in p
         try:
             ai.draft_for_lead(s, L.lead_detail(c, a), "fax", "")
@@ -1531,7 +1531,7 @@ def old_database_gains_reply_tracking_and_new_persona_defaults():
     db.init_db()
     db.init_db()
     assert db.get_settings()["sender_name"] == "Deric Marangu"
-    assert "data analyst" in db.get_settings()["ai_pitch"]
+    assert "Business Intelligence" in db.get_settings()["ai_pitch"]
     with db.db() as c:
         assert "reply_to" in {r["name"] for r in c.execute("PRAGMA table_info(messages)")}
     db.save_settings({"sender_name": "Someone Else"})

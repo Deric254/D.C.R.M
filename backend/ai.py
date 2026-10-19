@@ -65,8 +65,14 @@ def _voice(s: dict) -> str:
     )
 
 
+def _pay_line(s) -> str:
+    """The sentence in my offer that says when they pay, in my own words ('' if the offer says nothing about it)."""
+    m = re.search(r"[^.!?]*\bpay(?:s|ment)?\b[^.!?]*[.!?]", str((s or {}).get("ai_pitch") or ""), re.I)
+    return m.group(0).strip() if m else ""
+
+
 def _pays_when_satisfied(s) -> bool:
-    return bool(s) and bool(re.search(r"satisf", str(s.get("ai_pitch") or ""), re.I))
+    return bool(_pay_line(s))
 
 
 class AIError(Exception):
@@ -252,20 +258,21 @@ def _angle(sector: str) -> str:
 def _stage(lead: dict, s: dict = None) -> str:
     """What this message is: a first hello, a reply, or a follow-up to something we sent that got no answer."""
     convo = _convo(lead)
-    pays = _pays_when_satisfied(s)
+    pay = _pay_line(s)
     if not convo:
-        close = ("invite them to reply if they would like to improve that or try a different way"
-                 + (", and say plainly that they pay only when they are satisfied with my work" if pays else
-                    "; if what I offer says they pay only when satisfied (or any similar term), say so in one short line, "
-                    "otherwise say nothing about price")
-                 + ", then ask ONE easy question")
-        return ("This is the FIRST message to someone who has never heard of me (a cold lead). Write it as one flowing note of "
-                "four parts: (1) greet them by their business name; (2) one honest line that shows I noticed them, using only "
-                "what is true from the facts above (their kind of business in their town, or something in the notes), never "
-                "invented praise, ratings or reviews; (3) in one plain sentence, what I do and how it helps a business like "
-                "theirs, using the angle below as something I can look into with them; "
-                f"(4) {close}. "
-                "On a text or WhatsApp keep (1), (3) and the question, and add (2) and the invitation only if there is room.")
+        close = ("invite them to reply if they would like to see what their own records could reveal, and say that if not, no "
+                 "response is needed"
+                 + (f'; then add this line exactly: "{pay}"' if pay else
+                    "; if what I offer says when they pay (for example only when they see value), say so in one short line, "
+                    "otherwise say nothing about price"))
+        return ("This is the FIRST message to someone who has never heard of me (a cold lead). Follow my own plan, in plain, calm "
+                "words, as one short note: (1) greet them by their business name; (2) say I came across their business online, "
+                "with one sincere line about what they do, anchored in a true detail from the facts above (their kind of business "
+                "or their town), never invented ratings, reviews or results; (3) who I am in one line, and how I help businesses "
+                "like theirs, from my offer above; (4) two or three concrete things I can look into for a business like theirs "
+                "(use the angle below), as things I can find, never as facts about them; (5) how I deliver it, in one line, from "
+                f"my offer; (6) a no-pressure close: {close}. Keep it clean and calm: no pressure, no urgency, no hype. "
+                "On a text or WhatsApp keep (1), (3), one item from (4) and (6).")
     last = convo[-1]
     if last["direction"] == "in":
         return "They replied. Answer exactly what they said first, then offer one clear next step."
@@ -279,8 +286,8 @@ def _stage(lead: dict, s: dict = None) -> str:
     task = (f"I have had NO reply to our {how} message of {when} ({waiting} unanswered so far). Write a short follow-up that "
             "refers to it naturally, adds one small, genuinely useful insight for this kind of business (never a claim about "
             "them), takes a NEW angle instead of repeating it, "
-            + ("keeps the pay-only-when-satisfied line in one short sentence, " if pays else "")
-            + "and asks one easy question that can be answered in a word.")
+            + (f'keeps this line: "{pay}", ' if pay else "")
+            + "and asks one easy question that can be answered in a word, with no pressure.")
     if waiting >= 3:
         task += " This is the last note: be gracious, say I will not keep messaging, and that they can reach me any time."
     return task
@@ -343,9 +350,9 @@ FORMS = {
     "sms": "A text message.",
     "whatsapp": "A WhatsApp message in a warm, conversational voice, plain text, at most 300 characters (aim for about 240), no subject line.",
     "email": "An email: first line 'Subject: ...' (at most 6 words, specific to them, no hype), then a blank line, then the body. "
-             "The whole body, greeting and sign-off included, must be at most 75 words.",
+             "The whole body, greeting and sign-off included, must be at most 100 words.",
 }
-EMAIL_WORDS = 85        # what is accepted; the form above asks for a little less
+EMAIL_WORDS = 115       # what is accepted; the form above asks for a little less
 EMAIL_SUBJECT_WORDS = 9
 WHATSAPP_CHARS = 300
 
@@ -356,36 +363,39 @@ CRAFT = (
     "streamline), no lists, no bold, no emojis, no exclamation marks, no ALL CAPS, no spam words (free money, guaranteed, "
     "urgent, act now, winner, limited offer). Do not flatter, and never say I saw their work, reviews, shop or website unless "
     "the facts say so. Never invent numbers, prices, testimonials, results or guarantees about them or about my offer. "
-    "Replying must commit them to nothing, so make the next step tiny: reply YES, or a one-word answer."
+    "Replying must commit them to nothing, so make the next step tiny: reply YES, or a one-word answer. Keep it calm: no pressure, "
+    "no urgency, no hype, and make it clear that not replying is fine."
 )
 
 
 def _example(s: dict, channel: str, convo: list) -> str:
-    """A short sample of the tone and the length, for a different business, so the AI copies the feel and not the words."""
+    """A short sample of the tone, the structure and the length, for a different business, so the AI copies the feel and not the words."""
     if channel not in ("email", "whatsapp") or (convo and convo[-1]["direction"] == "in"):
         return ""
     name = (s.get("sender_name") or "").strip() or "Deric"
     first = _first(name) or name
-    brand = (s.get("brand_name") or "").strip() or name
-    pays = _pays_when_satisfied(s)
+    pay = _pay_line(s)
     site, wa = (s.get("contact_website") or "").strip(), (s.get("contact_whatsapp") or "").strip()
     line = "\n\n" + " | ".join(x for x in (f"Website: {site}" if site else "", f"WhatsApp: {wa}" if wa else "") if x) if (site or wa) else ""
     if not convo:
         if channel == "email":
-            return ("Subject: quick idea for Kamau Pharmacy\n\nHello Kamau Pharmacy,\n\nRunning a pharmacy in Meru takes real work, "
-                    f"and I respect that. I'm {name}, a data analyst at {brand}. I help pharmacies use their own sales records to "
-                    "see which medicines run out or expire unsold.\n\nIf you'd like to improve that, or try a different "
-                    "way, just reply and I'll show you."
-                    + (" You pay only if you're satisfied with my work." if pays else "") + f" Worth a quick look?\n\n{first}{line}")
-        return (f"Hello Kamau Pharmacy, {first} from {brand}. Running a pharmacy takes real work, and I respect that. "
-                "I help pharmacies see which medicines run out or expire unsold, from their own records. To improve that or try "
-                "another way, reply YES and I'll show you." + (" You pay only if you're satisfied." if pays else ""))
+            return ("Subject: a quick idea for Kamau Pharmacy\n\nHi Kamau Pharmacy,\n\nI came across Kamau Pharmacy online and was "
+                    "impressed by what you're doing in Meru.\n\n"
+                    f"I'm {first}, a Business Intelligence specialist. I help small businesses turn their data into "
+                    "better decisions and show where money is being lost: medicines that run out or expire unsold, your best-selling "
+                    "periods, and what customers buy together.\n\nI can provide a ready-to-use tracking system or a short "
+                    "report on what needs attention first.\n\nWould you like to see what your records could reveal? Just "
+                    "reply. If not, no response is needed." + (f" {pay}" if pay else "") + f"\n\n{first}{line}")
+        return (f"Hi Kamau Pharmacy, {first} here. I came across you online and was impressed by what you do. "
+                "I'm a Business Intelligence specialist helping small businesses see where money is being lost. "
+                "Want to see what your records could reveal? Just reply, or ignore this."
+                + (f" {pay}" if pay else ""))
     if channel == "email":
-        return ("Subject: re: quick idea for Kamau Pharmacy\n\nHello Kamau Pharmacy,\n\nA short follow-up. Pharmacies often find "
-                "that the medicines that sell fastest are not the ones they reorder first, and it shows clearly in their own "
-                f"records. Happy to show you how it looks for yours. Worth a look?\n\n{first}{line}")
-    return (f"Hello Kamau Pharmacy, {first} again. One thing I see often: the fastest-selling medicines are not always the first "
-            "ones reordered. Want me to show you how it looks in your own records?")
+        return ("Subject: re: a quick idea for Kamau Pharmacy\n\nHi Kamau Pharmacy,\n\nA short follow-up, no pressure. Pharmacies "
+                "often find that the medicines that sell fastest are not the ones they reorder first, and it shows clearly in their "
+                f"own records. Happy to show you how it looks for yours. Worth a look?\n\n{first}{line}")
+    return (f"Hi Kamau Pharmacy, {first} again. One thing I see often: the fastest-selling medicines are not always the first ones "
+            "reordered. Want me to show you how it looks in your own records? No pressure either way.")
 
 
 def _too_long(channel: str, subject: str, body: str) -> str:
@@ -394,7 +404,7 @@ def _too_long(channel: str, subject: str, body: str) -> str:
         words = len(re.findall(r"\S+", re.sub(r"(?im)^\s*(website|whatsapp|email|phone|call|tel)\b[^\n]*$", "", body)))
         sub = len(re.findall(r"\S+", subject))
         if words > EMAIL_WORDS:
-            return f"{words} words; the most allowed is 75"
+            return f"{words} words; the most allowed is 100"
         if sub > EMAIL_SUBJECT_WORDS:
             return f"a subject of {sub} words; the most allowed is 6"
     elif channel == "whatsapp" and len(body) > WHATSAPP_CHARS:
@@ -418,7 +428,7 @@ def _contact(s: dict, channel: str) -> str:
     if channel == "whatsapp":
         return f"Website to mention if useful: {site or 'none'}. They are already on WhatsApp, so do not repeat the number."
     return (f"Contact details: finish the email with ONE short line such as 'Website: {site or 'none'} | WhatsApp: {wa or 'none'} | "
-            f"Email: {mail or 'none'}' (that line does not count toward the 75 words).")
+            f"Email: {mail or 'none'}' (that line does not count toward the 100 words).")
 
 
 def draft_for_lead(s: dict, lead: dict, channel: str, notes: str, avoid: str = "", limit: int = 0) -> dict:

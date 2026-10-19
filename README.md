@@ -35,7 +35,7 @@ Open a lead and press **WhatsApp**, **Email** or **Text**. The AI writes the mes
 
 - **WhatsApp is free:** once WhatsApp is connected (Settings > WhatsApp) the message is sent for you and recorded automatically. Until then **Open WhatsApp** logs the message and opens the chat with the text ready; you press send. Log their answer with **Log a reply > WhatsApp**.
 - **Everything is tracked:** each reply is matched to the message of ours it answers ("In answer to our WhatsApp of ..."), a lead you are still waiting on shows **Awaiting reply**, and Overview shows how many leads answered on each channel.
-- **Your identity:** Settings > Sender name and Settings > AI writing help > *Who you are and what you sell* decide how the AI introduces you (default: Deric Marangu, data analyst, with ready-made tools adapted to each business). Edit that text to name your actual tools.
+- **Your identity:** Settings > Sender name and Settings > AI writing help > *Who you are and what you sell* decide how the AI introduces you (default: Deric Marangu, Business Intelligence specialist at DericBI, with the offer and the "You only pay when you see value" line from the owner's own message). Settings > Business name sets the brand. The AI follows the owner's own message as its plan: a greeting, "I came across you online", who I am, two or three concrete things to look into for that kind of business, how it is delivered, and a no-pressure close. Emails stay near 100 words and WhatsApp messages under 300 characters; a draft that comes out longer is shortened, and if it still is, the ready-made version of the same message is sent instead. Edit the pitch to change any of it.
 
 ## Accounts and licences
 
