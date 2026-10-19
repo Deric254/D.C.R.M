@@ -2045,7 +2045,8 @@ class FakeWA:
     def wait_ready(self, seconds): return "ready" if self.ready else "qr"
     def state(self): return "ready" if self.ready else "qr"
 
-    def send(self, phone, text):
+    def send(self, phone, text, followup=False):
+        self.followups = getattr(self, "followups", []) + [(phone, followup)]
         what = self.plan.get(phone, "sent")
         if what == "logout": raise whatsapp.LoggedOut()
         if what == "unconfirmed": raise whatsapp.SendUnconfirmed("Send was pressed but WhatsApp never showed the message as sent.")
@@ -3059,6 +3060,269 @@ def the_database_is_set_up_for_a_slow_disk_and_the_needed_indexes_exist():
     for name in ("ix_leads_archived_id", "ix_leads_archived_name", "ix_leads_archived_updated", "ix_leads_archived_reply",
                  "ix_leads_contacted", "ix_msg_lead_dir", "ix_msg_sent_lead", "ux_msg_campaign_lead", "ix_leads_followup"):
         assert name in have, name
+
+
+# ============================================ ONE BROWSER, NEVER A SECOND MESSAGE
+class CountingWA(FakeWA):
+    """A FakeWA that counts how many times its browser was opened."""
+    opens = 0
+
+    def open(self):
+        CountingWA.opens += 1
+
+
+@test
+def the_whatsapp_worker_stays_in_its_one_browser_while_a_retry_waits_and_does_not_reopen_it():
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
+    _wa_leads(3)
+    with db.db() as c:
+        cid = C.create_campaign(c, "Once", "whatsapp", "", "", {}, launch=True, style="ready")
+
+    class FlakyOnce(CountingWA):
+        def send(self, phone, text, followup=False):
+            if phone == "+254700000040" and not getattr(self, "tried", False):
+                self.tried = True
+                raise RuntimeError("page changed")        # before Send: safe to try again
+            return super().send(phone, text, followup)
+
+    def time_passes(seconds):   # the retry time arrives while the worker waits
+        with db.db() as c:
+            c.execute("UPDATE messages SET scheduled_at=? WHERE status='queued'", (now(),))
+    CountingWA.opens = 0
+    fake = FlakyOnce()
+    with db.db() as c:
+        jid = jobs.create_job(c, "whatsapp", {})
+    assert whatsapp.run_worker(jid, driver_factory=lambda: fake, sleep=time_passes) == "done"
+    assert CountingWA.opens == 1, "one browser for the whole run, retry included"
+    assert sorted(p for p, _ in fake.sent) == ["+254700000040", "+254700000041", "+254700000042"]
+    assert count("SELECT COUNT(*) FROM messages WHERE campaign_id=? AND status='sent'", cid) == 3
+    # a retry that is far away (an hour) is not waited for: the browser closes, the sender starts it again when due
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True); _wa_leads(1)
+    with db.db() as c:
+        C.create_campaign(c, "Far", "whatsapp", "", "", {}, launch=True, style="ready")
+        c.execute("UPDATE messages SET scheduled_at=?", ((datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),))
+    CountingWA.opens = 0
+    fake = CountingWA()
+    assert _run_wa(fake)[0] == "done" and fake.sent == [] and fake.closed and count("SELECT status FROM messages") == "queued"
+
+
+@test
+def a_whatsapp_browser_that_cannot_start_pauses_the_campaign_instead_of_reopening_every_minute():
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True); _wa_leads(2)
+    with db.db() as c:
+        cid = C.create_campaign(c, "Locked", "whatsapp", "", "", {}, launch=True, style="ready")
+
+    class WontOpen(FakeWA):
+        def open(self): raise RuntimeError("The browser could not start for WhatsApp.")
+    final, _ = _run_wa(WontOpen())
+    assert final == "failed" and count("SELECT status FROM campaigns WHERE id=?", cid) == "paused"
+    assert "could not run" in count("SELECT last_error FROM campaigns WHERE id=?", cid)
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 2 and count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 0
+    spawned = []
+    real_spawn, jobs.spawn = jobs.spawn, lambda jid, kind: spawned.append(kind)
+    try:
+        sender = C.Sender(); sender.last_wa_spawn = 0
+        assert sender._whatsapp_tick(db.get_settings()) is None and not spawned, "paused: nothing is started"
+        # a page that is still loading is not 'logged out': nobody has to scan the code again
+        fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True); _wa_leads(1)
+        with db.db() as c:
+            C.create_campaign(c, "Slow", "whatsapp", "", "", {}, launch=True, style="ready")
+
+        class Loading(FakeWA):
+            def wait_ready(self, seconds): return "loading"
+        assert _run_wa(Loading())[0] == "failed" and whatsapp.is_linked()
+        # workers that keep dying at once are stopped after two, not restarted for ever
+        fresh(); configure(); db.set_internal("whatsapp_linked", True); _wa_leads(2)
+        with db.db() as c:
+            cid = C.create_campaign(c, "Dies", "whatsapp", "", "", {}, launch=True, style="ready")
+        sender = C.Sender()
+        for _ in range(3):
+            sender.last_wa_spawn = 0
+            sender._whatsapp_tick(db.get_settings())
+            with db.db() as c:
+                c.execute("UPDATE jobs SET status='failed', progress='Worker exited unexpectedly (code 1)' WHERE id=?", (sender.wa_job,)) if sender.wa_job else None
+            if count("SELECT status FROM campaigns WHERE id=?", cid) == "paused":
+                break
+        assert len(spawned) <= 3 and count("SELECT status FROM campaigns WHERE id=?", cid) == "paused"
+    finally:
+        jobs.spawn = real_spawn
+
+
+@test
+def after_send_is_pressed_nothing_ever_asks_for_a_second_try_and_the_chat_itself_stops_a_repeat():
+    import mock_whatsapp as mw
+    srv = mw.serve()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    fresh(); db.set_internal("whatsapp_linked", False)
+    real = whatsapp.profile_dir, whatsapp.CONFIRM_SECONDS, whatsapp.SETTLE_MS
+    whatsapp.profile_dir = lambda: Path(tempfile.mkdtemp())
+    whatsapp.CONFIRM_SECONDS, whatsapp.SETTLE_MS = 4, 200
+    drv = whatsapp.WhatsAppWeb(log=lambda m: None, base=base, headless=True)
+    try:
+        mw.MODE.update(mode="ok", tick_ms=400); mw.SENT.clear(); mw.HISTORY.clear()
+        drv.open()
+        assert drv.wait_ready(20) == "ready"
+        # 1. the page falls over right after Send was pressed (a reply arriving re-draws it): the message DID go, so it must
+        #    never be reported as a plain error (which the worker retries), only as unconfirmed (which is never re-sent)
+        real_count = drv._count
+        calls = {"n": 0}
+        def flaky(key):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("Execution context was destroyed")
+            return real_count(key)
+        drv._count = flaky
+        try:
+            drv.send("+254700000555", "Hello from Deric about your shop"); raise AssertionError("must not look like a plain error")
+        except whatsapp.SendUnconfirmed as e:
+            assert "right after Send was pressed" in str(e)
+        drv._count = real_count
+        assert _wait(lambda: len(mw.SENT) == 1, 5) and mw.SENT == [("254700000555", "Hello from Deric about your shop")]
+        # 2. the very same message is already the last thing we sent in the chat: it is not sent again
+        mw.HISTORY[:] = [("out", "Hello from Deric about your shop   10:32")]
+        assert drv.send("+254700000555", "Hello from Deric about your shop") == "already_sent" and len(mw.SENT) == 1
+        # 3. a follow-up to someone who has written back (or whose business auto-replied) is not sent; a first message is
+        mw.HISTORY[:] = [("out", "First hello"), ("in", "Thanks for contacting us, we will reply shortly")]
+        assert drv.send("+254700000556", "A gentle nudge about the stock dashboard", followup=True) == "replied" and len(mw.SENT) == 1
+        assert drv.send("+254700000556", "A gentle nudge about the stock dashboard") == "sent" and len(mw.SENT) == 2
+        # 4. a follow-up when they have NOT written back still goes
+        mw.HISTORY[:] = [("in", "Hi earlier"), ("out", "First hello")]
+        assert drv.send("+254700000557", "Another nudge about prices", followup=True) == "sent" and len(mw.SENT) == 3
+        mw.HISTORY.clear()
+    finally:
+        drv.close(); srv.shutdown()
+        whatsapp.profile_dir, whatsapp.CONFIRM_SECONDS, whatsapp.SETTLE_MS = real
+
+
+@test
+def the_worker_records_a_message_already_in_the_chat_and_skips_follow_ups_to_people_who_wrote_back():
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
+    ids = _wa_leads(3)
+    with db.db() as c:
+        cid = C.create_campaign(c, "Dup", "whatsapp", "", "", {}, launch=True, style="ready")
+    fake = FakeWA({"+254700000040": "already", "+254700000041": "replied"})
+    orig = fake.send
+    def send(phone, text, followup=False):
+        what = fake.plan.get(phone)
+        if what == "already": return "already_sent"
+        if what == "replied": return "replied"
+        return orig(phone, text, followup)
+    fake.send = send
+    assert _run_wa(fake)[0] == "done"
+    assert count("SELECT status FROM messages WHERE lead_id=?", ids[0]) == "sent"       # recorded, not sent again
+    assert count("SELECT status FROM messages WHERE lead_id=?", ids[1]) == "skipped"
+    assert "written back" in count("SELECT error FROM messages WHERE lead_id=?", ids[1])
+    assert len(fake.sent) == 1 and count("SELECT status FROM messages WHERE lead_id=?", ids[2]) == "sent"
+    # the worker tells the driver which messages are follow-ups
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
+    ids = _wa_leads(1)
+    with db.db() as c:
+        first = C.create_campaign(c, "F1", "whatsapp", "", "", {}, launch=True, style="ready")
+    fake = FakeWA(); _run_wa(fake)
+    with db.db() as c:
+        c.execute("UPDATE leads SET last_contacted_at=?", (days_ago(5),))
+        C.create_followup(c, first, days=3)
+    fake = FakeWA(); _run_wa(fake)
+    assert fake.followups == [("+254700000040", True)]
+
+
+@test
+def a_lead_is_never_sent_two_campaign_messages_within_an_hour_but_replies_and_hand_sends_are_not_held_up():
+    fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
+    ids = _wa_leads(1)
+    with db.db() as c:
+        first = C.create_campaign(c, "G1", "whatsapp", "", "", {}, launch=True, style="ready")
+    fake = FakeWA(); _run_wa(fake); assert len(fake.sent) == 1
+    with db.db() as c:   # a follow-up set to 0 days comes due at once: it must wait out the hour, not land on top of the first
+        C.create_followup(c, first, days=0)
+    fake = FakeWA(); _run_wa(fake)
+    assert fake.sent == [] and count("SELECT COUNT(*) FROM messages WHERE lead_id=? AND status='queued'", ids[0]) == 1
+    held = count("SELECT scheduled_at FROM messages WHERE lead_id=? AND status='queued'", ids[0])
+    assert held > now() and "less than an hour" in count("SELECT error FROM messages WHERE lead_id=? AND status='queued'", ids[0])
+    # the hour passes (as far as the app can tell): it goes
+    with db.db() as c:
+        c.execute("UPDATE leads SET last_contacted_at=?", (days_ago(1),))
+        c.execute("UPDATE messages SET scheduled_at=? WHERE status='queued'", (now(),))
+    fake = FakeWA(); _run_wa(fake); assert len(fake.sent) == 1 and fake.followups[0][1] is True
+    # email and text are held by the same rule
+    fresh(); SMTP_INBOX.clear(); configure()
+    with db.db() as c:
+        a = L.add_lead(c, {"name": "Mail Now", "town": "T", "email": "now@shop.test"})["id"]
+        cid = C.create_campaign(c, "E1", "email", "Hi", "Hello {name}", {}, launch=True)
+    run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "done")
+    assert len(SMTP_INBOX) == 1
+    with db.db() as c:
+        C.create_followup(c, cid, days=0)
+    run_sender(lambda: False, timeout=4)
+    assert len(SMTP_INBOX) == 1 and count("SELECT COUNT(*) FROM messages WHERE lead_id=? AND status='queued'", a) == 1
+    # someone who replied is answered at once, and so is a message the owner sends by hand
+    with db.db() as c:
+        L.record_reply(c, a, "email", "Yes, tell me more")
+    assert C.send_now(a, "email", "Re: hello", "Happy to explain, {name}.")["status"] == "sent"
+
+
+@test
+def two_taps_on_start_cannot_queue_the_same_leads_twice():
+    fresh(); SMTP_INBOX.clear(); configure()
+    with db.db() as c:
+        for i in range(5):
+            L.add_lead(c, {"name": f"Twin {i}", "town": "T", "email": f"twin{i}@shop.test"})
+        cid = C.create_campaign(c, "Twice", "email", "Hi", "Hello {name}", {}, launch=False)
+    results, gate = [], threading.Barrier(2)
+
+    def tap():
+        gate.wait()
+        try:
+            with db.db() as c:
+                results.append(("ok", C.launch_campaign(c, cid)))
+        except ValueError as e:
+            results.append(("refused", str(e)))
+    ts = [threading.Thread(target=tap) for _ in range(2)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert sorted(r[0] for r in results) == ["ok", "refused"], results
+    assert count("SELECT COUNT(*) FROM messages WHERE campaign_id=?", cid) == 5
+    assert count("SELECT COUNT(*) FROM (SELECT lead_id FROM messages WHERE direction='out' GROUP BY lead_id HAVING COUNT(*) > 1)") == 0
+    # and two hand-sends to one lead at the same moment: only one goes
+    fresh(); SMTP_INBOX.clear(); configure()
+    with db.db() as c:
+        one = L.add_lead(c, {"name": "Solo", "town": "T", "email": "solo@shop.test"})["id"]
+    out, gate = [], threading.Barrier(2)
+
+    def hand():
+        gate.wait()
+        try:
+            out.append(C.send_now(one, "email", "Hello", "Hello {name}")["status"])
+        except ValueError as e:
+            out.append("refused")
+    ts = [threading.Thread(target=hand) for _ in range(2)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert sorted(out) == ["refused", "sent"] and len(SMTP_INBOX) == 1, out
+
+
+@test
+def retry_never_resends_a_message_that_may_have_gone_out_and_the_same_page_is_not_opened_twice_in_a_moment():
+    import server
+    import webbrowser
+    fresh(); configure(); db.set_internal("whatsapp_linked", True)
+    ids = _wa_leads(2)
+    with db.db() as c:
+        cid = C.create_campaign(c, "Retry", "whatsapp", "", "", {}, launch=True, style="ready")
+        c.execute("UPDATE messages SET status='failed', error=? WHERE lead_id=?",
+                  ("Send was pressed but WhatsApp never showed the message as sent. It may or may not have been delivered: check WhatsApp before sending again.", ids[0]))
+        c.execute("UPDATE messages SET status='failed', error='page changed' WHERE lead_id=?", (ids[1],))
+    opened, real_open = [], webbrowser.open
+    webbrowser.open = lambda u, *a, **k: opened.append(u)
+    try:
+        with AuthedClient(server.create_app(port=8765), base_url="http://127.0.0.1:8765") as cl:
+            assert cl.post(f"/api/campaigns/{cid}/retry").status_code == 200
+            assert count("SELECT status FROM messages WHERE lead_id=?", ids[0]) == "failed"      # may have gone out: left alone
+            assert count("SELECT status FROM messages WHERE lead_id=?", ids[1]) == "queued"      # plain failure: tried again
+            for _ in range(3):
+                assert cl.post("/api/open-url", json={"url": "https://wa.me/254700000040?text=hi"}).status_code == 200
+            assert cl.post("/api/open-url", json={"url": "https://wa.me/254700000041?text=hi"}).status_code == 200
+        assert opened == ["https://wa.me/254700000040?text=hi", "https://wa.me/254700000041?text=hi"], opened
+    finally:
+        webbrowser.open = real_open
 
 
 if __name__ == "__main__":

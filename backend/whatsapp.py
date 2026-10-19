@@ -28,6 +28,10 @@ from util import now, parent_alive, today_start
 
 BASE = os.environ.get("DERICBI_WA_URL", "https://web.whatsapp.com").rstrip("/")
 CONFIRM_SECONDS = 40   # how long to wait for WhatsApp to show a message as sent
+SETTLE_MS = 1500       # let the chat's earlier messages appear before looking at them
+IDLE_LIMIT = 15 * 60   # the worker keeps its ONE browser open while a message is only waiting for its retry time,
+                       # unless that is further away than this (then it closes, and the sender starts it again when due)
+MAX_IDLE_ROUNDS = 60   # and never idles for more than this many looks, whatever the clock says
 
 SEL = {
     "chat_list": ["#pane-side", "div[aria-label='Chat list']", "div[data-testid='chat-list']"],
@@ -35,6 +39,7 @@ SEL = {
     "compose": ["footer div[contenteditable='true']", "div[contenteditable='true'][aria-label*='Type a message' i]",
                 "div[contenteditable='true'][data-tab='10']"],
     "outgoing": ["div.message-out", "div[data-id^='true_']"],
+    "bubbles": "div.message-in, div.message-out, div[data-id^='true_'], div[data-id^='false_']",
     "pending": ["span[data-icon='msg-time']"],
     "invalid": "text=/phone number shared via url is invalid|not on whatsapp|isn.t on whatsapp/i",
     "dialog_ok": ["div[role='button']:has-text('OK')", "button:has-text('OK')"],
@@ -63,6 +68,13 @@ def profile_dir():
     return config.DATA_DIR / "whatsapp-profile"
 
 
+def _not_installed(err) -> bool:
+    """Did the browser fail to start because it is not installed (so the next browser should be tried)?"""
+    text = str(err).lower()
+    return any(w in text for w in ("executable doesn't exist", "executable does not exist", "is not found", "not installed",
+                                   "distribution", "no such file", "cannot find", "could not find"))
+
+
 class WhatsAppWeb:
     """Real Playwright driver for WhatsApp Web."""
 
@@ -88,6 +100,11 @@ class WhatsAppWeb:
                 break
             except Exception as e:
                 errors.append(f"{channel or 'chromium'}: {str(e).splitlines()[0][:90]}")
+                if not _not_installed(e):
+                    # The browser IS there but could not start (its window for this profile is already open, a crash...).
+                    # Trying the next browser would only open yet another window, so stop here and say why.
+                    raise RuntimeError("The browser could not start for WhatsApp. Close any WhatsApp window this app left "
+                                       "open and try again. (" + "; ".join(errors) + ")")
         if self.ctx is None:
             raise RuntimeError("No browser found. Install Google Chrome or Microsoft Edge and try again. (" + "; ".join(errors) + ")")
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
@@ -137,8 +154,31 @@ class WhatsAppWeb:
         return state
 
     # -- sending
-    def send(self, phone: str, text: str) -> str:
-        """'sent' once WhatsApp shows the message as sent, or 'not_on_whatsapp'."""
+    def chat_state(self) -> dict:
+        """What the open chat shows right now: who wrote last ('in' = them, 'out' = us, None = nothing yet) and the text
+        of our last message. Read from the page itself, which is the one place that knows what really went out."""
+        try:
+            return self.page.evaluate(
+                """(sel) => {
+                  const all = Array.from(document.querySelectorAll(sel));
+                  const rows = all.filter(el => !all.some(o => o !== el && o.contains(el)));
+                  const mine = el => el.classList.contains('message-out') || (el.getAttribute('data-id') || '').startsWith('true_')
+                                     || (!el.classList.contains('message-in') && !!el.querySelector('.message-out'));
+                  if (!rows.length) return {last: null, lastOut: ''};
+                  const outs = rows.filter(mine);
+                  return {last: mine(rows[rows.length - 1]) ? 'out' : 'in',
+                          lastOut: outs.length ? (outs[outs.length - 1].innerText || '') : ''};
+                }""", SEL["bubbles"]) or {"last": None, "lastOut": ""}
+        except Exception:
+            return {"last": None, "lastOut": ""}
+
+    def send(self, phone: str, text: str, followup: bool = False) -> str:
+        """'sent' once WhatsApp shows the message as sent, 'not_on_whatsapp', 'already_sent' (this very message is already
+        the last thing we sent in the chat, so it is NOT sent again) or, for a follow-up, 'replied' (they have written
+        back since our last message, so the follow-up is not sent).
+
+        Once Send has been pressed the message may be on its way, so from then on NOTHING in here ever asks for it to be
+        tried again: any trouble becomes SendUnconfirmed, which the worker records as failed, never as 'try later'."""
         page = self.page
         digits = re.sub(r"\D", "", phone)
         page.goto(f"{self.base}/send?phone={digits}&text={quote(text)}", wait_until="domcontentloaded", timeout=60000)
@@ -162,7 +202,14 @@ class WhatsAppWeb:
                 break
             page.wait_for_timeout(500)
         if compose is None:
-            raise SendUnconfirmed("The chat did not open in time.")
+            raise RuntimeError("The chat did not open in time.")   # nothing was sent yet, so trying again later is safe
+        page.wait_for_timeout(SETTLE_MS)
+        chat = self.chat_state()
+        want = " ".join(text.split())[:40]
+        if want and want in " ".join((chat.get("lastOut") or "").split()):
+            return "already_sent"   # an earlier try did go out (or it was sent by hand): never send the same thing twice
+        if followup and chat.get("last") == "in":
+            return "replied"        # they answered (or their business auto-replied) after our message: no nudge
         box = compose.first
         typed = " ".join((box.inner_text() or "").split())
         if not typed.startswith(" ".join(text.split())[:15]):   # WhatsApp didn't fill the text in: type it ourselves
@@ -172,14 +219,16 @@ class WhatsAppWeb:
             page.keyboard.insert_text(text)
         before = self._count("outgoing")
         box.click()
-        page.keyboard.press("Enter")
-        end = time.time() + CONFIRM_SECONDS
-        while time.time() < end:
-            if self.should_stop():
-                raise StopRequested()
-            if self._count("outgoing") > before and not self._count("pending"):
-                return "sent"
-            page.wait_for_timeout(500)
+        try:
+            page.keyboard.press("Enter")
+            # From here the message may be out. A stop request does not interrupt the wait: it only ends the worker afterwards.
+            end = time.time() + CONFIRM_SECONDS
+            while time.time() < end:
+                if self._count("outgoing") > before and not self._count("pending"):
+                    return "sent"
+                page.wait_for_timeout(500)
+        except Exception as e:
+            raise SendUnconfirmed(f"WhatsApp's page changed right after Send was pressed ({type(e).__name__}).")
         raise SendUnconfirmed("Send was pressed but WhatsApp never showed the message as sent.")
 
     def _count(self, key) -> int:
@@ -205,11 +254,14 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
     driver = (driver_factory or (lambda: WhatsAppWeb(log=log)))()
     driver.should_stop = stopping
     jobs.update(job_id, status="running", started_at=now(), progress="Opening WhatsApp…")
-    final, sent, failures = "done", 0, 0
+    final, sent, failures, idle = "done", 0, 0, 0
     try:
         driver.open()
-        if driver.wait_ready(90) != "ready":
+        state = driver.wait_ready(90)
+        if state == "qr":
             raise LoggedOut()
+        if state != "ready":
+            raise RuntimeError("WhatsApp Web did not finish loading (check the internet connection).")
         log("WhatsApp is open and linked.")
         while not stopping():
             s = db.get_settings()
@@ -224,13 +276,21 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
                 break
             mid = C.wa_next_id()
             if mid is None:
-                break
+                # Nothing is due. If something is only waiting for its time (a retry, a lead held back for an hour), stay
+                # in this ONE browser instead of closing it and opening a new one later; stop when nothing is left.
+                wait = C.wa_wait_seconds()
+                if wait is None or wait > IDLE_LIMIT or idle >= MAX_IDLE_ROUNDS:
+                    break
+                idle += 1
+                sleep(min(max(wait, 1), 30))
+                continue
+            idle = 0
             msg = C.wa_prepare(mid)
             if not msg:
-                continue   # skipped, or couldn't be written: on to the next
+                continue   # skipped, held back, or couldn't be written: on to the next
             jobs.update(job_id, progress=f"Sending to {msg['name']}")
             try:
-                outcome = driver.send(msg["phone"], msg["body"])
+                outcome = driver.send(msg["phone"], msg["body"], **({"followup": True} if msg.get("followup") else {}))
             except LoggedOut:
                 C.wa_result(mid, "requeue", "WhatsApp logged out before this was sent")
                 raise
@@ -252,6 +312,10 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
                     sent += 1
                     jobs.bump(job_id, added=1)
                     log(f"  + sent to {msg['name']}")
+                elif outcome == "already_sent":
+                    log(f"  = {msg['name']}: this message is already the last one in the chat, so it was not sent again")
+                elif outcome == "replied":
+                    log(f"  - {msg['name']} has written back since our last message: follow-up not sent")
                 else:
                     log(f"  - {msg['name']} is not on WhatsApp (skipped)")
                 failures = 0
@@ -260,7 +324,7 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
                 log("Stopped: 3 messages in a row failed. WhatsApp campaigns are paused.")
                 final = "failed"
                 break
-            if C.wa_next_id() is None:
+            if C.wa_wait_seconds() is None:
                 break
             sleep(float(s["whatsapp_delay_sec"]) * random.uniform(0.8, 1.8))
     except LoggedOut:
@@ -273,6 +337,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
     except Exception as e:
         log(f"WhatsApp worker crashed: {type(e).__name__}: {str(e)[:200]}")
         final = "failed"
+        # Pause instead of leaving the queue to start another browser a minute later, and another, and another.
+        C.wa_pause_campaigns(f"WhatsApp could not run ({str(e)[:160]}). Fix that, then resume.")
     finally:
         driver.close()
     jobs.update(job_id, status=final, finished_at=now(), progress=f"{final.capitalize()}: {sent} sent")

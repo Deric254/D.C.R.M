@@ -294,7 +294,10 @@
         $('#ai-write').onclick = (e) => App.aiFill(e.currentTarget, '/ai/template', channel(), f);
         $('#hide-form').onclick = () => { render($('#formwrap'), html``); $('#new').classList.remove('hidden'); };
 
+        let submitting = false;   // a second tap while the first is being handled must never start a second campaign
         const submit = async (launch) => {
+          if (submitting) return;
+          submitting = true; $('#go').disabled = true; $('#draft').disabled = true;
           try {
             const n = lastPreview ? lastPreview.will_send : picked.size, ch = channel();
             const ask = ch === 'auto' ? `Start reaching ${n} lead${n === 1 ? '' : 's'}? Each gets ONE message, on the first way that works for them (${usableNow().map((c) => WAYS[c]).join(', then ')}). If a way fails, such as a number that is not on WhatsApp, their message moves to the next way instead of being lost.`
@@ -305,6 +308,7 @@
             toast(launch ? 'Campaign started' : 'Saved as draft');
             render($('#formwrap'), html``); $('#new').classList.remove('hidden'); drawList(); App.pollStatus();
           } catch (err) { fail(err); }
+          finally { submitting = false; if ($('#draft')) { $('#draft').disabled = false; preview(); } }
         };
         $('#go').onclick = () => submit(true);
         $('#draft').onclick = () => submit(false);

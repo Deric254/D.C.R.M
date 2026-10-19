@@ -43,6 +43,7 @@ CHANNELS = REAL_CHANNELS + ("auto",)   # "auto": the best way for each lead, cho
 AUTO_CHANNELS = ("email", "sms")   # sent by the background sender itself. WhatsApp goes through the WhatsApp worker
                                    # (see _whatsapp_tick), or by hand from the queue (wa_next) until WhatsApp is linked.
 SIMILAR = 0.9   # two messages in one campaign at least this alike count as the same message
+MIN_GAP_MINUTES = 60   # a campaign never sends a lead two messages within this long, on any channel (see _gap_hold)
 
 
 # ------------------------------------------------------------------- audience
@@ -403,6 +404,7 @@ def create_followup(conn, parent_cid: int, days=None, channel=None, use_ai=False
 
 
 def launch_campaign(conn, cid: int):
+    db.lock_writes(conn)   # two taps on Start must not both queue the same leads
     c = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
     if not c:
         raise KeyError("Campaign not found")
@@ -536,6 +538,7 @@ def send_now(lead_id: int, channel: str, subject: str, body: str) -> dict:
         raise ValueError("WhatsApp is sent from WhatsApp itself: use the WhatsApp button on the lead.")
     s = db.get_settings()
     with db.db() as conn:
+        db.lock_writes(conn)   # a double tap on Send: the second one waits, then sees the first and is refused
         lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
         if not lead:
             raise KeyError("Lead not found")
@@ -592,6 +595,7 @@ def log_whatsapp(lead_id: int, body: str) -> dict:
     if not text:
         raise ValueError("Message can't be empty")
     with db.db() as conn:
+        db.lock_writes(conn)
         lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
         if not lead:
             raise KeyError("Lead not found")
@@ -619,6 +623,7 @@ def whatsapp_one(lead_id: int, body: str) -> dict:
     if not text:
         raise ValueError("Message can't be empty")
     with db.db() as conn:
+        db.lock_writes(conn)
         lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
         if not lead:
             raise KeyError("Lead not found")
@@ -802,9 +807,10 @@ def wa_prepare(mid: int):
     was skipped (lead no longer messageable, already messaged another way, campaign stopped) or couldn't be written."""
     s = db.get_settings()
     with db.db() as conn:
+        db.lock_writes(conn)
         row = conn.execute(
-            "SELECT m.*, c.ai_personalize, c.body AS brief, c.followup_step AS step, c.followup_of, c.status AS cstatus "
-            "FROM messages m JOIN campaigns c ON c.id = m.campaign_id WHERE m.id=?", (mid,)).fetchone()
+            "SELECT m.*, c.ai_personalize, c.body AS brief, c.followup_step AS step, c.followup_of, c.status AS cstatus, "
+            "c.style AS style FROM messages m JOIN campaigns c ON c.id = m.campaign_id WHERE m.id=?", (mid,)).fetchone()
         if not row or row["status"] != "queued" or row["cstatus"] != "running":
             return None
         if not conn.execute("UPDATE messages SET status='sending', attempts=attempts+1 WHERE id=? AND status='queued'",
@@ -817,6 +823,11 @@ def wa_prepare(mid: int):
             conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?", (problem, mid))
             Sender._maybe_finish(conn, row["campaign_id"])
             return None
+        held = _gap_hold(conn, row)
+        if held:   # they were messaged a moment ago: wait, don't stack a second message on top of it
+            conn.execute("UPDATE messages SET status='queued', attempts=attempts-1, scheduled_at=?, error=? WHERE id=?",
+                         (held, "Held back: they were messaged less than an hour ago", mid))
+            return None
         detail = L.lead_detail(conn, lead["id"]) if row["ai_personalize"] and not row["body"] else None
     body = row["body"]
     if detail:
@@ -827,7 +838,8 @@ def wa_prepare(mid: int):
             return None
         with db.db() as conn:
             conn.execute("UPDATE messages SET body=? WHERE id=?", (body, mid))
-    return {"id": mid, "lead_id": lead["id"], "phone": lead["phone_norm"], "body": body, "name": lead["name"]}
+    return {"id": mid, "lead_id": lead["id"], "phone": lead["phone_norm"], "body": body, "name": lead["name"],
+            "followup": row["followup_of"] is not None or int(row["step"] or 0) > 0}
 
 
 def wa_result(mid: int, outcome: str, detail: str = ""):
@@ -840,6 +852,13 @@ def wa_result(mid: int, outcome: str, detail: str = ""):
         cid, lead_id = m["campaign_id"], m["lead_id"]
         if outcome == "sent":
             _mark_sent(conn, mid, lead_id, "whatsapp-web", None)
+        elif outcome == "already_sent":   # the chat already ends with this very message: record it, never send it twice
+            _mark_sent(conn, mid, lead_id, "whatsapp-web", None)
+            db.log_event(conn, lead_id, "note", "This message was already the last one in the WhatsApp chat, so it was not sent again")
+        elif outcome == "replied":   # a follow-up to someone who has written back (or whose business auto-replied)
+            conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?",
+                         ("They have written back on WhatsApp since your last message. Open the chat and answer them yourself.", mid))
+            db.log_event(conn, lead_id, "note", "Follow-up not sent: they have written back on WhatsApp. Check the chat")
         elif outcome == "not_on_whatsapp":
             lead = conn.execute("SELECT email FROM leads WHERE id=?", (lead_id,)).fetchone()
             db.log_event(conn, lead_id, "no_whatsapp", "Number is not on WhatsApp" + (" - email them instead" if lead["email"] else ""))
@@ -860,6 +879,39 @@ def wa_pause_campaigns(reason: str):
     """Stop every running WhatsApp campaign (WhatsApp logged out, or sending keeps failing) so nothing is burned."""
     with db.db() as conn:
         conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE channel='whatsapp' AND status='running'", (reason,))
+
+
+def _gap_hold(conn, row):
+    """When this queued campaign message has to wait: if the lead was sent something else less than MIN_GAP_MINUTES ago,
+    the time they can be messaged again, else None. Whatever the cause (a follow-up set to 0 days, a retry, a message put
+    back in the queue), a lead is never hit by two campaign messages in a row. A message the owner sends by hand
+    (style 'single') and anything to a lead who has replied is exempt: answering someone must never be held up."""
+    if (row["style"] if "style" in row.keys() else None) == "single":
+        return None
+    if conn.execute("SELECT 1 FROM messages WHERE lead_id=? AND direction='in' AND grade NOT IN ('auto','bounce') LIMIT 1",
+                    (row["lead_id"],)).fetchone():
+        return None
+    # the same "last message of any kind" clock the follow-up timing uses (a WhatsApp sent by hand counts too)
+    last = conn.execute("SELECT last_contacted_at AS t FROM leads WHERE id=?", (row["lead_id"],)).fetchone()
+    last = last["t"] if last else None
+    if not last:
+        return None
+    unlock = datetime.strptime(last, "%Y-%m-%d %H:%M:%S") + timedelta(minutes=MIN_GAP_MINUTES)
+    return unlock.strftime("%Y-%m-%d %H:%M:%S") if unlock > datetime.now() else None
+
+
+def wa_wait_seconds():
+    """None when no WhatsApp message is waiting in a running campaign; 0 when one is due now; else the seconds until the
+    first waiting one is due. Lets the worker stay in its one browser while a retry waits instead of closing and reopening."""
+    with db.db() as conn:
+        row = conn.execute(
+            "SELECT MIN(COALESCE(m.scheduled_at, '')) AS t, COUNT(*) AS n FROM messages m JOIN campaigns c ON c.id = m.campaign_id "
+            "WHERE m.direction='out' AND m.status='queued' AND m.channel='whatsapp' AND c.status='running'").fetchone()
+    if not row["n"]:
+        return None
+    if not row["t"]:
+        return 0
+    return max(0.0, (datetime.strptime(row["t"], "%Y-%m-%d %H:%M:%S") - datetime.now()).total_seconds())
 
 
 def _mark_sent(conn, mid, lead_id, provider_id, header):
@@ -898,6 +950,7 @@ def release_followups(s: dict = None, conn=None) -> int:
     ctx = db.db() if own else None
     conn = ctx.__enter__() if own else conn
     try:
+        db.lock_writes(conn)   # the sender's own look and the one made when a follow-up is created must not both queue it
         queued = 0
         for c in conn.execute("SELECT * FROM campaigns WHERE followup_of IS NOT NULL "
                               "AND status IN ('scheduled','running')").fetchall():
@@ -1000,6 +1053,8 @@ class Sender(threading.Thread):
         self.next_ok = {ch: 0.0 for ch in AUTO_CHANNELS}
         self.last_release = 0.0
         self.last_wa_spawn = 0.0
+        self.wa_job = None       # the WhatsApp worker started last
+        self.wa_crashes = 0      # workers in a row that died without a word
         self.fails = {}
         self.status = {"state": "idle", "detail": ""}
 
@@ -1110,8 +1165,17 @@ class Sender(threading.Thread):
                 return None
             if jobs.active_job(conn, "whatsapp") or jobs.active_job(conn, "whatsapp_link"):
                 return 5.0
+            if self.wa_job is not None:   # how did the last worker end?
+                prev, self.wa_job = jobs.get_job(conn, self.wa_job), None
+                died = bool(prev) and prev["status"] == "failed" and str(prev.get("progress") or "").startswith("Worker exited")
+                self.wa_crashes = self.wa_crashes + 1 if died else 0
             sent_today = conn.execute("SELECT COUNT(*) FROM messages WHERE direction='out' AND channel='whatsapp' "
                                       "AND status='sent' AND sent_at >= ?", (today_start(),)).fetchone()[0]
+        if self.wa_crashes >= 2:   # the worker keeps dying at start-up: stop, rather than open a browser every minute
+            self.wa_crashes = 0
+            wa_pause_campaigns("The WhatsApp browser keeps closing by itself, so sending was paused. Close any WhatsApp "
+                               "window left open, then resume.")
+            return None
         if not self.in_window(s):
             self._set("waiting", f"Outside sending hours ({s['send_window_start']}–{s['send_window_end']})")
             return 30.0
@@ -1128,6 +1192,7 @@ class Sender(threading.Thread):
         self.last_wa_spawn = time.time()
         with db.db() as conn:
             jid = jobs.create_job(conn, "whatsapp", {})
+        self.wa_job = jid
         jobs.spawn(jid, "whatsapp")
         self._set("sending", "Sending on WhatsApp")
         return 5.0
@@ -1135,6 +1200,7 @@ class Sender(threading.Thread):
     def send_one(self, row, s):
         mid, lead_id, ch, cid = row["id"], row["lead_id"], row["channel"], row["campaign_id"]
         with db.db() as conn:
+            db.lock_writes(conn)
             claimed = conn.execute(
                 "UPDATE messages SET status='sending', attempts=attempts+1 WHERE id=? AND status='queued'", (mid,)).rowcount
             if not claimed:
@@ -1154,6 +1220,11 @@ class Sender(threading.Thread):
             if reason:
                 conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?", (reason, mid))
                 self._maybe_finish(conn, cid)
+                return
+            held = _gap_hold(conn, {**dict(row), "style": ""})
+            if held:   # they were messaged a moment ago: wait, don't stack a second message on top of it
+                conn.execute("UPDATE messages SET status='queued', attempts=attempts-1, scheduled_at=?, error=? WHERE id=?",
+                             (held, "Held back: they were messaged less than an hour ago", mid))
                 return
             to = lead["email"] if ch == "email" else lead["phone_norm"]
             detail = L.lead_detail(conn, lead_id) if row["ai_personalize"] and not row["body"] else None

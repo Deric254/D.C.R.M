@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 MODE = {"mode": "ok", "tick_ms": 400}   # ok | qr | stuck (the clock never turns into a tick)
+HISTORY = []                             # [("in"|"out", text)]: bubbles already in the chat when it opens
 SENT = []                                # (phone, text) for every message the page was asked to send
 
 CHATS = '<div id="pane-side"><div>Chats</div></div>'
@@ -17,7 +18,7 @@ QR = '<canvas aria-label="Scan this QR code to link a device!" width="40" height
 
 CHAT = """<!doctype html><html><body>
 <div id="pane-side"></div>
-<div id="main"><div id="msgs"></div>
+<div id="main"><div id="msgs">%(history)s</div>
 <footer><div contenteditable="true" id="box" style="min-height:30px;border:1px solid #888"></div></footer></div>
 <script>
 const p = new URLSearchParams(location.search);
@@ -66,7 +67,9 @@ def serve():
             if u.path == "/send":
                 if q.get("phone", "").endswith("999"):
                     return self._html(INVALID)
-                return self._html(CHAT % {"stuck": "true" if MODE["mode"] == "stuck" else "false", "tick": MODE["tick_ms"]})
+                hist = "".join(f'<div class="message-{d}"><span class="txt">{t}</span></div>' for d, t in HISTORY)
+                return self._html(CHAT % {"stuck": "true" if MODE["mode"] == "stuck" else "false", "tick": MODE["tick_ms"],
+                                          "history": hist})
             return self._html(f"<html><body>{CHATS}</body></html>")
 
     srv = HTTPServer(("127.0.0.1", 0), H)

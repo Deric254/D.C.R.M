@@ -30,6 +30,8 @@ from resultcache import ResultCache
 from util import now, parent_alive, today_start
 from version import VERSION
 
+_RECENT_OPEN = {}   # web address -> when it was last opened in the browser (see open_url)
+
 
 # ---------------------------------------------------------------------- models
 class LeadIn(BaseModel):
@@ -592,7 +594,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 n = conn.execute(
                     "UPDATE messages SET status='queued', error='', attempts=0, scheduled_at=? "
                     "WHERE campaign_id=? AND direction='out' AND status='failed' "
-                    "AND error NOT LIKE 'Recipient refused%' AND error NOT LIKE 'Interrupted%'", (now(), cid)).rowcount
+                    "AND error NOT LIKE 'Recipient refused%' AND error NOT LIKE 'Interrupted%' "
+                    "AND error NOT LIKE '%may or may not have been delivered%'", (now(), cid)).rowcount   # those may have gone out: never re-sent
                 if n:
                     conn.execute("UPDATE campaigns SET status='running', finished_at=NULL, last_error='' "
                                  "WHERE id=? AND status='done'", (cid,))
@@ -870,7 +873,14 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         u = urlparse(body.url.strip())
         if u.scheme not in ("http", "https") or not u.netloc:
             raise ValueError("Only web addresses can be opened")
-        webbrowser.open(body.url.strip())
+        url = body.url.strip()
+        t = time.time()
+        if t - _RECENT_OPEN.get(url, 0) < 5:   # the same page asked for twice in a moment (a double click): once is enough
+            return {"ok": True, "skipped": True}
+        if len(_RECENT_OPEN) > 50:
+            _RECENT_OPEN.clear()
+        _RECENT_OPEN[url] = t
+        webbrowser.open(url)
         return {"ok": True}
 
     # ----------------------------------------------------------- backup / hooks

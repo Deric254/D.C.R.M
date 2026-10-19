@@ -259,6 +259,14 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def lock_writes(conn):
+    """Take the database's write lock NOW, before reading what decides a write. Without it two requests (a double-click, the
+    sender and a button press) can both read 'nobody has been messaged yet' and then both write. The second one waits here
+    until the first has committed, and so sees what it did."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+
+
 @contextmanager
 def db():
     conn = connect()
