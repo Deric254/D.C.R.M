@@ -20,6 +20,7 @@ import time
 from urllib.parse import quote
 
 import campaigns as C
+import closer
 import config
 import db
 import jobs
@@ -31,6 +32,8 @@ CONFIRM_SECONDS = 40   # how long to wait for WhatsApp to show a message as sent
 SETTLE_MS = 1500       # let the chat's earlier messages appear before looking at them
 HEADLESS_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                "Chrome/131.0.0.0 Safari/537.36")   # a hidden browser must not announce itself as "HeadlessChrome"
+CONVO_STAY = 15 * 60   # while someone is chatting with the assistant, the worker keeps its ONE browser open this long after the last news
+CONVO_LOOK = 45        # ... and looks at the chats again every this many seconds
 SYNC_PER_RUN = 30      # chats read for replies in one visit
 IDLE_LIMIT = 15 * 60   # the worker keeps its ONE browser open while a message is only waiting for its retry time,
                        # unless that is further away than this (then it closes, and the sender starts it again when due)
@@ -213,7 +216,7 @@ class WhatsAppWeb:
               const idOf = el => el.getAttribute('data-id') || ((el.querySelector('[data-id]') || el).getAttribute('data-id')) || '';
               const textOf = el => { const t = el.querySelector('span.selectable-text, .copyable-text'); return ((t ? t.innerText : el.innerText) || '').trim(); };
               const replies = first < 0 ? [] : rows.slice(first + 1).filter(el => !mine(el)).map(el => ({id: idOf(el), text: textOf(el)}));
-              return {hasOut: first >= 0, replies};
+              return {hasOut: first >= 0, replies, last: rows.length ? (mine(rows[rows.length - 1]) ? 'out' : 'in') : null};
             }""", SEL["bubbles"]) or {"hasOut": False, "replies": []}
         seen, out = {}, []
         for r in data["replies"]:
@@ -227,7 +230,7 @@ class WhatsAppWeb:
                 seen[text] = n + 1
                 mid = f"{digits}:{hashlib.sha1(text.encode()).hexdigest()[:12]}:{n}"
             out.append({"id": mid, "text": text})
-        return {"replies": out, "has_out": bool(data["hasOut"])}
+        return {"replies": out, "has_out": bool(data["hasOut"]), "last": data.get("last")}
 
     def send(self, phone: str, text: str, followup: bool = False, first_contact: bool = False) -> str:
         """'sent' once WhatsApp shows the message as sent, 'not_on_whatsapp', 'already_sent' (this very message is already
@@ -315,6 +318,7 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
     driver.should_stop = stopping
     jobs.update(job_id, status="running", started_at=now(), progress="Opening WhatsApp…")
     final, sent, failures, idle = "done", 0, 0, 0
+    talk_until, talk_rounds = time.time() + CONVO_STAY, 0
     try:
         driver.open()
         state = driver.wait_ready(90)
@@ -330,16 +334,24 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
                 log("Outside sending hours: stopping for now.")
                 break
             with db.db() as conn:
-                sent_today = conn.execute("SELECT COUNT(*) FROM messages WHERE direction='out' AND channel='whatsapp' "
-                                          "AND status='sent' AND sent_at >= ?", (today_start(),)).fetchone()[0]
-            if sent_today >= int(s["whatsapp_daily_cap"]):
+                sent_today = C.wa_sent_today(conn)   # answers inside a conversation do not count against the campaign limit
+            capped = sent_today >= int(s["whatsapp_daily_cap"])
+            if capped and not C.wa_next_id(only_single=True):
                 log(f"Daily WhatsApp limit reached ({sent_today}): stopping for today.")
                 break
-            mid = C.wa_next_id()
+            mid = C.wa_next_id(only_single=capped)
             if mid is None:
                 # Nothing is due. If something is only waiting for its time (a retry, a lead held back for an hour), stay
                 # in this ONE browser instead of closing it and opening a new one later; stop when nothing is left.
                 wait = C.wa_wait_seconds()
+                if wait is None and s.get("closer_mode", "off") != "off" and hasattr(driver, "read_chat") \
+                        and time.time() < talk_until and talk_rounds < CONVO_STAY // CONVO_LOOK and C.live_conversations():
+                    # the assistant is talking with someone: stay in this browser and look at the chats again soon
+                    talk_rounds += 1
+                    if sync_replies(driver, log, stopping, sleep):
+                        talk_until, talk_rounds = time.time() + CONVO_STAY, 0
+                    sleep(CONVO_LOOK)
+                    continue
                 if wait is None or wait > IDLE_LIMIT or idle >= MAX_IDLE_ROUNDS:
                     break
                 idle += 1
@@ -431,7 +443,7 @@ def sync_replies(driver, log, stopping, sleep, limit: int = SYNC_PER_RUN) -> int
                 break
             continue
         errors = 0
-        got = C.wa_record_replies(t["id"], chat["replies"]) if chat else 0
+        got = C.wa_record_replies(t["id"], chat["replies"], answered_outside=chat.get("last") == "out") if chat else 0
         C.wa_sync_done(t["id"])
         if got:
             new += got
@@ -439,6 +451,10 @@ def sync_replies(driver, log, stopping, sleep, limit: int = SYNC_PER_RUN) -> int
         sleep(random.uniform(2.0, 4.0))
     if targets:
         log(f"Checked {len(targets)} chat(s) for replies: {new} new.")
+    try:   # the assistant answers what was found (and anything still waiting); an AI problem never stops the worker
+        closer.process_pending(log)
+    except Exception as e:
+        log(f"  ! assistant: {type(e).__name__}: {str(e)[:100]}")
     return new
 
 

@@ -68,6 +68,18 @@ Press **New campaign** (or tick leads on the Leads page and press **Reach out**)
 - **Ready-made messages:** the default message mode writes each lead a message for their kind of business (pharmacy, agrovet, hardware, salon, restaurant, school, garage, shop): a real pain point, a curiosity hook, one easy next step, and your website, WhatsApp and email from Settings > Your business. No AI key needed.
 - **One message at a time:** a lead who has a message is left out of new campaigns, and cannot be messaged by hand either, until the follow-up wait (Settings, default 3 days) has passed with no reply, or they reply. **Follow up** on a finished campaign messages only the people who haven't answered, on the same channel or another.
 
+## AI sales assistant (Assistant page)
+
+Reads what leads write back on WhatsApp, finds their pain and moves each chat to ONE next step (a short call, a visit, a clear yes). It needs WhatsApp connected and a free AI key.
+
+- **Three modes** (Assistant > Setup): *Off*; *Suggest* (default advice: it writes the reply, you read it and press Send); *Auto for low-risk turns* (it sends by itself only when confident and the turn is low-risk, after a human-like pause, at most 3 in a row, then it hands the chat to you).
+- **Always yours, whatever the AI says:** price and discounts, payment details, contracts and legal talk, anger, "where did you get my number", a request for a person, a booking, an attempt to re-programme it, and any reply that fails the safety checks. Opt-outs, do-not-contact leads and automatic replies are never answered.
+- **Honest:** its first reply says it is Deric's AI assistant (or only when asked, your choice); asked "are you a bot?" it always says so. It never claims to be human.
+- **Grounded:** it may only state facts in your offer (Settings > AI writing help) and the knowledge base you write on the Setup tab. A reply that quotes a price, link or number that is not yours is rejected, rewritten once, and if it still fails it is shown to you, never sent.
+- **Try it:** *Try it* runs any made-up reply through the real pipeline and shows the reply, the pain it found, the stage, its confidence and exactly what would happen (nothing is sent or saved). *Test pack* runs 18 typical and tricky situations through your real AI and checks each by rule.
+- **Measure it:** the line at the top shows drafts waiting, sent by itself, sent by you, how often you changed its words, and meetings. When you rarely change its drafts, move to Auto.
+- Replies are read every 2 minutes while someone is talking with it (10 minutes otherwise), in the same hidden browser. Answers inside a conversation do not use up the daily limit for campaign messages.
+
 ## Today, follow-up sequences and deal value
 
 - **Today:** the page to open each morning. It lists leads that replied and are waiting for you (hottest first), follow-ups that are due, and leads who have not answered for 3 days. Each row has **WhatsApp** and **Email** buttons: the message opens already written for that person. A lead leaves the list once you answer it.

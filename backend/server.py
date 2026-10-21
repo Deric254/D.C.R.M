@@ -19,6 +19,7 @@ import auth_api
 import backup
 import branding
 import campaigns as C
+import closer
 import config
 import db
 import jobs
@@ -690,6 +691,20 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise ValueError("Wait at least 20 seconds between WhatsApp messages. Faster than that gets numbers banned.")
         if "whatsapp_sync_minutes" in clean and clean["whatsapp_sync_minutes"] and not 5 <= clean["whatsapp_sync_minutes"] <= 240:
             raise ValueError("Check WhatsApp for replies every 5 to 240 minutes (0 switches it off)")
+        if clean.get("closer_mode") not in (None, "off", "suggest", "auto"):
+            raise ValueError("The assistant mode must be off, suggest or auto")
+        if clean.get("closer_disclose") not in (None, "first", "ask"):
+            raise ValueError("Say it is an AI: in the first reply, or only when asked")
+        if "closer_min_confidence" in clean and not 50 <= clean["closer_min_confidence"] <= 100:
+            raise ValueError("Confidence needed to send by itself: 50 to 100")
+        if "closer_max_auto" in clean and not 1 <= clean["closer_max_auto"] <= 10:
+            raise ValueError("Automatic replies in a row: 1 to 10")
+        if "closer_delay_sec" in clean and not 20 <= clean["closer_delay_sec"] <= 900:
+            raise ValueError("Pause before an automatic reply: 20 to 900 seconds")
+        if len(clean.get("closer_kb", "")) > 6000:
+            raise ValueError("The knowledge base is too long (6000 characters at most)")
+        if clean.get("closer_booking_link") and not clean["closer_booking_link"].startswith(("http://", "https://")):
+            raise ValueError("The booking link must start with https://")
         if "sms_sim" in clean and clean["sms_sim"] > 3:
             raise ValueError("SIM number must be 0 (phone's default), 1, 2 or 3")
         if "reach_order" in clean and sorted(clean["reach_order"].split(",")) != ["email", "sms", "whatsapp"]:
@@ -827,6 +842,92 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 res["steps"].append({"label": "Send", "ok": False, "detail": str(e)})
                 res.update(ok=False, message=f"Send: {e}")
         return res
+
+    # ------------------------------------------------------------ AI sales assistant
+    class PlayIn(BaseModel):
+        name: str = ""
+        sector: str = ""
+        town: str = ""
+        pain: str = ""
+        kb: Optional[str] = None
+        auto_in_a_row: int = 0
+        first_ai_reply: bool = True
+        messages: list = []
+
+    class DraftSendIn(BaseModel):
+        body: Optional[str] = None
+
+    @app.get("/api/closer/status")
+    def closer_status():
+        s = db.get_settings()
+        with db.db() as conn:
+            st = closer.stats(conn)
+        return {"mode": s["closer_mode"], "ai_ready": bool(ai.configured(s)), "whatsapp_linked": bool(db.get_internal("whatsapp_linked")),
+                "stats": st, "live": C.live_conversations()}
+
+    @app.get("/api/closer/drafts")
+    def closer_drafts():
+        with db.db() as conn:
+            return closer.list_drafts(conn)
+
+    @app.post("/api/closer/drafts/{did}/send")
+    def closer_send(did: int, body: DraftSendIn):
+        if not db.get_internal("whatsapp_linked"):
+            raise ValueError("Connect WhatsApp first (Settings > WhatsApp): the reply is sent from there.")
+        return closer.send_draft(did, body.body)
+
+    @app.post("/api/closer/drafts/{did}/dismiss")
+    def closer_dismiss(did: int):
+        closer.dismiss_draft(did)
+        return {"ok": True}
+
+    @app.post("/api/closer/leads/{lead_id}/draft")
+    def closer_draft_now(lead_id: int):
+        s = db.get_settings()
+        if not ai.configured(s):
+            raise ValueError("Add a free AI key in Settings > AI writing help first.")
+        r = closer.draft_for(lead_id, s, act=False)
+        r.pop("analysis", None)
+        return r
+
+    @app.post("/api/closer/playground")
+    def closer_playground(body: PlayIn):
+        s = db.get_settings()
+        if not ai.configured(s):
+            raise ValueError("Add a free AI key in Settings > AI writing help first.")
+        return closer.simulate(s, body.dict())
+
+    @app.post("/api/closer/testpack")
+    def closer_testpack_start():
+        s = db.get_settings()
+        if not ai.configured(s):
+            raise ValueError("Add a free AI key in Settings > AI writing help first.")
+        st = closer.TESTPACK
+        if st["running"]:
+            raise ValueError("The test pack is already running.")
+        st.update(running=True, results=[], total=len(closer.TEST_PACK), started=now(), finished=None, error="")
+
+        def work():
+            try:
+                closer.run_test_pack(s, progress=lambda r: st["results"].append(r))
+            except Exception as e:
+                st["error"] = str(e)[:200]
+            finally:
+                st.update(running=False, finished=now())
+        threading.Thread(target=work, daemon=True).start()
+        return {"started": True, "total": st["total"]}
+
+    @app.get("/api/closer/testpack")
+    def closer_testpack():
+        st = closer.TESTPACK
+        res = list(st["results"])
+        return {**{k: v for k, v in st.items() if k != "results"}, "results": res,
+                "passed": sum(1 for r in res if r["passed"]), "done": len(res)}
+
+    @app.get("/api/closer/stats")
+    def closer_stats():
+        with db.db() as conn:
+            return closer.stats(conn)
 
     # ---------------------------------------------------------------- WhatsApp
     @app.get("/api/whatsapp/status")

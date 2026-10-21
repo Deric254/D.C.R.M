@@ -205,7 +205,7 @@ def lead_detail(conn, lead_id: int):
         return None
     msgs = [dict(r) for r in conn.execute(
         "SELECT m.*, c.name AS campaign_name FROM messages m "
-        "LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.lead_id=? ORDER BY m.id", (lead_id,))]
+        "LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.lead_id=? AND m.provider_id <> 'closer' ORDER BY m.id", (lead_id,))]
     events = [dict(r) for r in conn.execute("SELECT * FROM events WHERE lead_id=? ORDER BY id", (lead_id,))]
     lead["messages"] = msgs
     lead["events"] = events

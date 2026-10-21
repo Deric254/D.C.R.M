@@ -226,6 +226,9 @@ SETTING_DEFAULTS = {
     "email_delay_sec": 25, "sms_delay_sec": 65, "whatsapp_delay_sec": 60,
     # WhatsApp runs in a hidden browser (no window), and reads replies from the chats every this many minutes (0 = never)
     "whatsapp_hide_window": True, "whatsapp_sync_minutes": 10,
+    # the AI sales assistant (closer.py): off | suggest (you press send) | auto (low-risk turns only)
+    "closer_mode": "off", "closer_kb": "", "closer_booking_link": "", "closer_min_confidence": 80, "closer_max_auto": 3,
+    "closer_delay_sec": 60, "closer_disclose": "first",
     "send_window_enabled": True, "send_window_start": "08:00", "send_window_end": "18:00",
     # "auto": on for a computer with 4 GB of memory or less, or two cores; "on" / "off" to force it
     "light_mode": "auto",

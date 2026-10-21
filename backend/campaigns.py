@@ -635,7 +635,7 @@ def log_whatsapp(lead_id: int, body: str) -> dict:
     return {"id": cur.lastrowid, "status": "sent", "url": f"https://wa.me/{digits}?text={quote(text)}"}
 
 
-def whatsapp_one(lead_id: int, body: str) -> dict:
+def whatsapp_one(lead_id: int, body: str, delay_sec: int = 0) -> dict:
     """The WhatsApp button on one lead. Linked: the message is queued and the WhatsApp worker sends and records it by
     itself. Not linked: it is logged and the wa.me link is returned so the owner presses send in WhatsApp."""
     if not db.get_internal("whatsapp_linked"):
@@ -661,7 +661,9 @@ def whatsapp_one(lead_id: int, body: str) -> dict:
              1 if state["kind"] == "followup" else 0, 1, now(), now())).lastrowid
         mid = conn.execute(
             "INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, body, status, scheduled_at, created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)", (lead_id, cid, "out", "whatsapp", lead["phone_norm"], text, "queued", now(), now())).lastrowid
+            "VALUES(?,?,?,?,?,?,?,?,?)", (lead_id, cid, "out", "whatsapp", lead["phone_norm"], text, "queued",
+                                          (datetime.now() + timedelta(seconds=delay_sec)).isoformat(sep=" ", timespec="seconds") if delay_sec else now(),
+                                          now())).lastrowid
     return {"queued": True, "id": mid, "campaign_id": cid}
 
 
@@ -730,7 +732,11 @@ def _by_hand_only():
 
 
 def _wa_elsewhere(conn, lead, campaign):
-    """A first-message campaign leaves anyone alone who was messaged some other way (follow-ups are exempt)."""
+    """A first-message campaign leaves anyone alone who was messaged some other way (follow-ups are exempt).
+    An answer you or the assistant give inside a conversation (campaign style 'single') is exempt too: answering someone
+    must never be blocked because they were messaged earlier."""
+    if campaign.get("style") == "single":
+        return None
     if campaign["followup_of"] is None and not campaign.get("followup_step") and _elsewhere(conn, lead["id"], campaign["id"]):
         return _elsewhere_reason(conn, lead["id"], campaign["id"])
     if (campaign["followup_of"] is not None or campaign.get("followup_step")) and _replied(conn, lead["id"]):
@@ -815,14 +821,24 @@ def reroute(conn, mid: int, failed: str, reason: str) -> bool:
 
 
 # --------------------------------------------- WhatsApp worker (sends through WhatsApp Web, records by itself)
-def wa_next_id():
-    """Id of the next WhatsApp message the worker should send, or None."""
+def wa_next_id(only_single: bool = False):
+    """Id of the next WhatsApp message the worker should send, or None. only_single: just the answers you (or the assistant)
+    give in a conversation, which the daily limit for campaign messages does not hold back."""
     with db.db() as conn:
         row = conn.execute(
             "SELECT m.id FROM messages m JOIN campaigns c ON c.id = m.campaign_id WHERE m.direction='out' "
             "AND m.status='queued' AND m.channel='whatsapp' AND c.status='running' "
+            + ("AND c.style='single' " if only_single else "") +
             "AND (m.scheduled_at IS NULL OR m.scheduled_at <= ?) ORDER BY m.id LIMIT 1", (now(),)).fetchone()
     return row["id"] if row else None
+
+
+def wa_sent_today(conn) -> int:
+    """WhatsApp messages sent today that count against the daily limit: campaign messages and hand-logged ones, not answers
+    inside a conversation."""
+    return conn.execute("SELECT COUNT(*) FROM messages m LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.direction='out' "
+                        "AND m.channel='whatsapp' AND m.status='sent' AND m.sent_at >= ? AND COALESCE(c.style, '') <> 'single'",
+                        (today_start(),)).fetchone()[0]
 
 
 def wa_prepare(mid: int):
@@ -841,7 +857,8 @@ def wa_prepare(mid: int):
             return None
         lead = conn.execute("SELECT * FROM leads WHERE id=?", (row["lead_id"],)).fetchone()
         problem = _wa_lead_problem(lead) or _wa_elsewhere(
-            conn, lead, {"id": row["campaign_id"], "followup_of": row["followup_of"], "followup_step": row["step"]})
+            conn, lead, {"id": row["campaign_id"], "followup_of": row["followup_of"], "followup_step": row["step"],
+                     "style": row["style"]})
         if problem:
             conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?", (problem, mid))
             Sender._maybe_finish(conn, row["campaign_id"])
@@ -926,10 +943,21 @@ def wa_sync_due(s: dict = None) -> bool:
     minutes = int(s.get("whatsapp_sync_minutes") or 0)
     if minutes <= 0:
         return False
+    if (s.get("closer_mode") or "off") != "off" and live_conversations():
+        minutes = min(minutes, 2)   # someone is talking to the assistant: look often
     last = db.get_internal("wa_sync_last") or 0
     if time.time() - float(last) < minutes * 60:
         return False
     return bool(wa_sync_targets(1))
+
+
+LIVE_HOURS = 36   # a chat with a reply this recent counts as a live conversation
+
+
+def live_conversations() -> int:
+    with db.db() as conn:
+        return conn.execute("SELECT COUNT(*) FROM leads WHERE archived=0 AND do_not_contact=0 AND last_reply_at >= ?",
+                            ((datetime.now() - timedelta(hours=LIVE_HOURS)).isoformat(sep=" ", timespec="seconds"),)).fetchone()[0]
 
 
 def wa_sync_targets(limit: int = 30) -> list:
@@ -944,7 +972,10 @@ def wa_sync_targets(limit: int = 30) -> list:
     out = []
     for r in rows:
         last = float(checked.get(str(r["id"]), 0))
-        gap = (SYNC_REPLIED_MIN if r["last_reply_at"] else SYNC_RECHECK_MIN) * 60
+        live = bool(r["last_reply_at"]) and r["last_reply_at"] >= (datetime.now() - timedelta(hours=LIVE_HOURS)).isoformat(sep=" ", timespec="seconds")
+        gap = (SYNC_RECHECK_MIN if (live or not r["last_reply_at"]) else SYNC_REPLIED_MIN) * 60
+        if live:
+            gap = 90
         if nowts - last >= gap:
             out.append((last, dict(r)))
     out.sort(key=lambda x: x[0])
@@ -965,7 +996,7 @@ def wa_sync_done(lead_id: int):
     db.set_internal("wa_sync_state", state)
 
 
-def wa_record_replies(lead_id: int, items: list) -> int:
+def wa_record_replies(lead_id: int, items: list, answered_outside: bool = False) -> int:
     """Store the replies read from a lead's chat. Each WhatsApp message id is stored once, so reading a chat again
     never doubles anything. Returns how many were new."""
     new = 0
@@ -976,6 +1007,8 @@ def wa_record_replies(lead_id: int, items: list) -> int:
         with db.db() as conn:
             db.lock_writes(conn)
             res = L.record_reply(conn, lead_id, "whatsapp", text, "", "wa:" + str(mid))
+            if answered_outside and not res.get("duplicate"):   # you already answered them (from the phone): nothing to draft
+                conn.execute("UPDATE messages SET handled=1 WHERE id=?", (res["id"],))
         if not res.get("duplicate"):
             new += 1
     return new
@@ -1273,8 +1306,7 @@ class Sender(threading.Thread):
                 prev, self.wa_job = jobs.get_job(conn, self.wa_job), None
                 died = bool(prev) and prev["status"] == "failed" and str(prev.get("progress") or "").startswith("Worker exited")
                 self.wa_crashes = self.wa_crashes + 1 if died else 0
-            sent_today = conn.execute("SELECT COUNT(*) FROM messages WHERE direction='out' AND channel='whatsapp' "
-                                      "AND status='sent' AND sent_at >= ?", (today_start(),)).fetchone()[0]
+            sent_today = wa_sent_today(conn)
         if self.wa_crashes >= 2:   # the worker keeps dying at start-up: stop, rather than open a browser every minute
             self.wa_crashes = 0
             wa_pause_campaigns("The WhatsApp browser keeps closing by itself, so sending was paused. Close any WhatsApp "
@@ -1288,7 +1320,8 @@ class Sender(threading.Thread):
         if wait:   # light mode: a lead search has the browser; WhatsApp goes on when it is done
             self._set("waiting", "WhatsApp waits for the lead search to finish")
             return 15.0
-        if sent_today >= int(s["whatsapp_daily_cap"]) and not sync_only:
+        only_single_left = sent_today >= int(s["whatsapp_daily_cap"]) and bool(wa_next_id(only_single=True))
+        if sent_today >= int(s["whatsapp_daily_cap"]) and not sync_only and not only_single_left:
             self._set("waiting", f"Daily whatsapp limit reached ({sent_today})")
             return 60.0
         if time.time() - self.last_wa_spawn < 45:   # a worker that stops at once is not restarted in a loop
