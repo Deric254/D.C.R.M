@@ -688,6 +688,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                              "30 texts in 30 minutes.")
         if "whatsapp_delay_sec" in clean and clean["whatsapp_delay_sec"] < 20:
             raise ValueError("Wait at least 20 seconds between WhatsApp messages. Faster than that gets numbers banned.")
+        if "whatsapp_sync_minutes" in clean and clean["whatsapp_sync_minutes"] and not 5 <= clean["whatsapp_sync_minutes"] <= 240:
+            raise ValueError("Check WhatsApp for replies every 5 to 240 minutes (0 switches it off)")
         if "sms_sim" in clean and clean["sms_sim"] > 3:
             raise ValueError("SIM number must be 0 (phone's default), 1, 2 or 3")
         if "reach_order" in clean and sorted(clean["reach_order"].split(",")) != ["email", "sms", "whatsapp"]:
@@ -848,6 +850,15 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             jid = jobs.create_job(conn, "whatsapp_link", {})
         jobs.spawn(jid, "whatsapp_link")
         return {"job": jid}
+
+    @app.post("/api/whatsapp/sync")
+    def whatsapp_sync():
+        """Read replies from the WhatsApp chats now (the sender starts the hidden browser within seconds)."""
+        if not db.get_internal("whatsapp_linked"):
+            raise ValueError("Connect WhatsApp first (Settings > WhatsApp).")
+        db.set_internal("wa_sync_force", True)
+        db.set_internal("wa_sync_state", {})
+        return {"requested": True, "chats": len(C.wa_sync_targets(500))}
 
     @app.post("/api/whatsapp/unlink")
     def whatsapp_unlink():

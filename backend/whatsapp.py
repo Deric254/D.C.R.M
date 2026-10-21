@@ -29,6 +29,9 @@ from util import now, parent_alive, today_start
 BASE = os.environ.get("DERICBI_WA_URL", "https://web.whatsapp.com").rstrip("/")
 CONFIRM_SECONDS = 40   # how long to wait for WhatsApp to show a message as sent
 SETTLE_MS = 1500       # let the chat's earlier messages appear before looking at them
+HEADLESS_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+               "Chrome/131.0.0.0 Safari/537.36")   # a hidden browser must not announce itself as "HeadlessChrome"
+SYNC_PER_RUN = 30      # chats read for replies in one visit
 IDLE_LIMIT = 15 * 60   # the worker keeps its ONE browser open while a message is only waiting for its retry time,
                        # unless that is further away than this (then it closes, and the sender starts it again when due)
 MAX_IDLE_ROUNDS = 60   # and never idles for more than this many looks, whatever the clock says
@@ -94,6 +97,8 @@ class WhatsAppWeb:
         for channel in BROWSER_CHANNELS:
             try:
                 kw = {"channel": channel} if channel else {}
+                if self.headless:
+                    kw["user_agent"] = HEADLESS_UA
                 self.ctx = self.pw.chromium.launch_persistent_context(
                     str(profile_dir()), headless=self.headless, viewport={"width": 1280, "height": 860}, locale="en-KE", **kw)
                 self.log(f"Browser: {channel or 'built-in Chromium'}")
@@ -164,15 +169,67 @@ class WhatsAppWeb:
                   const rows = all.filter(el => !all.some(o => o !== el && o.contains(el)));
                   const mine = el => el.classList.contains('message-out') || (el.getAttribute('data-id') || '').startsWith('true_')
                                      || (!el.classList.contains('message-in') && !!el.querySelector('.message-out'));
-                  if (!rows.length) return {last: null, lastOut: ''};
+                  if (!rows.length) return {last: null, lastOut: '', hasOut: false};
                   const outs = rows.filter(mine);
-                  return {last: mine(rows[rows.length - 1]) ? 'out' : 'in',
+                  return {last: mine(rows[rows.length - 1]) ? 'out' : 'in', hasOut: outs.length > 0,
                           lastOut: outs.length ? (outs[outs.length - 1].innerText || '') : ''};
-                }""", SEL["bubbles"]) or {"last": None, "lastOut": ""}
+                }""", SEL["bubbles"]) or {"last": None, "lastOut": "", "hasOut": False}
         except Exception:
-            return {"last": None, "lastOut": ""}
+            return {"last": None, "lastOut": "", "hasOut": False}
 
-    def send(self, phone: str, text: str, followup: bool = False) -> str:
+    def read_chat(self, phone: str) -> dict:
+        """Open a lead's chat and read what THEY wrote after our first message in it. Read-only: nothing is typed or sent.
+        Returns {'replies': [{'id','text'}], 'has_out': bool}, or None when the number is not on WhatsApp."""
+        page = self.page
+        digits = re.sub(r"\D", "", phone)
+        page.goto(f"{self.base}/send?phone={digits}", wait_until="domcontentloaded", timeout=60000)
+        end = time.time() + 45
+        while time.time() < end:
+            if self.should_stop():
+                raise StopRequested()
+            if self._any("qr"):
+                raise LoggedOut()
+            if page.locator(SEL["invalid"]).count():
+                ok = self._any("dialog_ok")
+                if ok:
+                    try:
+                        ok.first.click(timeout=2000)
+                    except Exception:
+                        pass
+                return None
+            if self._any("compose"):
+                break
+            page.wait_for_timeout(500)
+        else:
+            raise RuntimeError("The chat did not open in time.")
+        page.wait_for_timeout(SETTLE_MS)
+        data = page.evaluate(
+            """(sel) => {
+              const all = Array.from(document.querySelectorAll(sel));
+              const rows = all.filter(el => !all.some(o => o !== el && o.contains(el)));
+              const mine = el => el.classList.contains('message-out') || (el.getAttribute('data-id') || '').startsWith('true_')
+                                 || (!el.classList.contains('message-in') && !!el.querySelector('.message-out'));
+              const first = rows.findIndex(mine);
+              const idOf = el => el.getAttribute('data-id') || ((el.querySelector('[data-id]') || el).getAttribute('data-id')) || '';
+              const textOf = el => { const t = el.querySelector('span.selectable-text, .copyable-text'); return ((t ? t.innerText : el.innerText) || '').trim(); };
+              const replies = first < 0 ? [] : rows.slice(first + 1).filter(el => !mine(el)).map(el => ({id: idOf(el), text: textOf(el)}));
+              return {hasOut: first >= 0, replies};
+            }""", SEL["bubbles"]) or {"hasOut": False, "replies": []}
+        seen, out = {}, []
+        for r in data["replies"]:
+            text = re.sub(r"\s*\d{1,2}:\d{2}\s*([AaPp]\.?[Mm]\.?)?\s*$", "", r.get("text") or "").strip()
+            if not text:
+                continue
+            mid = r.get("id") or ""
+            if not mid:   # no WhatsApp id on the bubble: a stable one from the number, the words and how often they repeat
+                import hashlib
+                n = seen.get(text, 0)
+                seen[text] = n + 1
+                mid = f"{digits}:{hashlib.sha1(text.encode()).hexdigest()[:12]}:{n}"
+            out.append({"id": mid, "text": text})
+        return {"replies": out, "has_out": bool(data["hasOut"])}
+
+    def send(self, phone: str, text: str, followup: bool = False, first_contact: bool = False) -> str:
         """'sent' once WhatsApp shows the message as sent, 'not_on_whatsapp', 'already_sent' (this very message is already
         the last thing we sent in the chat, so it is NOT sent again) or, for a follow-up, 'replied' (they have written
         back since our last message, so the follow-up is not sent).
@@ -208,6 +265,8 @@ class WhatsAppWeb:
         want = " ".join(text.split())[:40]
         if want and want in " ".join((chat.get("lastOut") or "").split()):
             return "already_sent"   # an earlier try did go out (or it was sent by hand): never send the same thing twice
+        if first_contact and chat.get("hasOut"):
+            return "already_chatted"   # we have written in this chat before (even from the phone): no "first" message
         if followup and chat.get("last") == "in":
             return "replied"        # they answered (or their business auto-replied) after our message: no nudge
         box = compose.first
@@ -251,7 +310,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
     parent = os.environ.get("DERICBI_PARENT")
     stopping = lambda: jobs.should_stop(job_id) or not parent_alive(parent)
     sleep = sleep or _pause_sleep(stopping)
-    driver = (driver_factory or (lambda: WhatsAppWeb(log=log)))()
+    hidden = bool(db.get_settings().get("whatsapp_hide_window", True))
+    driver = (driver_factory or (lambda: WhatsAppWeb(log=log, headless=hidden)))()
     driver.should_stop = stopping
     jobs.update(job_id, status="running", started_at=now(), progress="Opening WhatsApp…")
     final, sent, failures, idle = "done", 0, 0, 0
@@ -261,7 +321,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
         if state == "qr":
             raise LoggedOut()
         if state != "ready":
-            raise RuntimeError("WhatsApp Web did not finish loading (check the internet connection).")
+            raise RuntimeError("WhatsApp Web did not finish loading (check the internet connection)."
+                               + (" If this keeps happening, switch off 'Hide the WhatsApp window' in Settings > WhatsApp." if hidden else ""))
         log("WhatsApp is open and linked.")
         while not stopping():
             s = db.get_settings()
@@ -290,7 +351,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
                 continue   # skipped, held back, or couldn't be written: on to the next
             jobs.update(job_id, progress=f"Sending to {msg['name']}")
             try:
-                outcome = driver.send(msg["phone"], msg["body"], **({"followup": True} if msg.get("followup") else {}))
+                outcome = driver.send(msg["phone"], msg["body"], **({"followup": True} if msg.get("followup") else {}),
+                                     **({"first_contact": True} if msg.get("first_contact") else {}))
             except LoggedOut:
                 C.wa_result(mid, "requeue", "WhatsApp logged out before this was sent")
                 raise
@@ -314,6 +376,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
                     log(f"  + sent to {msg['name']}")
                 elif outcome == "already_sent":
                     log(f"  = {msg['name']}: this message is already the last one in the chat, so it was not sent again")
+                elif outcome == "already_chatted":
+                    log(f"  = {msg['name']}: you already have a chat with them, so no first message was sent")
                 elif outcome == "replied":
                     log(f"  - {msg['name']} has written back since our last message: follow-up not sent")
                 else:
@@ -327,6 +391,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
             if C.wa_wait_seconds() is None:
                 break
             sleep(float(s["whatsapp_delay_sec"]) * random.uniform(0.8, 1.8))
+        if final == "done" and not stopping() and hasattr(driver, "read_chat") and C.Sender.in_window(db.get_settings()):
+            sync_replies(driver, log, stopping, sleep)
     except LoggedOut:
         set_linked(False)
         C.wa_pause_campaigns("WhatsApp was logged out. Link it again in Settings > WhatsApp, then resume.")
@@ -343,6 +409,37 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
         driver.close()
     jobs.update(job_id, status=final, finished_at=now(), progress=f"{final.capitalize()}: {sent} sent")
     return final
+
+
+def sync_replies(driver, log, stopping, sleep, limit: int = SYNC_PER_RUN) -> int:
+    """In the SAME browser session: open the chats of leads we WhatsApped lately and record what they wrote back, in the
+    campaign that messaged them. Read-only. Returns how many new replies were recorded."""
+    C.wa_sync_begin()
+    targets = C.wa_sync_targets(limit)
+    new = errors = 0
+    for t in targets:
+        if stopping():
+            break
+        try:
+            chat = driver.read_chat(t["phone_norm"])
+        except (LoggedOut, StopRequested):
+            raise
+        except Exception as e:
+            errors += 1
+            log(f"  ! could not read the chat with {t['name']}: {type(e).__name__}: {str(e)[:80]}")
+            if errors >= 3:
+                break
+            continue
+        errors = 0
+        got = C.wa_record_replies(t["id"], chat["replies"]) if chat else 0
+        C.wa_sync_done(t["id"])
+        if got:
+            new += got
+            log(f"  < {t['name']} replied on WhatsApp ({got} new)")
+        sleep(random.uniform(2.0, 4.0))
+    if targets:
+        log(f"Checked {len(targets)} chat(s) for replies: {new} new.")
+    return new
 
 
 def run_link(job_id: int, driver_factory=None, wait_seconds: int = 300) -> str:

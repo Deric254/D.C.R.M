@@ -43,6 +43,9 @@ CHANNELS = REAL_CHANNELS + ("auto",)   # "auto": the best way for each lead, cho
 AUTO_CHANNELS = ("email", "sms")   # sent by the background sender itself. WhatsApp goes through the WhatsApp worker
                                    # (see _whatsapp_tick), or by hand from the queue (wa_next) until WhatsApp is linked.
 SIMILAR = 0.9   # two messages in one campaign at least this alike count as the same message
+# A send that was pressed but never confirmed, or cut off mid-send, "may or may not have been delivered". That lead must be
+# treated as already messaged, otherwise a new campaign would message them a second time.
+AMBIGUOUS = "(m.status = 'failed' AND m.error LIKE '%may or may not%')"
 MIN_GAP_MINUTES = 60   # a campaign never sends a lead two messages within this long, on any channel (see _gap_hold)
 
 
@@ -84,7 +87,7 @@ def _audience_where(channel: str, filters: dict):
                      "AND r.grade NOT IN ('auto','bounce'))")
     # One first message per lead, ever: nobody who already has one sent, waiting or being sent, on any channel.
     where.append("NOT EXISTS (SELECT 1 FROM messages m WHERE m.lead_id = l.id AND m.direction='out' "
-                 "AND m.status IN ('queued','sending','sent'))")
+                 "AND (m.status IN ('queued','sending','sent') OR " + AMBIGUOUS + "))")
     if channel == "whatsapp":
         where.append("NOT EXISTS (SELECT 1 FROM events e WHERE e.lead_id = l.id AND e.kind = 'no_whatsapp')")
     return where, args
@@ -511,8 +514,8 @@ def outreach_state(conn, lead_id: int, s: dict = None) -> dict:
                     (lead_id,)).fetchone():
         return {"allowed": False, "kind": "waiting",
                 "reason": "A message to them is already waiting in a campaign. They only get one at a time."}
-    last = conn.execute("SELECT MAX(COALESCE(sent_at, created_at)) AS t FROM messages WHERE lead_id=? AND direction='out' "
-                        "AND status='sent'", (lead_id,)).fetchone()["t"]
+    last = conn.execute("SELECT MAX(COALESCE(m.sent_at, m.created_at)) AS t FROM messages m WHERE m.lead_id=? AND m.direction='out' "
+                        "AND (m.status='sent' OR " + AMBIGUOUS + ")", (lead_id,)).fetchone()["t"]
     if not last:
         return {"allowed": True, "kind": "first", "reason": ""}
     wait = int(s["followup_wait_days"])
@@ -526,8 +529,26 @@ def outreach_state(conn, lead_id: int, s: dict = None) -> dict:
 def _elsewhere(conn, lead_id: int, cid) -> bool:
     """Has this lead been messaged outside campaign cid? A first-message campaign must then leave them alone."""
     return bool(conn.execute(
-        "SELECT 1 FROM messages WHERE lead_id=? AND direction='out' AND status IN ('sent','sending','queued') "
-        "AND (campaign_id IS NULL OR campaign_id <> ?) LIMIT 1", (lead_id, cid)).fetchone())
+        "SELECT 1 FROM messages m WHERE m.lead_id=? AND m.direction='out' AND (m.status IN ('sent','sending','queued') OR " + AMBIGUOUS + ") "
+        "AND (m.campaign_id IS NULL OR m.campaign_id <> ?) LIMIT 1", (lead_id, cid)).fetchone())
+
+
+def _elsewhere_reason(conn, lead_id: int, cid) -> str:
+    """Why a first message was skipped: says WHEN, HOW and in WHICH campaign this lead was already messaged."""
+    r = conn.execute(
+        "SELECT m.channel, COALESCE(m.sent_at, m.created_at) AS t, c.name AS cname FROM messages m "
+        "LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.lead_id=? AND m.direction='out' AND "
+        "(m.status IN ('sent','sending','queued') OR " + AMBIGUOUS + ") AND (m.campaign_id IS NULL OR m.campaign_id <> ?) "
+        "ORDER BY m.id DESC LIMIT 1", (lead_id, cid)).fetchone()
+    if not r:
+        return "Already messaged another way"
+    return (f"Already messaged another way ({r['channel']} on {str(r['t'])[:10]}"
+            + (f", in '{r['cname']}')" if r["cname"] else ", by hand)"))
+
+
+def _replied(conn, lead_id: int) -> bool:
+    return bool(conn.execute("SELECT 1 FROM messages WHERE lead_id=? AND direction='in' AND grade NOT IN ('auto','bounce') LIMIT 1",
+                             (lead_id,)).fetchone())
 
 
 def send_now(lead_id: int, channel: str, subject: str, body: str) -> dict:
@@ -711,7 +732,9 @@ def _by_hand_only():
 def _wa_elsewhere(conn, lead, campaign):
     """A first-message campaign leaves anyone alone who was messaged some other way (follow-ups are exempt)."""
     if campaign["followup_of"] is None and not campaign.get("followup_step") and _elsewhere(conn, lead["id"], campaign["id"]):
-        return "Already messaged another way"
+        return _elsewhere_reason(conn, lead["id"], campaign["id"])
+    if (campaign["followup_of"] is not None or campaign.get("followup_step")) and _replied(conn, lead["id"]):
+        return "They replied, so no follow-up is sent"
     return None
 
 
@@ -839,7 +862,9 @@ def wa_prepare(mid: int):
         with db.db() as conn:
             conn.execute("UPDATE messages SET body=? WHERE id=?", (body, mid))
     return {"id": mid, "lead_id": lead["id"], "phone": lead["phone_norm"], "body": body, "name": lead["name"],
-            "followup": row["followup_of"] is not None or int(row["step"] or 0) > 0}
+            "followup": row["followup_of"] is not None or int(row["step"] or 0) > 0,
+            # a campaign's first message (not a follow-up, not one you sent by hand): never into a chat you already have
+            "first_contact": row["style"] != "single" and row["followup_of"] is None and int(row["step"] or 0) == 0}
 
 
 def wa_result(mid: int, outcome: str, detail: str = ""):
@@ -859,6 +884,12 @@ def wa_result(mid: int, outcome: str, detail: str = ""):
             conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?",
                          ("They have written back on WhatsApp since your last message. Open the chat and answer them yourself.", mid))
             db.log_event(conn, lead_id, "note", "Follow-up not sent: they have written back on WhatsApp. Check the chat")
+        elif outcome == "already_chatted":   # our messages are already in this chat (sent earlier, or from the phone)
+            conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?",
+                         ("You already have a WhatsApp conversation with them, so no first message was sent.", mid))
+            conn.execute("UPDATE leads SET status=CASE WHEN status='new' THEN 'contacted' ELSE status END, updated_at=? WHERE id=?",
+                         (now(), lead_id))
+            db.log_event(conn, lead_id, "note", "Skipped: you already have a WhatsApp conversation with them")
         elif outcome == "not_on_whatsapp":
             lead = conn.execute("SELECT email FROM leads WHERE id=?", (lead_id,)).fetchone()
             db.log_event(conn, lead_id, "no_whatsapp", "Number is not on WhatsApp" + (" - email them instead" if lead["email"] else ""))
@@ -879,6 +910,75 @@ def wa_pause_campaigns(reason: str):
     """Stop every running WhatsApp campaign (WhatsApp logged out, or sending keeps failing) so nothing is burned."""
     with db.db() as conn:
         conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE channel='whatsapp' AND status='running'", (reason,))
+
+
+# ------------------------------------------- WhatsApp replies (read from the chats by the worker's own session)
+SYNC_WINDOW_DAYS = 14    # chats of leads we WhatsApped within this long are looked at for replies
+SYNC_RECHECK_MIN = 5     # a chat is not opened again sooner than this
+SYNC_REPLIED_MIN = 60    # ... or this, once they have already answered (to catch a longer conversation)
+
+
+def wa_sync_due(s: dict = None) -> bool:
+    """Is it time for the next look at the chats, and is there any chat worth looking at?"""
+    s = s or db.get_settings()
+    if db.get_internal("wa_sync_force"):   # "Check replies now"
+        return bool(wa_sync_targets(1))
+    minutes = int(s.get("whatsapp_sync_minutes") or 0)
+    if minutes <= 0:
+        return False
+    last = db.get_internal("wa_sync_last") or 0
+    if time.time() - float(last) < minutes * 60:
+        return False
+    return bool(wa_sync_targets(1))
+
+
+def wa_sync_targets(limit: int = 30) -> list:
+    """Chats to read for replies: leads we sent a WhatsApp to lately, never-checked and longest-unchecked first."""
+    checked = db.get_internal("wa_sync_state") or {}
+    nowts = time.time()
+    with db.db() as conn:
+        rows = conn.execute(
+            "SELECT l.id, l.name, l.phone_norm, l.last_reply_at FROM leads l WHERE l.archived=0 AND l.do_not_contact=0 "
+            "AND l.phone_norm IS NOT NULL AND EXISTS (SELECT 1 FROM messages m WHERE m.lead_id=l.id AND m.direction='out' "
+            "AND m.channel='whatsapp' AND m.status='sent' AND m.sent_at >= ?)", (days_ago(SYNC_WINDOW_DAYS),)).fetchall()
+    out = []
+    for r in rows:
+        last = float(checked.get(str(r["id"]), 0))
+        gap = (SYNC_REPLIED_MIN if r["last_reply_at"] else SYNC_RECHECK_MIN) * 60
+        if nowts - last >= gap:
+            out.append((last, dict(r)))
+    out.sort(key=lambda x: x[0])
+    return [r for _, r in out[:limit]]
+
+
+def wa_sync_begin():
+    db.set_internal("wa_sync_last", time.time())
+    db.set_internal("wa_sync_force", False)
+
+
+def wa_sync_done(lead_id: int):
+    state = db.get_internal("wa_sync_state") or {}
+    state[str(lead_id)] = time.time()
+    if len(state) > 5000:   # keep it small: forget the oldest
+        for k in sorted(state, key=state.get)[:1000]:
+            state.pop(k, None)
+    db.set_internal("wa_sync_state", state)
+
+
+def wa_record_replies(lead_id: int, items: list) -> int:
+    """Store the replies read from a lead's chat. Each WhatsApp message id is stored once, so reading a chat again
+    never doubles anything. Returns how many were new."""
+    new = 0
+    for it in items or []:
+        text, mid = (it.get("text") or "").strip(), it.get("id")
+        if not text or not mid:
+            continue
+        with db.db() as conn:
+            db.lock_writes(conn)
+            res = L.record_reply(conn, lead_id, "whatsapp", text, "", "wa:" + str(mid))
+        if not res.get("duplicate"):
+            new += 1
+    return new
 
 
 def _gap_hold(conn, row):
@@ -1156,13 +1256,17 @@ class Sender(threading.Thread):
         Returns how long to wait before looking again, or None when there is nothing WhatsApp to do."""
         if not db.get_internal("whatsapp_linked"):
             return None
+        sync_only = False
         with db.db() as conn:
             queued = conn.execute(
                 "SELECT COUNT(*) FROM messages m JOIN campaigns c ON c.id = m.campaign_id WHERE m.channel='whatsapp' "
                 "AND m.direction='out' AND m.status='queued' AND c.status='running' "
                 "AND (m.scheduled_at IS NULL OR m.scheduled_at <= ?)", (now(),)).fetchone()[0]
-            if not queued:
+        if not queued:
+            if not wa_sync_due(s):
                 return None
+            sync_only = True   # nothing to send: the worker only reads the chats for replies
+        with db.db() as conn:
             if jobs.active_job(conn, "whatsapp") or jobs.active_job(conn, "whatsapp_link"):
                 return 5.0
             if self.wa_job is not None:   # how did the last worker end?
@@ -1184,17 +1288,19 @@ class Sender(threading.Thread):
         if wait:   # light mode: a lead search has the browser; WhatsApp goes on when it is done
             self._set("waiting", "WhatsApp waits for the lead search to finish")
             return 15.0
-        if sent_today >= int(s["whatsapp_daily_cap"]):
+        if sent_today >= int(s["whatsapp_daily_cap"]) and not sync_only:
             self._set("waiting", f"Daily whatsapp limit reached ({sent_today})")
             return 60.0
         if time.time() - self.last_wa_spawn < 45:   # a worker that stops at once is not restarted in a loop
             return 10.0
         self.last_wa_spawn = time.time()
+        if sync_only:
+            wa_sync_begin()   # a reply-only run counts from now, even if the worker dies at start-up
         with db.db() as conn:
             jid = jobs.create_job(conn, "whatsapp", {})
         self.wa_job = jid
         jobs.spawn(jid, "whatsapp")
-        self._set("sending", "Sending on WhatsApp")
+        self._set("sending", "Reading WhatsApp replies" if sync_only else "Sending on WhatsApp")
         return 5.0
 
     def send_one(self, row, s):
@@ -1216,7 +1322,9 @@ class Sender(threading.Thread):
             elif ch == "sms" and (not lead["phone_norm"] or not lead["is_mobile"]):
                 reason = "No mobile number"
             elif row["followup_of"] is None and _elsewhere(conn, lead_id, cid):
-                reason = "Already messaged another way"
+                reason = _elsewhere_reason(conn, lead_id, cid)
+            elif row["followup_of"] is not None and _replied(conn, lead_id):
+                reason = "They replied, so no follow-up is sent"
             if reason:
                 conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?", (reason, mid))
                 self._maybe_finish(conn, cid)

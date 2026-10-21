@@ -106,6 +106,9 @@
             <div class="row"><button type="button" class="btn primary" id="wa-link">${st.whatsapp_linked ? 'Connect again' : 'Connect WhatsApp'}</button>${st.whatsapp_linked ? html`<button type="button" class="btn" id="wa-unlink">Disconnect</button>` : ''}</div>
             <div id="wa-result" class="small muted"></div>
             <div class="grid2">${field(s, 'whatsapp_daily_cap', 'WhatsApp messages per day', { type: 'number', min: 0, hint: 'Start with 20 to 40.' })}${field(s, 'whatsapp_delay_sec', 'Seconds between messages', { type: 'number', min: 20, hint: 'At least 20. A random extra wait is added.' })}</div>
+            ${check(s, 'whatsapp_hide_window', 'Hide the WhatsApp window (send and read replies in the background, no browser window)')}
+            <div class="grid2">${field(s, 'whatsapp_sync_minutes', 'Check WhatsApp for replies every (minutes)', { type: 'number', min: 0, hint: '5 to 240, or 0 to stop. Replies are recorded in the campaign that messaged them.' })}</div>
+            ${st.whatsapp_linked ? html`<div class="row"><button type="button" class="btn" id="wa-sync">Check for replies now</button></div>` : ''}
           </div></section>
 
         <section class="panel"><div class="panel-head"><h2>Limits and sending hours</h2></div>
@@ -313,6 +316,9 @@
               if (w.linked && !w.linking) { st = await api('/status'); draw(); toast('WhatsApp is connected'); return; }
               if (!w.linking) { toast('WhatsApp was not connected. Press Connect WhatsApp to try again.', true, 7000); return; }
             }
+          } else if (id === 'wa-sync') {
+            const r = await api('/whatsapp/sync', { method: 'POST' });
+            toast(r.chats ? `Reading ${Math.min(r.chats, 30)} chat${r.chats === 1 ? '' : 's'} for replies. New ones appear in Replies within a few minutes.` : 'No WhatsApp chats to check yet.', false, 6000);
           } else if (id === 'wa-unlink') {
             if (!(await App.confirm('Disconnect WhatsApp? WhatsApp campaigns will wait until you connect again.', 'Disconnect'))) return;
             await api('/whatsapp/unlink', { method: 'POST' }); st = await api('/status'); draw(); toast('WhatsApp disconnected');
