@@ -3629,7 +3629,7 @@ def a_reply_that_fails_the_checks_is_rewritten_once_and_if_it_still_fails_it_goe
     answers = [_j("It is only KES 99,999 and I guarantee it."), _j("It starts with a short check of your own records. What do you use now?")]
     fake = FakeAI(); fake.__call__ = None
     seq = iter(answers)
-    d = closer.analyze(s, lead, ask=lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else next(seq))
+    d = closer.analyze({**s, "closer_disclose": "first"}, lead, ask=lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else next(seq))
     assert "99,999" not in d["reply"] and d["problems"] == [] and "AI assistant here" in d["reply"]     # the second try was used
     bad = lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else _j("It is only KES 99,999 and I guarantee it.")
     d = closer.analyze(s, lead, ask=bad)
@@ -3637,13 +3637,21 @@ def a_reply_that_fails_the_checks_is_rewritten_once_and_if_it_still_fails_it_goe
 
 
 @test
-def the_first_reply_says_it_is_an_ai_assistant_and_the_owner_can_make_it_only_when_asked():
+def by_default_it_does_not_announce_itself_but_the_owner_can_make_it_say_it_is_an_ai_and_it_always_answers_honestly_when_asked():
     _closer_setup(); s = db.get_settings()
+    assert s["closer_disclose"] == "ask"                                                                  # the default: only when someone asks
     lead = {"name": "X", "sector": "Shop", "town": "T", "messages": [{"id": 1, "direction": "in", "status": "received", "body": "tell me more", "channel": "whatsapp"}]}
-    d = closer.analyze(s, lead, True, ask=FakeAI())
-    assert d["reply"].startswith("Deric's AI assistant here. ")
-    assert not closer.analyze(s, lead, False, ask=FakeAI())["reply"].startswith("Deric's")                 # later replies: no repeat
-    assert not closer.analyze({**s, "closer_disclose": "ask"}, lead, True, ask=FakeAI())["reply"].startswith("Deric's")
+    assert "AI assistant" not in closer.analyze(s, lead, True, ask=FakeAI())["reply"]
+    signed = FakeAI(default=_j("Hello,\n\nThank you for writing. What do you use to track stock today?\n\nKind regards,\nDeric's AI assistant at DericBI", "question", subject="Re: Stock"))
+    em = closer.analyze(s, {**lead, "messages": [{**lead["messages"][0], "channel": "email"}]}, True, ask=signed, channel="email")["reply"]
+    assert "AI assistant" not in em and em.rstrip().endswith("DericBI"), em                              # email is signed with the business, not "AI assistant"
+    wa = closer.analyze(s, lead, True, ask=FakeAI(default=_j("Deric's AI assistant here. What do you use to track stock today?", "question")))["reply"]
+    assert "AI assistant" not in wa and wa.startswith("What do you use"), wa
+    on = {**s, "closer_disclose": "first"}
+    assert closer.analyze(on, lead, True, ask=FakeAI())["reply"].startswith("Deric's AI assistant here. ")
+    assert not closer.analyze(on, lead, False, ask=FakeAI())["reply"].startswith("Deric's")                # later replies: no repeat
+    bot = {**lead, "messages": [{**lead["messages"][0], "body": "Are you a bot?"}]}
+    assert "AI assistant" in closer.analyze(s, bot, True, ask=FakeAI())["reply"]                            # asked: honest, whatever the setting
 
 
 @test

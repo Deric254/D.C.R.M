@@ -240,13 +240,26 @@ CHANNEL_STYLE = {
 }
 
 
+def _style(s: dict, channel: str) -> str:
+    st = CHANNEL_STYLE.get(channel, CHANNEL_STYLE["whatsapp"])
+    if channel == "email" and not _announce(s):
+        st = st.replace("'<your name>'s AI assistant at <business>' on its own line", "'<business>' on its own line")
+    return st
+
+
+def _announce(s: dict) -> bool:
+    """True when the owner chose to have the assistant say it is an AI by itself. Otherwise it only says so when asked,
+    and it never claims to be human either way."""
+    return (s.get("closer_disclose") or "ask") == "first"
+
+
 def _system(s: dict, channel: str = "whatsapp", nudge: bool = False) -> str:
     first, brand = _first(s), (s.get("brand_name") or "").strip() or "the business"
     book = (s.get("closer_booking_link") or "").strip()
     return (
         f"You are the AI assistant of {first}, who runs {brand}, writing to the owner of a small local business in Kenya "
         f"who has been in touch with {first}. You are not {first} and you never claim to be human; you work for {first}, who can take over any time.\n"
-        f"{CHANNEL_STYLE.get(channel, CHANNEL_STYLE['whatsapp'])} Match their language (English, Swahili or a mix) and their formality. "
+        f"{_style(s, channel)} Match their language (English, Swahili or a mix) and their formality. "
         "No emojis, no exclamation marks, no jargon, no filler.\n"
         "HOW YOU TREAT PEOPLE: you are courteous, patient and respectful of their time, always. You thank them for writing. You never press, "
         "never repeat a question they ignored, never use urgency, scarcity, flattery, guilt, fear or tricks. The person decides; say so plainly "
@@ -279,6 +292,8 @@ def _system(s: dict, channel: str = "whatsapp", nudge: bool = False) -> str:
         + ("THIS IS A NUDGE: they have not written back for a couple of days. Write ONE short, warm check-in that picks up the last thing "
            "discussed, makes it easy to say 'not now', adds nothing new to decide and asks nothing that needs effort. Never say they ignored you.\n"
            if nudge else "") +
+        ("" if _announce(s) else "ABOUT BEING AN AI: do not announce that you are an AI or write 'AI assistant' in your messages or sign-off; "
+           "sign off with the business name. But if they ask whether you are a bot, a person or AI, answer honestly at once, and never claim to be human.\n") +
         "HARD RULES: use ONLY facts in the OFFER below; never invent prices, numbers, results, clients, guarantees or deadlines; never "
         "promise what the OFFER does not say; never give links or phone numbers other than those in the OFFER; "
         "never discuss payment details, discounts, contracts or legal matters (set needs_human to true instead); "
@@ -472,12 +487,20 @@ def analyze(s: dict, lead: dict, first_ai_reply: bool = True, ask=None, channel:
     out["problems"] = problems
     out["reply"] = d["reply"]
     out["reviewed"] = bool(rv["ran"] and rv["ok"]) or not d["reply"]
-    if out["reply"] and first_ai_reply and (s.get("closer_disclose") or "first") == "first" and channel != "email":
+    if out["reply"] and not _announce(s) and channel != "email" and not _BOT_RE.search(text):
+        out["reply"] = re.sub(r"^\s*\S+'s AI assistant( here)?[.,:]?\s*", "", out["reply"], flags=re.I) or out["reply"]
+    if out["reply"] and first_ai_reply and _announce(s) and channel != "email":
         out["reply"] = f"{first}'s AI assistant here. " + out["reply"]
         out["problems"] = check_reply(out["reply"], s, lead, channel=channel)
     if channel == "email":
-        if out["reply"] and not re.search(r"ai assistant", out["reply"], re.I):
+        if out["reply"] and _announce(s) and not re.search(r"ai assistant", out["reply"], re.I):
             out["reply"] = out["reply"].rstrip() + f"\n\n{first}'s AI assistant"
+            out["problems"] = check_reply(out["reply"], s, lead, channel=channel)
+        elif out["reply"] and not _announce(s) and not _BOT_RE.search(text) and re.search(r"ai assistant", out["reply"], re.I):
+            out["reply"] = re.sub(r"[^\n]*AI assistant[^\n]*\s*$", (s.get("brand_name") or first).strip(), out["reply"], flags=re.I).rstrip()
+            out["problems"] = check_reply(out["reply"], s, lead, channel=channel)
+        elif out["reply"] and not _announce(s) and not _BOT_RE.search(text) and not re.search(r"kind regards|regards|best wishes|sincerely", out["reply"], re.I):
+            out["reply"] = out["reply"].rstrip() + f"\n\nKind regards,\n{(s.get('brand_name') or first).strip()}"
             out["problems"] = check_reply(out["reply"], s, lead, channel=channel)
         out["subject"] = out["subject"] or lead.get("subject") or "Re: your message"
         if not out["subject"].lower().startswith("re:"):
@@ -1046,7 +1069,7 @@ def simulate(s: dict, spec: dict, ask=None) -> dict:
         s_auto["closer_mode"] = "auto"
         a2, why2 = decide(s_auto, lead, d, in_a_row, age)
         would_auto = {"action": a2, "why": why2}
-    return {"analysis": d, "action": action, "why": why, "if_auto_mode": would_auto}
+    return {"analysis": d, "action": action, "why": why, "if_auto_mode": would_auto, "announce": _announce(s)}
 
 
 TESTPACK = {"running": False, "results": [], "total": 0, "started": None, "finished": None, "error": ""}
@@ -1177,7 +1200,7 @@ TEST_PACK = [
      [("replies", _replies), ("fits one text (160)", _short(160)), ("quotes an exact price", lambda r: bool(_AMOUNT.search(r["analysis"]["reply"]))), ("passes the safety checks", _safe)]),
     ("inbound_first", "A stranger writes first, asking for services",
      {"source": "inbound whatsapp", "first_ai_reply": True, "messages": [{"from": "them", "text": "Hi, I got your number from a friend. What services do you offer?"}]},
-     [("replies", _replies), ("says it is an AI assistant", _has(r"ai assistant")), ("asks one thing about their business", _one_question), ("passes the safety checks", _safe)]),
+     [("replies", _replies), ("says it is an AI only if you chose that", lambda r: not r.get("announce") or bool(re.search(r"ai assistant", r["analysis"]["reply"], re.I))), ("asks one thing about their business", _one_question), ("passes the safety checks", _safe)]),
 ]
 
 
