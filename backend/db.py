@@ -228,7 +228,8 @@ SETTING_DEFAULTS = {
     "whatsapp_hide_window": True, "whatsapp_sync_minutes": 10,
     # the AI sales assistant (closer.py): off | suggest (you press send) | auto (low-risk turns only)
     "closer_mode": "off", "closer_kb": "", "closer_booking_link": "", "closer_min_confidence": 80, "closer_max_auto": 3,
-    "closer_delay_sec": 60, "closer_disclose": "first",
+    "closer_delay_sec": 60, "closer_disclose": "first", "closer_on_mode": "suggest", "closer_deal_desk": True,
+    "closer_report_max": 2000, "closer_system_once": 20000, "closer_system_start": 1000, "closer_system_monthly": 200,
     "send_window_enabled": True, "send_window_start": "08:00", "send_window_end": "18:00",
     # "auto": on for a computer with 4 GB of memory or less, or two cores; "on" / "off" to force it
     "light_mode": "auto",

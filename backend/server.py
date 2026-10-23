@@ -108,7 +108,7 @@ class ScrapeIn(BaseModel):
     searches: list[SearchIn]
     max_per_search: int = Field(60, ge=1, le=300)
     headless: bool = True
-    enrich: bool = False
+    enrich: bool = True
 
 
 class CampaignIn(BaseModel):
@@ -165,8 +165,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         jobs.reconcile_stale()
         app.state.sender = C.Sender()
         app.state.poller = C.Poller()
+        app.state.assistant = closer.Loop()
         app.state.sender.start()
         app.state.poller.start()
+        app.state.assistant.start()
         if parent_pid:
             def watch():
                 while True:
@@ -212,6 +214,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         yield
         app.state.sender.stop()
         app.state.poller.stop()
+        app.state.assistant.stop()
 
     app = FastAPI(title="DericBI CRM", version=VERSION, lifespan=lifespan)
 
@@ -274,8 +277,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             unreviewed = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE direction='in' AND handled=0 AND grade IN ('hot','warm','unclear')"
             ).fetchone()[0]
+            waiting = conn.execute("SELECT COUNT(*) FROM messages WHERE provider_id='closer' AND status='draft'").fetchone()[0]
         s = db.get_settings()
         return {
+            "assistant": {"mode": s["closer_mode"], "waiting": waiting},
             "sender": request.app.state.sender.status,
             "poller": request.app.state.poller.last,
             "job": job,
@@ -701,6 +706,13 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise ValueError("Automatic replies in a row: 1 to 10")
         if "closer_delay_sec" in clean and not 20 <= clean["closer_delay_sec"] <= 900:
             raise ValueError("Pause before an automatic reply: 20 to 900 seconds")
+        if clean.get("closer_on_mode") not in (None, "suggest", "auto"):
+            raise ValueError("Conversation mode works as suggest or auto")
+        if "closer_report_max" in clean and not 100 <= clean["closer_report_max"] <= 100000:
+            raise ValueError("The most a report costs: KES 100 to 100,000")
+        for k in ("closer_system_once", "closer_system_start", "closer_system_monthly"):
+            if k in clean and not 0 <= clean[k] <= 10_000_000:
+                raise ValueError("System prices must be sensible amounts")
         if len(clean.get("closer_kb", "")) > 6000:
             raise ValueError("The knowledge base is too long (6000 characters at most)")
         if clean.get("closer_booking_link") and not clean["closer_booking_link"].startswith(("http://", "https://")):
@@ -853,17 +865,60 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         auto_in_a_row: int = 0
         first_ai_reply: bool = True
         messages: list = []
+        channel: str = "whatsapp"
+        memory: str = ""
+        subject: str = ""
+        source: str = ""
 
     class DraftSendIn(BaseModel):
         body: Optional[str] = None
+        subject: Optional[str] = None
+
+    class ToggleIn(BaseModel):
+        on: bool
+        mode: Optional[str] = None
+
+    class SwitchIn(BaseModel):
+        on: bool
 
     @app.get("/api/closer/status")
-    def closer_status():
+    def closer_status(request: Request):
         s = db.get_settings()
         with db.db() as conn:
             st = closer.stats(conn)
-        return {"mode": s["closer_mode"], "ai_ready": bool(ai.configured(s)), "whatsapp_linked": bool(db.get_internal("whatsapp_linked")),
-                "stats": st, "live": C.live_conversations()}
+        loop = getattr(request.app.state, "assistant", None)
+        return {"mode": s["closer_mode"], "on": s["closer_mode"] != "off", "on_mode": s["closer_on_mode"], "ai_ready": bool(ai.configured(s)),
+                "whatsapp_linked": bool(db.get_internal("whatsapp_linked")), "email_ready": C.channel_ready("email", s) and bool(s.get("imap_host")),
+                "sms_ready": C.channel_ready("sms", s), "pack": closer.pack_status(s), "breaker": closer.breaker_open(),
+                "loop_error": loop.last_error if loop else "", "stats": st, "live": C.live_conversations(),
+                "channels": {"whatsapp": bool(db.get_internal("whatsapp_linked")), "email": C.channel_ready("email", s) and bool(s.get("imap_host")),
+                             "sms": C.channel_ready("sms", s)}}
+
+    @app.post("/api/closer/toggle")
+    def closer_toggle(body: ToggleIn):
+        """Conversation mode ON (watch for messages and answer, in the way chosen) or OFF (the assistant stays silent: you answer)."""
+        s = db.get_settings()
+        mode = body.mode or s["closer_on_mode"]
+        if mode not in ("suggest", "auto"):
+            raise ValueError("The way must be suggest or auto")
+        if body.on and not ai.configured(s):
+            raise ValueError("Add a free AI key in Settings > AI writing help first.")
+        db.save_settings({"closer_mode": mode if body.on else "off", "closer_on_mode": mode})
+        return closer_status_plain()
+
+    def closer_status_plain():
+        s = db.get_settings()
+        return {"mode": s["closer_mode"], "on": s["closer_mode"] != "off", "on_mode": s["closer_on_mode"], "pack": closer.pack_status(s)}
+
+    @app.post("/api/closer/leads/{lead_id}/switch")
+    def closer_switch(lead_id: int, body: SwitchIn):
+        closer.set_assistant(lead_id, body.on)
+        return {"ok": True, "on": body.on}
+
+    @app.get("/api/closer/leads/{lead_id}/brief")
+    def closer_brief(lead_id: int):
+        with db.db() as conn:
+            return closer.brief(conn, lead_id)
 
     @app.get("/api/closer/drafts")
     def closer_drafts():
@@ -872,9 +927,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
 
     @app.post("/api/closer/drafts/{did}/send")
     def closer_send(did: int, body: DraftSendIn):
-        if not db.get_internal("whatsapp_linked"):
-            raise ValueError("Connect WhatsApp first (Settings > WhatsApp): the reply is sent from there.")
-        return closer.send_draft(did, body.body)
+        return closer.send_draft(did, body.body, subject=body.subject)
 
     @app.post("/api/closer/drafts/{did}/dismiss")
     def closer_dismiss(did: int):

@@ -201,7 +201,11 @@
       if (s.job) pills.push(html`<a class="pill" href="#/find"><i class="dot on"></i>${s.job.kind === 'enrich' ? 'Finding emails' : 'Finding leads'}${s.job.progress ? ': ' + s.job.progress : ''}</a>`);
       if (App.state.update) pills.push(html`<a class="pill" href="#/settings"><i class="dot on"></i>Update ${App.state.update.version} ready</a>`);
       if (!s.email_ready && !s.sms_ready && !s.whatsapp_linked) pills.push(html`<a class="pill" href="#/settings"><i class="dot warn"></i>Connect email, WhatsApp or your phone</a>`);
+      const as = s.assistant || {};
+      if (as.mode && as.mode !== 'off') pills.push(html`<a class="pill" href="#/closer" title="Conversation mode is ON"><i class="dot on"></i>Assistant ${as.mode === 'auto' ? 'on (auto)' : 'on (suggests)'}</a>`);
       render($('#pills'), html`${pills}`);
+      const bc = $('#badge-closer');
+      if (bc) { bc.textContent = as.waiting || 0; bc.classList.toggle('hidden', !as.waiting); }
       const b = $('#badge-replies');
       b.textContent = s.inbox_unhandled; b.classList.toggle('hidden', !s.inbox_unhandled);
     } catch (_) {

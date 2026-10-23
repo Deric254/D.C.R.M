@@ -647,6 +647,18 @@ def process_inbound_email(raw: bytes, s: dict = None) -> dict:
             if row:
                 lead_id = row["id"]
         if lead_id is None:
-            return {"matched": False}
+            # someone who is not in the CRM wrote to you (an enquiry from another source): with conversation mode ON they become a lead
+            # so the assistant and your pipeline see them. Mailing lists, no-reply senders and automatic mail never do.
+            local = from_addr.split("@", 1)[0] if from_addr else ""
+            automated = (re.search(r"no-?reply|do-?not-?reply|mailer-daemon|postmaster|notification|newsletter|bounce|alerts?$", local, re.I)
+                         or msg.get("List-Unsubscribe") or str(msg.get("Auto-Submitted", "no")).lower() != "no"
+                         or str(msg.get("Precedence", "")).lower() in ("bulk", "list", "junk")
+                         or grading.classify(body)["grade"] in ("auto", "bounce"))
+            if not from_addr or automated or (s.get("closer_mode") or "off") == "off":
+                return {"matched": False}
+            display = email.utils.parseaddr(str(msg.get("From", "")))[0].strip().strip('"')
+            name = display if display and "@" not in display else from_addr.split("@")[0].replace(".", " ").replace("_", " ").title()
+            res0 = leadsmod.add_lead(conn, {"name": name, "email": from_addr, "notes": f"Wrote to us first by email: {subject[:120]}"}, "inbound email")
+            lead_id = res0["id"]
         res = leadsmod.record_reply(conn, lead_id, "email", body.strip(), subject, mid)
         return {"matched": True, "lead_id": lead_id, "grade": res.get("grade"), "duplicate": res.get("duplicate", False)}

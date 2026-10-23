@@ -36,7 +36,7 @@ import library
 import messaging
 import perf
 from messaging import SendError
-from util import days_ago, now, today_start
+from util import days_ago, normalize_phone, now, today_start
 
 REAL_CHANNELS = ("email", "sms", "whatsapp")
 CHANNELS = REAL_CHANNELS + ("auto",)   # "auto": the best way for each lead, chosen per lead (see pick_channel)
@@ -635,7 +635,7 @@ def log_whatsapp(lead_id: int, body: str) -> dict:
     return {"id": cur.lastrowid, "status": "sent", "url": f"https://wa.me/{digits}?text={quote(text)}"}
 
 
-def whatsapp_one(lead_id: int, body: str, delay_sec: int = 0) -> dict:
+def whatsapp_one(lead_id: int, body: str, delay_sec: int = 0, label: str = "") -> dict:
     """The WhatsApp button on one lead. Linked: the message is queued and the WhatsApp worker sends and records it by
     itself. Not linked: it is logged and the wa.me link is returned so the owner presses send in WhatsApp."""
     if not db.get_internal("whatsapp_linked"):
@@ -657,13 +657,61 @@ def whatsapp_one(lead_id: int, body: str, delay_sec: int = 0) -> dict:
         cid = conn.execute(
             "INSERT INTO campaigns(name, channel, subject, body, filters, status, style, followup_step, total, launched_at, "
             "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (f"WhatsApp to {lead['name']}", "whatsapp", "", text, "{}", "running", "single",
+            ((f"{label}: " if label else "") + f"WhatsApp to {lead['name']}", "whatsapp", "", text, "{}", "running", "single",
              1 if state["kind"] == "followup" else 0, 1, now(), now())).lastrowid
         mid = conn.execute(
             "INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, body, status, scheduled_at, created_at) "
             "VALUES(?,?,?,?,?,?,?,?,?)", (lead_id, cid, "out", "whatsapp", lead["phone_norm"], text, "queued",
                                           (datetime.now() + timedelta(seconds=delay_sec)).isoformat(sep=" ", timespec="seconds") if delay_sec else now(),
                                           now())).lastrowid
+    return {"queued": True, "id": mid, "campaign_id": cid}
+
+
+def single_one(lead_id: int, channel: str, body: str, subject: str = "", delay_sec: int = 0, label: str = "") -> dict:
+    """One answer in a conversation, on the channel the lead wrote on. WhatsApp goes through the WhatsApp worker; email and text
+    through the normal sender. All three use a one-message 'single' campaign, so they get the same guards as everything else
+    (one message in flight per lead, do-not-contact, bounced address) and are never held back by the campaign limits."""
+    if channel == "whatsapp":
+        return whatsapp_one(lead_id, body, delay_sec, label)
+    if channel not in ("email", "sms"):
+        raise ValueError("Unknown channel")
+    text = (body or "").strip()
+    if not text:
+        raise ValueError("Message can't be empty")
+    s = db.get_settings()
+    with db.db() as conn:
+        db.lock_writes(conn)
+        lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if not lead:
+            raise KeyError("Lead not found")
+        if lead["archived"] or lead["do_not_contact"]:
+            raise ValueError("This lead can no longer be messaged.")
+        if channel == "email":
+            if not lead["email"] or lead["email_bounced"]:
+                raise ValueError("This lead has no working email address.")
+            subj = (subject or "").strip() or "Re: your message"
+            to = lead["email"]
+            text = messaging.final_body("email", text, s)
+        else:
+            if not lead["phone_norm"] or not lead["is_mobile"]:
+                raise ValueError("This lead has no mobile number to text.")
+            subj, to = "", lead["phone_norm"]
+            text = messaging.sms_clean(text)   # an answer in a conversation needs no opt-out tag; "STOP" is still honoured
+            if len(text) > messaging.SMS_LIMIT:
+                raise ValueError(f"That text is {len(text)} characters; one SMS holds {messaging.SMS_LIMIT}.")
+        state = outreach_state(conn, lead_id, s)
+        if not state["allowed"]:
+            raise ValueError(state["reason"])
+        cid = conn.execute(
+            "INSERT INTO campaigns(name, channel, subject, body, filters, status, style, followup_step, total, launched_at, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            ((f"{label}: " if label else "") + f"{channel.upper() if channel == 'sms' else channel.title()} to {lead['name']}", channel, subj, text, "{}", "running", "single",
+             1 if state["kind"] == "followup" else 0, 1, now(), now())).lastrowid
+        mid = conn.execute(
+            "INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, scheduled_at, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)", (lead_id, cid, "out", channel, to, subj, text, "queued",
+                                           (datetime.now() + timedelta(seconds=delay_sec)).isoformat(sep=" ", timespec="seconds") if delay_sec else now(),
+                                           now())).lastrowid
     return {"queued": True, "id": mid, "campaign_id": cid}
 
 
@@ -794,9 +842,15 @@ def reroute(conn, mid: int, failed: str, reason: str) -> bool:
     """'Best way' campaigns: when a lead can't be reached the way first chosen (not on WhatsApp, email bounced), their ONE
     message moves to the next way instead of being lost. It is the same message row, so the lead is never messaged twice."""
     m = conn.execute("SELECT m.*, c.channel AS cchannel, c.style AS cstyle, c.subject AS csubject, c.body AS cbody, "
-                     "c.ai_personalize AS cai, c.followup_step AS step, c.status AS cstatus FROM messages m "
+                     "c.ai_personalize AS cai, c.followup_step AS step, c.status AS cstatus, c.filters AS cfilters FROM messages m "
                      "JOIN campaigns c ON c.id = m.campaign_id WHERE m.id=?", (mid,)).fetchone()
-    if not m or m["cchannel"] != "auto" or m["cstatus"] not in ("running", "paused"):
+    if not m or m["cstatus"] not in ("running", "paused") or m["cstyle"] == "single":
+        return False
+    try:
+        fallback = bool(json.loads(m["cfilters"] or "{}").get("fallback"))
+    except ValueError:
+        fallback = False
+    if m["cchannel"] != "auto" and not fallback:   # a campaign on one fixed way only moves on when 'try other ways' was ticked
         return False
     lead = conn.execute("SELECT * FROM leads WHERE id=?", (m["lead_id"],)).fetchone()
     if not lead or lead["do_not_contact"] or lead["archived"]:
@@ -940,6 +994,8 @@ def wa_sync_due(s: dict = None) -> bool:
     s = s or db.get_settings()
     if db.get_internal("wa_sync_force"):   # "Check replies now"
         return bool(wa_sync_targets(1))
+    if (s.get("closer_mode") or "off") != "off" and ai.configured(s):
+        return True   # conversation mode is ON: a worker stays in the hidden browser and watches the chats
     minutes = int(s.get("whatsapp_sync_minutes") or 0)
     if minutes <= 0:
         return False
@@ -1012,6 +1068,100 @@ def wa_record_replies(lead_id: int, items: list, answered_outside: bool = False)
         if not res.get("duplicate"):
             new += 1
     return new
+
+
+def parse_wa_time(pre: str) -> str:
+    """WhatsApp's '[10:32, 21/10/2026] Name: ' (or '[10:32 AM, 10/21/2026]') as 'YYYY-MM-DD HH:MM:SS'; '' when it can't be read."""
+    m = re.search(r"\[(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?,\s*(\d{1,4})[/.\-](\d{1,2})[/.\-](\d{1,4})\]", pre or "")
+    if not m:
+        return ""
+    hh, mm, ap, a, b, c = m.groups()
+    hh = int(hh) % 12 + (12 if ap and ap.lower() == "pm" else 0) if ap else int(hh)
+    a, b, c = int(a), int(b), int(c)
+    if a > 31:
+        y, mo, d = a, b, c            # 2026/10/21
+    else:
+        y, d, mo = c, a, b            # 21/10/2026 (day first, as in Kenya)
+        if mo > 12 and d <= 12:
+            d, mo = mo, d             # 10/21/2026
+    try:
+        t = datetime(y if y > 99 else 2000 + y, mo, d, hh, int(mm))
+    except ValueError:
+        return ""
+    return "" if t > datetime.now() + timedelta(hours=1) else t.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def wa_inbound_lead(chat: dict, log=print):
+    """The lead a chat with unread messages belongs to. An unknown mobile number that wrote to you becomes a new lead (source
+    'inbound whatsapp'), so the assistant and your pipeline see it; a saved contact is matched to a lead by its exact name, else skipped."""
+    e164 = ""
+    if chat.get("phone"):
+        e164, _ = normalize_phone(chat["phone"])
+    created = False
+    with db.db() as conn:
+        db.lock_writes(conn)
+        if e164:
+            row = conn.execute("SELECT id, archived FROM leads WHERE phone_norm=?", (e164,)).fetchone()
+            if row:
+                return None if row["archived"] else row["id"]
+            res = L.add_lead(conn, {"name": f"WhatsApp {e164}", "phone": e164, "notes": "Wrote to us on WhatsApp first."}, "inbound whatsapp")
+            lead_id, created = res["id"], res["created"]
+        else:
+            title = (chat.get("title") or "").strip()
+            rows = conn.execute("SELECT id FROM leads WHERE archived=0 AND lower(name)=lower(?)", (title,)).fetchall() if title else []
+            return rows[0]["id"] if len(rows) == 1 else None
+    if created:   # (logged after the write lock is released: the log is written on its own connection)
+        log(f"  + new lead from an inbound WhatsApp: {e164}")
+    return lead_id
+
+
+def wa_import_out(lead_id: int, mid: str, text: str, at: str = "") -> bool:
+    """A message you sent from your phone: kept in the lead's history (so the assistant knows what was said) and counted as contact.
+    Skipped when the same words are already there (our own sends carry no WhatsApp id)."""
+    text = (text or "").strip()
+    if not text or not mid:
+        return False
+    with db.db() as conn:
+        db.lock_writes(conn)
+        if conn.execute("SELECT 1 FROM messages WHERE lead_id=? AND direction='out' AND (message_id_header=? OR (body=? AND channel='whatsapp')) LIMIT 1",
+                        (lead_id, "wa:" + str(mid), text)).fetchone():
+            return False
+        lead = conn.execute("SELECT phone_norm FROM leads WHERE id=?", (lead_id,)).fetchone()
+        ts = at or now()
+        conn.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, provider_id, message_id_header, sent_at, created_at) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?)", (lead_id, "out", "whatsapp", (lead["phone_norm"] if lead else "") or "", text, "sent", "manual",
+                                                    "wa:" + str(mid), ts, ts))
+        conn.execute("UPDATE leads SET last_contacted_at=MAX(COALESCE(last_contacted_at, ''), ?), "
+                     "status=CASE WHEN status='new' THEN 'contacted' ELSE status END WHERE id=?", (ts, lead_id))
+    return True
+
+
+def wa_record_chat(lead_id: int, chat: dict) -> int:
+    """Store a whole read chat in order: what you wrote from your phone, and what they wrote. Returns how many of THEIR messages were new."""
+    thread = chat.get("thread") or []
+    replies = {str(r["id"]): r for r in chat.get("replies") or []}
+    outside = chat.get("last") == "out"
+    new, done = 0, set()
+    for it in thread:
+        if it.get("dir") == "out":
+            wa_import_out(lead_id, it["id"], it.get("text"), it.get("at") or "")
+        elif str(it["id"]) in replies:
+            new += _wa_one_reply(lead_id, replies[str(it["id"])], outside)
+            done.add(str(it["id"]))
+    rest = [r for k, r in replies.items() if k not in done]
+    return new + (wa_record_replies(lead_id, rest, answered_outside=outside) if rest else 0)
+
+
+def _wa_one_reply(lead_id: int, it: dict, answered_outside: bool) -> int:
+    text, mid = (it.get("text") or "").strip(), it.get("id")
+    if not text or not mid:
+        return 0
+    with db.db() as conn:
+        db.lock_writes(conn)
+        res = L.record_reply(conn, lead_id, "whatsapp", text, "", "wa:" + str(mid), received_at=it.get("at") or None)
+        if answered_outside and not res.get("duplicate"):
+            conn.execute("UPDATE messages SET handled=1 WHERE id=?", (res["id"],))
+    return 0 if res.get("duplicate") else 1
 
 
 def _gap_hold(conn, row):
@@ -1245,7 +1395,7 @@ class Sender(threading.Thread):
         for ch in AUTO_CHANNELS:
             with db.db() as conn:
                 row = conn.execute(
-                    "SELECT m.*, c.ai_personalize, c.body AS brief, c.followup_step AS step, c.followup_of FROM messages m "
+                    "SELECT m.*, c.ai_personalize, c.body AS brief, c.followup_step AS step, c.followup_of, c.style FROM messages m "
                     "JOIN campaigns c ON c.id = m.campaign_id "
                     "WHERE m.direction='out' AND m.status='queued' AND m.channel=? AND c.status='running' "
                     "AND (m.scheduled_at IS NULL OR m.scheduled_at <= ?) ORDER BY m.id LIMIT 1", (ch, now())).fetchone()
@@ -1253,13 +1403,14 @@ class Sender(threading.Thread):
                     continue
                 pending = True
                 sent_today = conn.execute(
-                    "SELECT COUNT(*) FROM messages WHERE direction='out' AND channel=? AND status='sent' AND sent_at >= ?",
+                    "SELECT COUNT(*) FROM messages m LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.direction='out' "
+                    "AND m.channel=? AND m.status='sent' AND m.sent_at >= ? AND COALESCE(c.style, '') <> 'single'",
                     (ch, today_start())).fetchone()[0]
             if not self.in_window(s):
                 self._set("waiting", f"Outside sending hours ({s['send_window_start']}–{s['send_window_end']})")
                 waits.append(30)
                 continue
-            if sent_today >= int(s[f"{ch}_daily_cap"]):
+            if sent_today >= int(s[f"{ch}_daily_cap"]) and row["style"] != "single":   # answers in a conversation are never capped
                 self._set("waiting", f"Daily {ch} limit reached ({sent_today})")
                 waits.append(60)
                 continue
@@ -1354,7 +1505,7 @@ class Sender(threading.Thread):
                 reason = "No working email"
             elif ch == "sms" and (not lead["phone_norm"] or not lead["is_mobile"]):
                 reason = "No mobile number"
-            elif row["followup_of"] is None and _elsewhere(conn, lead_id, cid):
+            elif row["followup_of"] is None and row["style"] != "single" and _elsewhere(conn, lead_id, cid):
                 reason = _elsewhere_reason(conn, lead_id, cid)
             elif row["followup_of"] is not None and _replied(conn, lead_id):
                 reason = "They replied, so no follow-up is sent"
@@ -1362,7 +1513,7 @@ class Sender(threading.Thread):
                 conn.execute("UPDATE messages SET status='skipped', error=? WHERE id=?", (reason, mid))
                 self._maybe_finish(conn, cid)
                 return
-            held = _gap_hold(conn, {**dict(row), "style": ""})
+            held = _gap_hold(conn, dict(row))
             if held:   # they were messaged a moment ago: wait, don't stack a second message on top of it
                 conn.execute("UPDATE messages SET status='queued', attempts=attempts-1, scheduled_at=?, error=? WHERE id=?",
                              (held, "Held back: they were messaged less than an hour ago", mid))
@@ -1435,6 +1586,8 @@ class Sender(threading.Thread):
                 if bounced:
                     L.mark_bounced(conn, lead_id, str(e))
                 if bounced and reroute(conn, mid, "email", "the email address was refused"):
+                    return
+                if ch == "sms" and e.kind == "permanent" and reroute(conn, mid, "sms", "the text could not be delivered"):
                     return
                 conn.execute("UPDATE messages SET status='failed', error=? WHERE id=?", (str(e), mid))
             self.fails[cid] = self.fails.get(cid, 0) + 1

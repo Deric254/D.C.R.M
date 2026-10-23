@@ -32,6 +32,8 @@ CONFIRM_SECONDS = 40   # how long to wait for WhatsApp to show a message as sent
 SETTLE_MS = 1500       # let the chat's earlier messages appear before looking at them
 HEADLESS_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                "Chrome/131.0.0.0 Safari/537.36")   # a hidden browser must not announce itself as "HeadlessChrome"
+WATCH_SEC = 60          # conversation mode ON: the worker stays in its one browser and looks at the chats this often
+SCAN_PER_RUN = 8        # unread chats opened in one look
 CONVO_STAY = 15 * 60   # while someone is chatting with the assistant, the worker keeps its ONE browser open this long after the last news
 CONVO_LOOK = 45        # ... and looks at the chats again every this many seconds
 SYNC_PER_RUN = 30      # chats read for replies in one visit
@@ -46,6 +48,7 @@ SEL = {
                 "div[contenteditable='true'][data-tab='10']"],
     "outgoing": ["div.message-out", "div[data-id^='true_']"],
     "bubbles": "div.message-in, div.message-out, div[data-id^='true_'], div[data-id^='false_']",
+    "chat_rows": "#pane-side [role='listitem'], #pane-side [role='row'], #pane-side div[data-testid='cell-frame-container']",
     "pending": ["span[data-icon='msg-time']"],
     "invalid": "text=/phone number shared via url is invalid|not on whatsapp|isn.t on whatsapp/i",
     "dialog_ok": ["div[role='button']:has-text('OK')", "button:has-text('OK')"],
@@ -180,7 +183,7 @@ class WhatsAppWeb:
         except Exception:
             return {"last": None, "lastOut": "", "hasOut": False}
 
-    def read_chat(self, phone: str) -> dict:
+    def read_chat(self, phone: str, inbound_ok: bool = False) -> dict:
         """Open a lead's chat and read what THEY wrote after our first message in it. Read-only: nothing is typed or sent.
         Returns {'replies': [{'id','text'}], 'has_out': bool}, or None when the number is not on WhatsApp."""
         page = self.page
@@ -206,8 +209,10 @@ class WhatsAppWeb:
         else:
             raise RuntimeError("The chat did not open in time.")
         page.wait_for_timeout(SETTLE_MS)
-        data = page.evaluate(
-            """(sel) => {
+        return self._read_open_chat(digits, inbound_ok)
+
+    BUBBLES_JS = """(args) => {
+              const sel = args[0], inboundOk = args[1];
               const all = Array.from(document.querySelectorAll(sel));
               const rows = all.filter(el => !all.some(o => o !== el && o.contains(el)));
               const mine = el => el.classList.contains('message-out') || (el.getAttribute('data-id') || '').startsWith('true_')
@@ -215,22 +220,86 @@ class WhatsAppWeb:
               const first = rows.findIndex(mine);
               const idOf = el => el.getAttribute('data-id') || ((el.querySelector('[data-id]') || el).getAttribute('data-id')) || '';
               const textOf = el => { const t = el.querySelector('span.selectable-text, .copyable-text'); return ((t ? t.innerText : el.innerText) || '').trim(); };
-              const replies = first < 0 ? [] : rows.slice(first + 1).filter(el => !mine(el)).map(el => ({id: idOf(el), text: textOf(el)}));
-              return {hasOut: first >= 0, replies, last: rows.length ? (mine(rows[rows.length - 1]) ? 'out' : 'in') : null};
-            }""", SEL["bubbles"]) or {"hasOut": False, "replies": []}
-        seen, out = {}, []
-        for r in data["replies"]:
-            text = re.sub(r"\s*\d{1,2}:\d{2}\s*([AaPp]\.?[Mm]\.?)?\s*$", "", r.get("text") or "").strip()
-            if not text:
+              const start = first < 0 ? (inboundOk ? 0 : rows.length) : first + 1;
+              const tsOf = el => { const t = el.querySelector('[data-pre-plain-text]'); return t ? (t.getAttribute('data-pre-plain-text') || '') : ''; };
+              const replies = rows.slice(start).filter(el => !mine(el)).map(el => ({id: idOf(el), text: textOf(el), ts: tsOf(el)}));
+              const thread = rows.slice(-14).map(el => ({id: idOf(el), dir: mine(el) ? 'out' : 'in', text: textOf(el), ts: tsOf(el)}));
+              return {hasOut: first >= 0, replies, thread, last: rows.length ? (mine(rows[rows.length - 1]) ? 'out' : 'in') : null};
+            }"""
+
+    def _read_open_chat(self, digits: str, inbound_ok: bool = False) -> dict:
+        """What the chat that is open on screen holds: what THEY wrote after our first message (all of it, when nothing of ours is in
+        it and inbound_ok), and the last bubbles of both sides (to learn what you wrote from your phone). Read-only."""
+        import hashlib
+        data = self.page.evaluate(self.BUBBLES_JS, [SEL["bubbles"], bool(inbound_ok)]) or {"hasOut": False, "replies": [], "thread": []}
+
+        def clean(rows, tag):
+            seen, out = {}, []
+            for r in rows:
+                text = re.sub(r"\s*\d{1,2}:\d{2}\s*([AaPp]\.?[Mm]\.?)?\s*$", "", r.get("text") or "").strip()
+                if not text:
+                    continue
+                mid = r.get("id") or ""
+                if not mid:   # no WhatsApp id on the bubble: a stable one from the number, the words and how often they repeat
+                    n = seen.get((tag, text), 0)
+                    seen[(tag, text)] = n + 1
+                    mid = f"{digits}:{hashlib.sha1(text.encode()).hexdigest()[:12]}:{n}"
+                out.append({"id": mid, "text": text, "at": C.parse_wa_time(r.get("ts") or ""), **({"dir": r["dir"]} if "dir" in r else {})})
+            return out
+        return {"replies": clean(data["replies"], "r"), "has_out": bool(data["hasOut"]), "last": data.get("last"),
+                "thread": clean(data.get("thread") or [], "t")}
+
+    def scan_unread(self, limit: int = SCAN_PER_RUN) -> list:
+        """The chats WhatsApp shows with unread messages: people who wrote to you first (an enquiry from another source) or who answer
+        a chat you started from your phone. Opens each one, which marks it read on your phone. Only chats whose title is a phone
+        number (not a saved contact) are returned with a number; saved contacts are matched by name by the caller.
+        Returns [{'title','phone','unread','replies','thread','last'}]."""
+        page = self.page
+        out = []
+        for title in [r["title"] for r in self._unread_rows()][:limit]:
+            if self.should_stop():
+                raise StopRequested()
+            # find the chat again by its title (the list may have moved since it was read) and open it
+            row = next((r for r in self._unread_rows() if r["title"] == title), None)
+            if not row:
                 continue
-            mid = r.get("id") or ""
-            if not mid:   # no WhatsApp id on the bubble: a stable one from the number, the words and how often they repeat
-                import hashlib
-                n = seen.get(text, 0)
-                seen[text] = n + 1
-                mid = f"{digits}:{hashlib.sha1(text.encode()).hexdigest()[:12]}:{n}"
-            out.append({"id": mid, "text": text})
-        return {"replies": out, "has_out": bool(data["hasOut"]), "last": data.get("last")}
+            try:
+                page.locator(SEL["chat_rows"]).nth(row["i"]).click(timeout=5000)
+                end = time.time() + 20
+                while time.time() < end and not self._any("compose"):
+                    page.wait_for_timeout(400)
+                page.wait_for_timeout(SETTLE_MS)
+                digits = re.sub(r"\D", "", title) if re.fullmatch(r"[+\d][\d\s\-().]{7,}", title) else ""
+                chat = self._read_open_chat(digits or re.sub(r"\W", "", title).lower(), inbound_ok=True)
+            except StopRequested:
+                raise
+            except Exception:
+                continue
+            # only the newest bubbles that are theirs and unread count as new; ids make the rest harmless duplicates
+            out.append({"title": title, "phone": ("+" + digits) if digits else "", "unread": row["unread"],
+                        "replies": chat["replies"][-max(row["unread"], 1):], "thread": chat["thread"], "last": chat["last"], "has_out": chat["has_out"]})
+        return out
+
+    def _unread_rows(self) -> list:
+        """The chats in the list that show an unread badge: [{'i': position, 'title', 'unread'}]. Goes back to the chat list first if it is not on screen."""
+        page = self.page
+        if not page.locator(SEL["chat_rows"]).count():
+            page.goto(self.base, wait_until="domcontentloaded", timeout=60000)
+            end = time.time() + 45
+            while time.time() < end and not self._any("chat_list"):
+                if self.should_stop():
+                    raise StopRequested()
+                if self._any("qr"):
+                    raise LoggedOut()
+                page.wait_for_timeout(500)
+            page.wait_for_timeout(SETTLE_MS)
+        rows = page.evaluate("""(sel) => Array.from(document.querySelectorAll(sel)).map((el, i) => {
+            const t = el.querySelector('span[title]');
+            const u = el.querySelector("[aria-label*='unread' i]");
+            const m = u ? ((u.getAttribute('aria-label') || '').match(/\\d+/) || ['1'])[0] : '';
+            return {i, title: t ? (t.getAttribute('title') || t.innerText || '') : '', unread: m ? parseInt(m, 10) : 0};
+          })""", SEL["chat_rows"]) or []
+        return [{"i": r["i"], "title": (r["title"] or "").strip(), "unread": r["unread"]} for r in rows if r["unread"] > 0]
 
     def send(self, phone: str, text: str, followup: bool = False, first_contact: bool = False) -> str:
         """'sent' once WhatsApp shows the message as sent, 'not_on_whatsapp', 'already_sent' (this very message is already
@@ -307,7 +376,7 @@ def _pause_sleep(stopping):
     return sleep
 
 
-def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
+def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) -> str:
     """Send every queued WhatsApp message of the running campaigns, one at a time, within the limits."""
     log = lambda m: jobs.log(job_id, m)
     parent = os.environ.get("DERICBI_PARENT")
@@ -319,6 +388,7 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
     jobs.update(job_id, status="running", started_at=now(), progress="Opening WhatsApp…")
     final, sent, failures, idle = "done", 0, 0, 0
     talk_until, talk_rounds = time.time() + CONVO_STAY, 0
+    watch_left = watch_rounds   # None: watch until conversation mode is switched off (tests give a number)
     try:
         driver.open()
         state = driver.wait_ready(90)
@@ -344,6 +414,14 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
                 # Nothing is due. If something is only waiting for its time (a retry, a lead held back for an hour), stay
                 # in this ONE browser instead of closing it and opening a new one later; stop when nothing is left.
                 wait = C.wa_wait_seconds()
+                if wait is None and s.get("closer_mode", "off") != "off" and hasattr(driver, "scan_unread") and watch_left != 0:
+                    # conversation mode is ON: stay in this one (hidden) browser and keep looking at the chats, until switched off
+                    if watch_left is not None:
+                        watch_left -= 1
+                    jobs.update(job_id, progress="Watching for messages")
+                    sync_replies(driver, log, stopping, sleep)
+                    sleep(WATCH_SEC * random.uniform(0.8, 1.3))
+                    continue
                 if wait is None and s.get("closer_mode", "off") != "off" and hasattr(driver, "read_chat") \
                         and time.time() < talk_until and talk_rounds < CONVO_STAY // CONVO_LOOK and C.live_conversations():
                     # the assistant is talking with someone: stay in this browser and look at the chats again soon
@@ -424,11 +502,31 @@ def run_worker(job_id: int, driver_factory=None, sleep=None) -> str:
 
 
 def sync_replies(driver, log, stopping, sleep, limit: int = SYNC_PER_RUN) -> int:
-    """In the SAME browser session: open the chats of leads we WhatsApped lately and record what they wrote back, in the
-    campaign that messaged them. Read-only. Returns how many new replies were recorded."""
+    """In the SAME browser session: (1) with conversation mode on, open the chats WhatsApp shows as unread, which finds people who
+    wrote to you first and leads who follow up a chat you started on your phone; (2) open the chats of leads we WhatsApped lately.
+    What they wrote is recorded in the campaign that messaged them, and what you wrote from your phone is kept as context.
+    Read-only: nothing is typed. Returns how many new replies were recorded."""
     C.wa_sync_begin()
-    targets = C.wa_sync_targets(limit)
     new = errors = 0
+    if hasattr(driver, "scan_unread") and (db.get_settings().get("closer_mode") or "off") != "off":
+        try:
+            for chat in driver.scan_unread():
+                if stopping():
+                    break
+                lid = C.wa_inbound_lead(chat, log)
+                if not lid:
+                    continue
+                got = C.wa_record_chat(lid, chat)
+                C.wa_sync_done(lid)
+                if got:
+                    new += got
+                    log(f"  < new message from {chat.get('title') or chat.get('phone')} on WhatsApp ({got} new)")
+                sleep(random.uniform(1.5, 3.0))
+        except (LoggedOut, StopRequested):
+            raise
+        except Exception as e:
+            log(f"  ! could not look at the unread chats: {type(e).__name__}: {str(e)[:80]}")
+    targets = C.wa_sync_targets(limit)
     for t in targets:
         if stopping():
             break
@@ -443,7 +541,7 @@ def sync_replies(driver, log, stopping, sleep, limit: int = SYNC_PER_RUN) -> int
                 break
             continue
         errors = 0
-        got = C.wa_record_replies(t["id"], chat["replies"], answered_outside=chat.get("last") == "out") if chat else 0
+        got = C.wa_record_chat(t["id"], chat) if chat else 0
         C.wa_sync_done(t["id"])
         if got:
             new += got
@@ -451,10 +549,7 @@ def sync_replies(driver, log, stopping, sleep, limit: int = SYNC_PER_RUN) -> int
         sleep(random.uniform(2.0, 4.0))
     if targets:
         log(f"Checked {len(targets)} chat(s) for replies: {new} new.")
-    try:   # the assistant answers what was found (and anything still waiting); an AI problem never stops the worker
-        closer.process_pending(log)
-    except Exception as e:
-        log(f"  ! assistant: {type(e).__name__}: {str(e)[:100]}")
+    # (the assistant answers from its own thread in the app, so a slow AI never holds this browser)
     return new
 
 

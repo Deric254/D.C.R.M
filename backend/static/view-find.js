@@ -5,7 +5,7 @@
   const ORIGINAL_SIX = [['Pharmacy', 'Meru'], ['Agrovet', 'Chuka'], ['Wholesale', 'Nkubu'], ['Chemist', 'Embu'], ['Supermarket', 'Thika'], ['Minimart', 'Karatina']];
   const KEY = 'dericbi.find.v1';
 
-  const DEFAULTS = { cats: ['Pharmacy', 'Agrovet'], towns: ['Meru'], searches: [], max: 60, show: false, enrich: false, customCats: [], customTowns: [] };
+  const DEFAULTS = { cats: ['Pharmacy', 'Agrovet'], towns: ['Meru'], searches: [], max: 60, show: false, enrich: true, customCats: [], customTowns: [] };
   function load() {
     try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(KEY) || '{}')); }
     catch (_) { return { ...DEFAULTS }; }
@@ -78,7 +78,7 @@
               <label class="field">New leads to keep per search<input type="number" id="max" min="1" max="300" value="${S.max}"><span class="hint">Stops a search after this many new businesses.</span></label>
               <div class="stack" style="gap:8px;align-content:start;padding-top:20px">
                 <label class="check"><input type="checkbox" id="show" ${S.show ? 'checked' : ''}>Show the browser window <span class="muted small">(only if Google asks for a CAPTCHA)</span></label>
-                <label class="check"><input type="checkbox" id="enrich" ${S.enrich ? 'checked' : ''}>Look for emails on their websites after</label></div>
+                <label class="check"><input type="checkbox" id="enrich" ${S.enrich ? 'checked' : ''}>Look for emails and WhatsApp numbers on their websites after</label></div>
             </div>
             <div class="row"><button class="btn primary" id="start">Start</button>
               <button class="btn" id="emails">Look for emails now</button></div>

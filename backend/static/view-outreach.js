@@ -58,7 +58,9 @@
 
             <div class="stack" style="gap:8px"><h3>4. If they don't reply</h3>
               <select name="followups"><option value="">No follow-up</option><option value="${w}">One follow-up after ${w} day${w === 1 ? '' : 's'}</option><option value="${w},4" selected>Two: after ${w} day${w === 1 ? '' : 's'}, then 4 days later</option><option value="${w},4,7">Three: after ${w}, then 4, then 7 days later</option></select>
-              <div class="small muted">Only people who haven't answered get one: a gentle nudge, then something useful, then a polite last note. Replies and opt-outs stop them.</div></div>
+              <div class="small muted">Only people who haven't answered get one: a gentle nudge, then something useful, then a polite last note. Replies and opt-outs stop them.</div>
+              <label class="opt" style="align-self:flex-start"><input type="checkbox" name="fallback" checked>If the first way doesn't work for someone (not on WhatsApp, email refused, text not delivered), reach them another way</label>
+              <div class="small muted">It is the same single message moving to their next way, so nobody is ever messaged twice. A message that may already have been delivered is never moved.</div></div>
 
             <div class="row"><label class="field" style="flex:1;max-width:320px">Name (optional)<input type="text" name="name" placeholder="Meru pharmacies, October"></label></div>
             <div class="row"><button class="btn primary" type="button" id="go" disabled>Start campaign</button><button class="btn" type="button" id="draft">Save as draft</button></div>
@@ -198,7 +200,7 @@
         const getBody = () => {
           const fd = new FormData(f);
           return { name: fd.get('name'), channel: channel(), subject: fd.get('subject') || '', body: mode() === 'ready' ? '' : fd.get('body'),
-            filters: { lead_ids: [...picked] }, ai: mode() === 'ai', style: mode() === 'ready' ? 'ready' : '',
+            filters: { lead_ids: [...picked], fallback: fd.get('fallback') === 'on' }, ai: mode() === 'ai', style: mode() === 'ready' ? 'ready' : '',
             followups: (fd.get('followups') || '').split(',').filter(Boolean).map(Number) };
         };
 

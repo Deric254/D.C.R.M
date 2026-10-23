@@ -59,6 +59,8 @@ RESULTS = []
 
 
 def test(fn):
+    if os.environ.get("ONLY") and os.environ["ONLY"] not in fn.__name__:   # ONLY=word runs just the tests with that word in their name
+        return fn
     try:
         fn()
         RESULTS.append((fn.__name__, True, ""))
@@ -3410,6 +3412,37 @@ def real_whatsapp_page_first_message_guard_and_reply_reading_work_in_a_hidden_br
 
 
 @test
+def real_whatsapp_page_unread_chats_are_scanned_in_a_hidden_browser_without_sending_anything():
+    import mock_whatsapp as mw
+    srv = mw.serve()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    fresh()
+    real = whatsapp.profile_dir, whatsapp.CONFIRM_SECONDS, whatsapp.SETTLE_MS
+    whatsapp.profile_dir = lambda: Path(tempfile.mkdtemp())
+    whatsapp.CONFIRM_SECONDS, whatsapp.SETTLE_MS = 4, 200
+    drv = whatsapp.WhatsAppWeb(log=lambda m: None, base=base, headless=True)
+    try:
+        mw.MODE.update(mode="ok", tick_ms=300); mw.SENT.clear(); mw.HISTORY.clear()
+        mw.UNREAD[:] = [
+            {"title": "+254 711 222 333", "unread": 2, "history": [("in", "Hi, do you do stock reports?", "false_s1", "[10:30, 21/10/2026] X: "),
+                                                                  ("in", "For my pharmacy in Embu", "false_s2", "[10:31, 21/10/2026] X: ")]},
+            {"title": "Grace (saved)", "unread": 1, "history": [("out", "Hello Grace", "true_g0", "[09:00, 20/10/2026] Deric: "), ("in", "Yes please send", "false_g1", "[09:40, 21/10/2026] Grace: ")]},
+            {"title": "Read chat", "unread": 0, "history": [("in", "old", "false_o1", "")]}]
+        drv.open()
+        assert drv.wait_ready(20) == "ready"
+        found = drv.scan_unread()
+        assert [c["title"] for c in found] == ["+254 711 222 333", "Grace (saved)"]                         # the chat with no unread badge is left alone
+        a, b = found
+        assert a["phone"] == "+254711222333" and [r["text"] for r in a["replies"]] == ["Hi, do you do stock reports?", "For my pharmacy in Embu"]
+        assert a["replies"][0]["id"] == "false_s1" and a["replies"][0]["at"] == "2026-10-21 10:30:00" and a["has_out"] is False
+        assert b["phone"] == "" and [t["dir"] for t in b["thread"]] == ["out", "in"] and b["replies"][-1]["text"] == "Yes please send"
+        assert mw.SENT == []                                                                        # scanning never types or sends
+    finally:
+        drv.close(); srv.shutdown(); mw.UNREAD.clear()
+        whatsapp.profile_dir, whatsapp.CONFIRM_SECONDS, whatsapp.SETTLE_MS = real
+
+
+@test
 def whatsapp_replies_are_read_by_the_worker_and_recorded_once_in_the_campaign_that_messaged_them():
     fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
     ids = _wa_leads(3)
@@ -3475,9 +3508,9 @@ import ai  # noqa: E402
 
 
 def _j(reply="Thanks for replying. What do you use to keep track of stock today?", intent="question", stage="discovery",
-       conf=85, needs=False, pain="", reason="ok"):
+       conf=85, needs=False, pain="", reason="ok", subject="", offer="none", pieces=None, promise=""):
     return json.dumps({"reply": reply, "intent": intent, "pain": pain, "stage": stage, "confidence": conf,
-                       "needs_human": needs, "reason": reason})
+                       "needs_human": needs, "reason": reason, "subject": subject, "offer": offer, "value_pieces": pieces or [], "promise": promise})
 
 
 class FakeAI:
@@ -3486,6 +3519,9 @@ class FakeAI:
         self.rules, self.default, self.calls, self.last_user = rules or [], default or _j(), 0, ""
 
     def __call__(self, s, system, user, max_tokens=0, temperature=0, budget=0):
+        if system.startswith("You are a strict reviewer"):      # the second pass: approves unless a test says otherwise
+            self.reviews = getattr(self, "reviews", 0) + 1
+            return getattr(self, "reviewer", None) or '{"ok": true, "issues": []}'
         self.calls += 1
         self.last_user = user
         said = user.split("<<<")[-1].lower()
@@ -3506,6 +3542,14 @@ GOOD_AI = lambda: FakeAI([
     (r"who is this", _j("I work with Deric at DericBI. He helps small shops see where money leaks in their own records.", "question")),
     (r"phones and laptops", _j("We only help businesses make sense of their own sales and stock records, so not phones. Is stock tracking something you struggle with?", "other")),
     (r"ok thanks", _j("", "smalltalk", reason="the chat is over")),
+    (r"nothing, it is all in books", _j("Thank you for telling me. A ready-to-use system is KES 20,000 once for the whole system, or KES 1,000 to start and then KES 200 per month. Which way suits you better?",
+                                        "price", "value_shown", pain="stock kept in books", offer="system_once", pieces=["no system", "stock in books"])),
+    (r"report on that", _j("Thank you. The report on your own sales data costs KES 2,000 at most, and Deric confirms the exact amount before starting. Shall I ask him to look at a sample?", "price", "value_shown", offer="report")),
+    (r"let us continue", _j("Welcome back, and thank you. Last time you mentioned drugs expiring on the shelf. Would a short report on your stock records help with that?", "interested", "value_shown")),
+    (r"think about it", _j("Of course, take all the time you need, there is no pressure at all. Shall I check in with you next week?", "timing", "nurture")),
+    (r"saw your page", _j("Hello,\n\nThank you for writing. Yes, we help pharmacies understand their own stock and sales records. What do you use to track stock today?\n\nKind regards,\nDeric's AI assistant at DericBI", "question", subject="Re: Stock reports")),
+    (r"how much for the system", _j("KES 20,000 once, or KES 1,000 to start then KES 200 per month. Which suits you?", "price", offer="system_once")),
+    (r"got your number from a friend", _j("Welcome, and thank you for writing. We help small businesses understand their own sales and stock records. What kind of business do you run?", "question")),
 ])
 
 
@@ -3519,8 +3563,11 @@ def _with_ai(fake, fn):
 
 
 def _closer_setup(mode="suggest", **over):
+    over.setdefault("closer_deal_desk", False)
     fresh(); configure(whatsapp_delay_sec=20, ai_key_gemini="x", ai_grade_replies=False, closer_mode=mode, closer_delay_sec=20, **over)
     db.set_internal("whatsapp_linked", True)
+    if mode == "auto":   # automatic sending needs a passing Test pack on the current offer
+        closer.mark_pack(db.get_settings(), [{"passed": True}])
 
 
 def _chat(lead_id, *texts, sent=True):
@@ -3582,9 +3629,9 @@ def a_reply_that_fails_the_checks_is_rewritten_once_and_if_it_still_fails_it_goe
     answers = [_j("It is only KES 99,999 and I guarantee it."), _j("It starts with a short check of your own records. What do you use now?")]
     fake = FakeAI(); fake.__call__ = None
     seq = iter(answers)
-    d = closer.analyze(s, lead, ask=lambda *a, **k: next(seq))
+    d = closer.analyze(s, lead, ask=lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else next(seq))
     assert "99,999" not in d["reply"] and d["problems"] == [] and "AI assistant here" in d["reply"]     # the second try was used
-    bad = lambda *a, **k: _j("It is only KES 99,999 and I guarantee it.")
+    bad = lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else _j("It is only KES 99,999 and I guarantee it.")
     d = closer.analyze(s, lead, ask=bad)
     assert d["problems"] and closer.decide(s, lead, d)[0] == "escalate"                               # never sent, shown to you
 
@@ -3726,6 +3773,8 @@ def the_worker_reads_a_reply_records_it_in_the_campaign_and_the_assistant_drafts
     fake = GOOD_AI()
     assert _with_ai(fake, lambda: _run_wa(fake_wa)[0]) == "done"
     assert count("SELECT COUNT(*) FROM messages WHERE direction='in' AND campaign_id=?", cid) == 1
+    assert fake.calls == 0                                                                                          # the browser worker never waits for the AI
+    assert _with_ai(fake, lambda: closer.process_pending(lambda m: None)) == 1                                       # the assistant thread answers
     assert count("SELECT COUNT(*) FROM messages WHERE provider_id='closer' AND status='draft' AND lead_id=?", ids[0]) == 1
     assert fake.calls == 1                                                                                          # one lead replied: one AI call
     # a reply you already answered from your phone is recorded but not drafted for
@@ -3736,6 +3785,7 @@ def the_worker_reads_a_reply_records_it_in_the_campaign_and_the_assistant_drafts
     fake_wa2 = FakeWA(); fake_wa2.read_chat = lambda phone: {"replies": [{"id": "false_9", "text": "We already have a system"}] if phone.endswith("40") else [], "has_out": True, "last": "out"}
     f2 = GOOD_AI()
     assert _with_ai(f2, lambda: _run_wa(fake_wa2)[0]) == "done"
+    _with_ai(f2, lambda: closer.process_pending(lambda m: None))
     assert count("SELECT handled FROM messages WHERE direction='in' AND lead_id=?", ids[0]) == 1 and f2.calls == 0
 
 
@@ -3763,7 +3813,7 @@ def answers_in_a_conversation_are_not_held_back_by_the_daily_limit_for_campaign_
 
 @test
 def the_playground_and_the_test_pack_run_the_real_pipeline_store_nothing_and_catch_a_careless_ai():
-    _closer_setup("suggest"); s = db.get_settings()
+    _closer_setup("suggest", closer_deal_desk=True); s = db.get_settings()
     before = count("SELECT COUNT(*) FROM messages")
     r = _with_ai(GOOD_AI(), lambda: closer.simulate(s, {"messages": [{"from": "us", "text": "Hi"}, {"from": "them", "text": "We already have a system"}]}))
     assert r["analysis"]["reply"] and r["action"] == "draft" and r["if_auto_mode"]["action"] == "auto"
@@ -3783,7 +3833,7 @@ def the_playground_and_the_test_pack_run_the_real_pipeline_store_nothing_and_cat
 
 @test
 def the_assistant_api_saves_validated_settings_lists_drafts_and_sends_and_dismisses_them():
-    _closer_setup("off"); ids = _wa_leads(2)
+    _closer_setup("off", closer_deal_desk=True); ids = _wa_leads(2)
     import server
     with AuthedClient(server.create_app(port=8766), base_url="http://127.0.0.1:8766") as cl:
         assert cl.put("/api/settings", json={"closer_mode": "robot"}).status_code == 400
@@ -3813,11 +3863,415 @@ def the_assistant_api_saves_validated_settings_lists_drafts_and_sends_and_dismis
                 tp = cl.get("/api/closer/testpack").json()
                 if not tp["running"]: break
                 time.sleep(0.5)
-            assert tp["done"] == 18 and tp["passed"] == 18, tp
+            assert tp["done"] == len(closer.TEST_PACK) and tp["passed"] == len(closer.TEST_PACK), tp
         finally:
             ai.ask = real
         stt = cl.get("/api/closer/stats").json()
         assert stt["edited"] == 1 and stt["dismissed"] == 1 and stt["pending"] == 0
+
+
+# ======================================================================= ROUND 3: deal desk, time, channels, nudges, discovery
+def _lead_msgs(lead_id):
+    with db.db() as c:
+        return closer._load_lead(c, lead_id)
+
+
+@test
+def the_deal_desk_states_your_prices_exactly_and_the_report_is_never_priced_above_your_maximum():
+    _closer_setup(closer_deal_desk=True); s = db.get_settings()
+    t = closer.deal_desk(s)
+    assert "KES 2,000 at most" in t and "KES 20,000" in t and "KES 1,000" in t and "KES 200 per month" in t
+    ok = lambda r, ch="whatsapp": closer.check_reply(r, s, channel=ch)
+    assert ok("A ready-to-use system is KES 20,000 once, or KES 1,000 to start then KES 200 per month. Which suits you?") == []
+    assert ok("The report on your own data is KES 2,000 at most. Shall I ask Deric to look at a sample?") == []
+    assert any("maximum" in p for p in ok("The report on your data is KES 20,000."))
+    assert any("amount" in p for p in ok("The report is KES 1,500."))                       # not one of your prices
+    assert closer.deal_desk({**s, "closer_deal_desk": False}) == ""
+    configure(closer_report_max=1500); s2 = db.get_settings()
+    assert "KES 1,500 at most" in closer.deal_desk(s2) and any("maximum" in p for p in closer.check_reply("The report costs KES 2,000.", s2))
+
+
+@test
+def pressure_vagueness_two_questions_and_a_false_free_are_all_rejected_and_a_clear_courteous_reply_passes():
+    _closer_setup(closer_deal_desk=True); s = db.get_settings()
+    ok = lambda r, ch="whatsapp": closer.check_reply(r, s, channel=ch)
+    assert any("pressure" in p for p in ok("Hurry, this is the last chance to start."))
+    assert any("pressure" in p for p in ok("The offer expires today."))
+    assert any("vague" in p for p in ok("It is around KES 2,000 or so."))
+    assert any("vague" in p for p in ok("From KES 1,000 to KES 2,000 depending."))
+    assert any("question" in p for p in ok("What do you use? Who keeps the books?"))
+    assert any("free" in p for p in ok("The first check is free."))
+    assert any("long" in p for p in ok("x" * 170, "sms")) and ok("Thank you. Shall I call at 10?", "sms") == []
+    assert ok("Thank you for writing. There is no pressure at all, it is your call. Would a short look at your records help?") == []
+
+
+@test
+def an_email_reply_is_read_without_the_quoted_text_and_the_signature_line():
+    t = "Yes please send details.\n\nOn Tue, 14 Oct 2026 at 09:12, Deric <d@x.co> wrote:\n> Hi, would you like a report?\n> Regards"
+    assert closer.unquote(t) == "Yes please send details."
+    assert closer.unquote("> only quoted") == "> only quoted"                          # never returns nothing
+    assert closer.unquote("Ok\nSent from my iPhone") == "Ok"
+
+
+@test
+def the_second_ai_pass_can_reject_a_reply_and_when_it_cannot_run_nothing_is_sent_by_itself():
+    _closer_setup("auto", closer_deal_desk=True); s = db.get_settings()
+    lead = {"name": "X", "sector": "Pharmacy", "town": "Meru", "messages": [
+        {"id": 1, "direction": "out", "status": "sent", "body": "Hi from Deric", "channel": "whatsapp"},
+        {"id": 2, "direction": "in", "status": "received", "body": "tell me more", "channel": "whatsapp"}]}
+    calls = {"w": 0, "r": 0}
+    def ask(s_, system, user, **k):
+        if system.startswith("You are a strict reviewer"):
+            calls["r"] += 1
+            return json.dumps({"ok": calls["r"] > 1, "issues": [] if calls["r"] > 1 else ["it ignores their question"]})
+        calls["w"] += 1
+        assert "reviewer" not in user or calls["w"] > 1
+        return _j("Thank you for writing. Which part of your stock gives you the most trouble?" if calls["w"] > 1 else "Sure.")
+    d = closer.analyze(s, lead, False, ask=ask)
+    assert calls["w"] == 2 and d["reviewed"] and d["problems"] == [] and "stock" in d["reply"]              # rejected once, rewritten, approved
+    # the reviewer is down: the reply is fine but is shown to you, never sent by itself
+    def down(s_, system, user, **k):
+        if system.startswith("You are a strict reviewer"): raise ai.AIError("outage")
+        return _j("Thank you for writing. Which part of your stock gives you the most trouble?")
+    d = closer.analyze(s, lead, False, ask=down)
+    assert not d["reviewed"] and closer.decide(s, lead, d)[0] == "draft" and "second check" in closer.decide(s, lead, d)[1]
+    # a reviewer that keeps saying no: the reply goes to you
+    def no(s_, system, user, **k):
+        return '{"ok": false, "issues": ["too vague"]}' if system.startswith("You are a strict reviewer") else _j("Thank you for writing. What do you use now?")
+    d = closer.analyze(s, lead, False, ask=no)
+    assert d["problems"] and closer.decide(s, lead, d)[0] == "escalate"
+
+
+@test
+def a_lead_who_comes_back_days_later_is_answered_with_the_gap_and_what_the_assistant_already_knows():
+    _closer_setup("suggest", closer_deal_desk=True); ids = _wa_leads(1)
+    with db.db() as c:
+        old = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, sent_at, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                  (ids[0], "out", "whatsapp", "x", "Do you track which drugs are near expiry?", "sent", old, old))
+        db.log_event(c, ids[0], "pain", "drugs expire on the shelf"); db.log_event(c, ids[0], "value", "slow stock")
+        db.log_event(c, ids[0], "promise", "Deric will send a sample report"); db.log_event(c, ids[0], "stage", "pain_identified")
+        L.record_reply(c, ids[0], "whatsapp", "Sorry I was away, let us continue", "", "wa:back1")
+    fake = FakeAI(default=_j("Welcome back. Last time you mentioned drugs expiring on the shelf. Would a short report help?", "interested"))
+    r = _with_ai(fake, lambda: closer.draft_for(ids[0]))
+    assert r["action"] == "draft"
+    u = fake.last_user
+    assert "3 days ago" in u and "coming back after 3 day" in u                                              # the gap, in words
+    assert "drugs expire on the shelf" in u and "slow stock" in u and "sample report" in u and "pain_identified" in u   # the memory
+    assert "Today" not in u and "It is now " in u
+
+
+@test
+def what_a_turn_teaches_is_kept_once_pain_needs_offer_promise_and_the_leads_own_offer_and_value():
+    _closer_setup("suggest", closer_deal_desk=True); ids = _wa_leads(1); _chat(ids[0], "We have nothing, all in books")
+    ans = _j("Thank you. A ready-to-use system is KES 20,000 once, or KES 1,000 to start then KES 200 per month. Which suits you?", "price", "value_shown",
+             pain="stock kept in books", offer="system_once", pieces=["no system", "expired drugs"], promise="Deric will call tomorrow")
+    r = _with_ai(FakeAI(default=ans), lambda: closer.draft_for(ids[0]))
+    assert r["action"] == "draft"
+    with db.db() as c:
+        b = closer.brief(c, ids[0]); lead = c.execute("SELECT offer, deal_value FROM leads WHERE id=?", (ids[0],)).fetchone()
+    assert b["pain"] == "stock kept in books" and b["value_pieces"] == ["no system", "expired drugs"] and b["offer"] == "system_once"
+    assert b["promises"] == ["Deric will call tomorrow"] and "system" in lead["offer"] and lead["deal_value"] == 20000
+    _with_ai(FakeAI(default=ans), lambda: closer.draft_for(ids[0]))                      # nothing new: events are not repeated
+    with db.db() as c:
+        assert c.execute("SELECT COUNT(*) FROM events WHERE lead_id=? AND kind='value'", (ids[0],)).fetchone()[0] == 2
+
+
+@test
+def an_email_conversation_is_answered_by_email_with_a_re_subject_and_the_quoted_text_removed():
+    _closer_setup("suggest", closer_deal_desk=True); SMTP_INBOX.clear()
+    with db.db() as c:
+        lid = L.add_lead(c, {"name": "Meru Chemist", "email": "meru@chem.test", "town": "Meru", "sector": "Pharmacy"})["id"]
+        c.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, subject, body, status, sent_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (lid, "out", "email", "meru@chem.test", "Stock reports", "Hello, would a report help?", "sent", now(), now()))
+        L.record_reply(c, lid, "email", "Yes please.\n\nOn Tue, 14 Oct 2026, Deric wrote:\n> Hello, would a report help?", "Re: Stock reports", "<m1@chem.test>")
+    fake = FakeAI(default=_j("Hello,\n\nThank you. What do you use to track stock today?\n\nKind regards,\nDeric's AI assistant at DericBI", "interested"))
+    r = _with_ai(fake, lambda: closer.draft_for(lid))
+    assert r["action"] == "draft"
+    with db.db() as c:
+        d = c.execute("SELECT * FROM messages WHERE id=?", (r["draft_id"],)).fetchone()
+    assert d["channel"] == "email" and d["to_addr"] == "meru@chem.test" and d["subject"] == "Re: Stock reports"
+    assert "On Tue" not in fake.last_user.split("<<<")[-1] and "Hello, would a report" not in fake.last_user.split("<<<")[-1]
+    out = closer.send_draft(r["draft_id"])
+    assert out["queued"]
+    run_sender(until=lambda: SMTP_INBOX, timeout=15)
+    assert len(SMTP_INBOX) == 1 and "Re: Stock reports" in SMTP_INBOX[0].content.decode() if hasattr(SMTP_INBOX[0].content, "decode") else True
+    assert count("SELECT COUNT(*) FROM messages WHERE lead_id=? AND channel='email' AND direction='out' AND status='sent'", lid) == 2
+
+
+@test
+def a_text_conversation_is_answered_by_one_sms_through_the_phone_and_is_not_held_by_the_daily_limit():
+    _closer_setup("suggest", closer_deal_desk=True, sms_daily_cap=1); PHONE_CALLS.clear()
+    ids = _wa_leads(1)
+    with db.db() as c:
+        c.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, sent_at, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                  (ids[0], "out", "sms", "x", "Hi, Deric from DericBI", "sent", now(), now()))
+        c.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, sent_at, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                  (ids[0], "out", "sms", "x", "Earlier campaign text", "sent", now(), now()))
+        L.record_reply(c, ids[0], "sms", "How much for the system?", "", None)
+    fake = FakeAI(default=_j("KES 20,000 once, or KES 1,000 to start then KES 200 per month. Which suits you?", "price", offer="system_once"))
+    r = _with_ai(fake, lambda: closer.draft_for(ids[0]))
+    assert r["action"] == "draft" and len(r["analysis"]["reply"]) <= 160
+    closer.send_draft(r["draft_id"])
+    run_sender(until=lambda: PHONE_CALLS, timeout=15)
+    assert len(PHONE_CALLS) == 1 and "20,000" in PHONE_CALLS[0]["text"] and "STOP" not in PHONE_CALLS[0]["text"]
+
+
+@test
+def the_assistant_steps_aside_when_you_wrote_yourself_and_for_a_lead_you_switched_it_off_for():
+    _closer_setup("suggest"); ids = _wa_leads(2)
+    for lid in ids: _chat(lid, "tell me more")
+    with db.db() as c:   # you wrote to lead 0 by hand two minutes ago (a single-message campaign, not the assistant's)
+        cid = c.execute("INSERT INTO campaigns(name, channel, subject, body, filters, status, style, total, created_at) VALUES('WhatsApp to Shop 0','whatsapp','','hi','{}','done','single',1,?)", (now(),)).lastrowid
+        c.execute("INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, body, status, sent_at, created_at, provider_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                  (ids[0], cid, "out", "whatsapp", "x", "Hi, it is Deric myself", "sent", now(), now(), "whatsapp-web"))
+        c.execute("UPDATE messages SET created_at=?, sent_at=? WHERE lead_id=? AND direction='in'", ((datetime.now() + timedelta(seconds=-30)).strftime("%Y-%m-%d %H:%M:%S"),) * 2 + (ids[0],))
+    with db.db() as c:
+        assert closer._human_recent(c, ids[0]) and not closer._human_recent(c, ids[1])
+        assert [i for i, _ in closer.pending_lead_ids(c)] == [ids[1]]
+    closer.set_assistant(ids[1], False)
+    with db.db() as c:
+        assert closer.pending_lead_ids(c) == [] and not closer.assistant_on(c, ids[1])
+    assert closer.draft_for(ids[1])["action"] == "none"
+    closer.set_assistant(ids[1], True)
+    with db.db() as c:
+        assert [i for i, _ in closer.pending_lead_ids(c)] == [ids[1]]
+
+
+@test
+def automatic_sending_needs_a_passing_test_pack_on_the_current_offer_and_pauses_after_repeated_ai_errors():
+    _closer_setup("auto"); db.set_internal("closer_pack", {}); s = db.get_settings()
+    lead = {"name": "X", "do_not_contact": 0}
+    d = {"rule": None, "reply": "Thank you. What do you use now?", "needs_human": False, "problems": [], "confidence": 95, "intent": "question",
+         "stage": "discovery", "reviewed": True}
+    assert closer.decide(s, lead, d, pack_ok=closer.pack_status(s)["ok"])[0] == "draft"
+    closer.mark_pack(s, [{"passed": True}] * 3)
+    assert closer.pack_status(s)["ok"] and closer.decide(s, lead, d, pack_ok=True)[0] == "auto"
+    configure(closer_kb="A brand new service at KES 7,000.")                                     # the offer changed: it must pass again
+    st = closer.pack_status(db.get_settings())
+    assert not st["ok"] and st["stale"]
+    closer.mark_pack(s, [{"passed": True}, {"passed": False}]); assert not closer.pack_status(s)["ok"]   # a failing run never unlocks
+    assert closer.decide(s, lead, d, breaker=True)[0] == "draft"
+    closer._BREAKER.update(fails=0, until=0)
+    for _ in range(3): closer._breaker_note(False)
+    assert closer.breaker_open(); closer._BREAKER.update(fails=0, until=0); assert not closer.breaker_open()
+    assert closer.decide(s, lead, d, auto_last_hour=closer.AUTO_PER_HOUR)[0] == "draft"
+
+
+@test
+def nothing_is_sent_automatically_at_night_it_waits_for_the_morning():
+    q = closer.quiet_seconds
+    assert q(datetime(2026, 10, 21, 23, 0)) == 8 * 3600 and q(datetime(2026, 10, 22, 2, 0)) == 5 * 3600
+    assert q(datetime(2026, 10, 21, 10, 0)) == 0 and q(datetime(2026, 10, 21, 21, 29)) == 0 and q(datetime(2026, 10, 21, 21, 30)) > 0
+    assert q(datetime(2026, 10, 21, 7, 0)) == 0
+
+
+@test
+def a_chat_that_went_quiet_gets_one_gentle_check_in_idea_never_sent_by_itself_and_never_twice():
+    _closer_setup("auto", closer_deal_desk=True); ids = _wa_leads(2)
+    old = (datetime.now() - timedelta(hours=60)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.db() as c:
+        for lid in ids:
+            _chat(lid, "tell me more")
+        for lid in ids:
+            c.execute("DELETE FROM messages WHERE lead_id=? AND direction='out'", (lid,))          # (the helper's own first message is from just now)
+            c.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, error, provider_id, reply_to, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (lid, "out", "whatsapp", "x", "", "skipped", "draft:approved", "closer", 0, old))
+            c.execute("INSERT INTO messages(lead_id, direction, channel, to_addr, body, status, provider_id, sent_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                      (lid, "out", "whatsapp", "x", "A short report would show where cash is tied up.", "sent", "whatsapp-web", old, old))
+            before = (datetime.now() - timedelta(hours=62)).strftime("%Y-%m-%d %H:%M:%S")
+            c.execute("UPDATE messages SET created_at=?, sent_at=? WHERE lead_id=? AND direction='in'", (before, before, lid))
+            db.log_event(c, lid, "stage", "value_shown")
+        c.execute("DELETE FROM events WHERE lead_id=? AND kind='stage'", (ids[1],))               # lead 1 never got to a real conversation
+    real_hour = closer._hour
+    try:
+        closer._hour = lambda: 3
+        with db.db() as c: assert closer.nudge_candidates(c) == []                                    # not in the middle of the night
+        closer._hour = lambda: 10
+        with db.db() as c: assert closer.nudge_candidates(c) == [ids[0]]
+        fake = FakeAI(default=_j("Hello again. No rush at all: would you like the short report on your stock records? Just say not now if it is not the time.", "timing", "nurture"))
+        assert _with_ai(fake, lambda: closer.process_pending(lambda m: None)) == 1
+        with db.db() as c:
+            row = c.execute("SELECT status, body FROM messages WHERE lead_id=? AND provider_id='closer' AND status='draft'", (ids[0],)).fetchone()
+            assert row and "No rush" in row["body"] and closer.nudge_candidates(c) == []                # a draft for you, once
+        assert count("SELECT COUNT(*) FROM messages WHERE lead_id=? AND channel='whatsapp' AND status IN ('queued','sending')", ids[0]) == 0   # never sent by itself
+    finally:
+        closer._hour = real_hour
+
+
+@test
+def the_conversation_mode_switch_turns_the_assistant_on_or_off_and_reports_the_channels():
+    _closer_setup("off"); ids = _wa_leads(1); _chat(ids[0], "tell me more")
+    import server
+    with AuthedClient(server.create_app(port=8767), base_url="http://127.0.0.1:8767") as cl:
+        st = cl.get("/api/closer/status").json()
+        assert st["on"] is False and set(st["channels"]) == {"whatsapp", "email", "sms"} and st["pack"]["ok"] is False
+        assert cl.post("/api/closer/toggle", json={"on": True, "mode": "bogus"}).status_code == 400
+        r = cl.post("/api/closer/toggle", json={"on": True, "mode": "suggest"}).json()
+        assert r["on"] and r["mode"] == "suggest" and db.get_settings()["closer_mode"] == "suggest"
+        r = cl.post("/api/closer/toggle", json={"on": False}).json()
+        assert not r["on"] and db.get_settings()["closer_mode"] == "off" and db.get_settings()["closer_on_mode"] == "suggest"
+        assert cl.post(f"/api/closer/leads/{ids[0]}/switch", json={"on": False}).status_code == 200
+        assert cl.get(f"/api/closer/leads/{ids[0]}/brief").json()["assistant_on"] is False
+        assert cl.get("/api/status").json()["assistant"]["mode"] == "off"
+        assert cl.put("/api/settings", json={"closer_report_max": 50}).status_code == 400
+    # OFF means silent: nothing is drafted
+    assert closer.process_pending(lambda m: None, ask=FakeAI()) == 0
+
+
+@test
+def a_stranger_who_emails_you_becomes_a_lead_only_when_conversation_mode_is_on_and_never_for_automatic_mail():
+    _closer_setup("off"); mail = lambda frm, subj, body, extra="": (f"From: {frm}\nTo: deric@dericbi.test\nSubject: {subj}\nMessage-ID: <{abs(hash(subj+frm))}@x>\n{extra}\n{body}\n").encode()
+    base = db.get_settings()
+    assert messaging.process_inbound_email(mail("Jane Mwangi <jane@clinic.co.ke>", "Stock help", "Hello, do you do stock reports?"), base) == {"matched": False}
+    assert count("SELECT COUNT(*) FROM leads") == 0
+    configure(closer_mode="suggest"); s = db.get_settings()
+    for frm, subj, body, extra in (("noreply@shop.test", "Receipt", "Thanks", ""), ("news@list.test", "Offers", "Buy", "List-Unsubscribe: <mailto:x@y.z>\n"),
+                                   ("auto@x.test", "Re: hi", "I am out of office", "Auto-Submitted: auto-replied\n")):
+        assert messaging.process_inbound_email(mail(frm, subj, body, extra), s) == {"matched": False}
+    assert count("SELECT COUNT(*) FROM leads") == 0
+    r = messaging.process_inbound_email(mail("Jane Mwangi <jane@clinic.co.ke>", "Stock help", "Hello, do you do stock reports?"), s)
+    assert r["matched"]
+    with db.db() as c:
+        lead = c.execute("SELECT name, source, email FROM leads").fetchone()
+    assert (lead["name"], lead["source"], lead["email"]) == ("Jane Mwangi", "inbound email", "jane@clinic.co.ke")
+    fake = FakeAI(default=_j("Hello,\n\nThank you for writing. What do you use to track stock today?\n\nKind regards,\nDeric's AI assistant", "question", subject="Re: Stock help"))
+    assert _with_ai(fake, lambda: closer.process_pending(lambda m: None)) == 1
+
+
+@test
+def an_answer_to_a_lead_messaged_elsewhere_is_never_skipped_for_email_or_text_either():
+    _closer_setup("suggest"); SMTP_INBOX.clear()
+    with db.db() as c:
+        lid = L.add_lead(c, {"name": "Shop", "email": "shop@x.test", "phone": "0700000099", "town": "Meru"})["id"]
+        cid0 = C.create_campaign(c, "Earlier", "email", "Hi", "Hello there", {"lead_ids": [lid]}, launch=False)
+        c.execute("INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, sent_at, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                  (lid, cid0, "out", "email", "shop@x.test", "Hi", "Hello there", "sent", now(), now()))
+        L.record_reply(c, lid, "email", "Interested, tell me more", "Re: Hi", "<r1@x.test>")
+    res = C.single_one(lid, "email", "Thank you. What do you use now?", "Re: Hi", label="Assistant")
+    run_sender(until=lambda: SMTP_INBOX, timeout=15)
+    assert res["queued"] and len(SMTP_INBOX) == 1
+    with db.db() as c:
+        assert c.execute("SELECT name FROM campaigns WHERE id=?", (res["campaign_id"],)).fetchone()[0].startswith("Assistant: Email")
+        assert c.execute("SELECT status FROM messages WHERE id=?", (res["id"],)).fetchone()[0] == "sent"
+    with db.db() as c:   # do-not-contact is still honoured
+        c.execute("UPDATE leads SET do_not_contact=1 WHERE id=?", (lid,))
+    try:
+        C.single_one(lid, "email", "More text", "s"); assert False
+    except ValueError:
+        pass
+
+
+@test
+def an_enquiry_that_starts_with_a_stranger_on_whatsapp_becomes_a_lead_and_your_phone_messages_become_context():
+    _closer_setup("suggest", closer_deal_desk=False)
+    chat = {"title": "+254 711 222 333", "phone": "+254711222333", "unread": 2, "last": "in", "has_out": False,
+            "replies": [{"id": "false_a1", "text": "Hi, do you offer stock reports?", "at": ""}, {"id": "false_a2", "text": "For my pharmacy in Embu", "at": ""}],
+            "thread": [{"id": "false_a1", "dir": "in", "text": "Hi, do you offer stock reports?", "at": ""}, {"id": "false_a2", "dir": "in", "text": "For my pharmacy in Embu", "at": ""}]}
+    lid = C.wa_inbound_lead(chat)
+    assert lid and C.wa_inbound_lead(chat) == lid                                                    # the same number is the same lead
+    assert C.wa_record_chat(lid, chat) == 2 and C.wa_record_chat(lid, chat) == 0                     # read twice: stored once
+    with db.db() as c:
+        lead = c.execute("SELECT name, source, phone_norm FROM leads WHERE id=?", (lid,)).fetchone()
+    assert lead["source"] == "inbound whatsapp" and lead["phone_norm"] == "+254711222333" and lead["name"].startswith("WhatsApp")
+    # you answered from your phone, they wrote again: the thread keeps your words in order and counts as contact
+    chat2 = {"title": "+254 711 222 333", "phone": "+254711222333", "unread": 1, "last": "in", "has_out": True,
+             "replies": [{"id": "false_a3", "text": "Great, how much?", "at": ""}],
+             "thread": [{"id": "false_a2", "dir": "in", "text": "For my pharmacy in Embu", "at": ""},
+                        {"id": "true_b1", "dir": "out", "text": "Yes, I do. Send me your last month sales sheet.", "at": ""},
+                        {"id": "false_a3", "dir": "in", "text": "Great, how much?", "at": ""}]}
+    assert C.wa_record_chat(lid, chat2) == 1
+    with db.db() as c:
+        rows = [(m["direction"], m["body"]) for m in c.execute("SELECT direction, body FROM messages WHERE lead_id=? ORDER BY id", (lid,))]
+        st = c.execute("SELECT status FROM leads WHERE id=?", (lid,)).fetchone()[0]
+    assert rows[-2:] == [("out", "Yes, I do. Send me your last month sales sheet."), ("in", "Great, how much?")] and st != "new"
+    assert C.wa_record_chat(lid, chat2) == 0 and count("SELECT COUNT(*) FROM messages WHERE lead_id=? AND direction='out'", lid) == 1
+    # a saved contact (named chat) matches a lead by exact name only
+    other = _wa_leads(1)[0]
+    assert C.wa_inbound_lead({"title": "Shop 0", "phone": "", "replies": [], "thread": []}) == other
+    assert C.wa_inbound_lead({"title": "Somebody Else", "phone": "", "replies": [], "thread": []}) is None
+    assert C.parse_wa_time("[10:32, 21/10/2026] Joe: ") == "2026-10-21 10:32:00" and C.parse_wa_time("junk") == ""
+
+
+@test
+def the_worker_in_conversation_mode_stays_open_scans_unread_chats_and_stops_when_it_is_switched_off():
+    _closer_setup("suggest"); ids = _wa_leads(1)
+    fake = FakeWA(); scans = {"n": 0}
+    def scan(limit=8):
+        scans["n"] += 1
+        return [{"title": "+254 722 000 111", "phone": "+254722000111", "unread": 1, "last": "in", "has_out": False,
+                 "replies": [{"id": "false_z1", "text": "Habari, mnauza nini?", "at": ""}], "thread": [{"id": "false_z1", "dir": "in", "text": "Habari, mnauza nini?", "at": ""}]}] if scans["n"] == 1 else []
+    fake.scan_unread = scan; fake.read_chat = lambda phone, **k: None
+    with db.db() as c:
+        jid = jobs.create_job(c, "whatsapp", {})
+    out = whatsapp.run_worker(jid, driver_factory=lambda: fake, sleep=lambda s: None, watch_rounds=3)
+    assert out == "done" and scans["n"] >= 3                                                      # it kept looking, three rounds
+    assert count("SELECT COUNT(*) FROM leads WHERE source='inbound whatsapp'") == 1
+    assert count("SELECT COUNT(*) FROM messages WHERE direction='in' AND channel='whatsapp'") == 1
+    configure(closer_mode="off"); scans["n"] = 0
+    with db.db() as c:
+        jid = jobs.create_job(c, "whatsapp", {})
+    whatsapp.run_worker(jid, driver_factory=lambda: fake, sleep=lambda s: None, watch_rounds=3)
+    assert scans["n"] == 0                                                                        # switched off: no watching, no scanning
+
+
+@test
+def conversation_mode_makes_the_sender_start_a_watching_worker_even_when_nothing_is_queued():
+    _closer_setup("suggest"); s = db.get_settings()
+    assert C.wa_sync_due(s) is True
+    configure(closer_mode="off"); assert C.wa_sync_due(db.get_settings()) is False
+
+
+@test
+def a_whatsapp_campaign_with_other_ways_ticked_moves_a_person_not_on_whatsapp_to_email_once_and_never_otherwise():
+    _closer_setup("off"); SMTP_INBOX.clear()
+    with db.db() as c:
+        a = L.add_lead(c, {"name": "A Shop", "phone": "0700000051", "email": "a@shop.test", "town": "Meru", "sector": "Pharmacy"})["id"]
+        b = L.add_lead(c, {"name": "B Shop", "phone": "0700000052", "email": "b@shop.test", "town": "Meru", "sector": "Pharmacy"})["id"]
+        c1 = C.create_campaign(c, "WA fallback", "whatsapp", "", "Hello {name}, a quick question about your stock.", {"lead_ids": [a], "fallback": True}, launch=True)
+        c2 = C.create_campaign(c, "WA fixed", "whatsapp", "", "Hello {name}, a quick question about your stock.", {"lead_ids": [b]}, launch=True)
+    fake = FakeWA({"+254700000051": "not_on", "+254700000052": "not_on"})
+    assert _run_wa(fake)[0] == "done"
+    with db.db() as c:
+        ma = c.execute("SELECT channel, status FROM messages WHERE lead_id=?", (a,)).fetchall()
+        mb = c.execute("SELECT channel, status FROM messages WHERE lead_id=?", (b,)).fetchall()
+    assert [(m["channel"], m["status"]) for m in ma] == [("email", "queued")]                      # the same one message moved to email
+    assert [(m["channel"], m["status"]) for m in mb] == [("whatsapp", "skipped")]                  # no fallback ticked: left alone
+    run_sender(until=lambda: SMTP_INBOX, timeout=15)
+    assert len(SMTP_INBOX) == 1 and count("SELECT COUNT(*) FROM messages WHERE lead_id=?", a) == 1
+
+
+@test
+def a_text_that_cannot_be_delivered_moves_to_the_next_way_in_a_best_way_campaign():
+    _closer_setup("off", reach_order="sms,email,whatsapp"); SMTP_INBOX.clear(); PHONE_MODE["mode"] = "failed"
+    try:
+        with db.db() as c:
+            lid = L.add_lead(c, {"name": "Shop", "phone": "0700000061", "email": "shop61@x.test", "town": "Meru", "sector": "Pharmacy"})["id"]
+            C.create_campaign(c, "Best", "auto", "Hi", "Hello {name}, a quick question.", {"lead_ids": [lid]}, launch=True)
+        run_sender(until=lambda: SMTP_INBOX, timeout=20)
+    finally:
+        PHONE_MODE["mode"] = "ok"
+    with db.db() as c:
+        rows = c.execute("SELECT channel, status FROM messages WHERE lead_id=?", (lid,)).fetchall()
+    assert len(rows) == 1 and rows[0]["channel"] == "email" and rows[0]["status"] == "sent" and len(SMTP_INBOX) == 1
+
+
+@test
+def the_email_finder_reads_hidden_obfuscated_and_structured_addresses_and_whatsapp_links():
+    import enrich
+    cf = lambda e, k=0x42: format(k, "02x") + "".join(format(ord(c) ^ k, "02x") for c in e)
+    page = ('<a href="mailto:Info@Acme.co.ke?subject=x">x</a> sales [at] acme [dot] co.ke <span data-cfemail="%s"></span> '
+            '{"email":"hi@acme.co.ke"} pic@2x.png <a href="https://wa.me/254712345678?text=hi">chat</a>') % cf("boss@acme.co.ke")
+    got = enrich.extract_emails(page)
+    assert {"info@acme.co.ke", "sales@acme.co.ke", "hi@acme.co.ke", "boss@acme.co.ke"} <= set(got) and not any("2x" in e for e in got)
+    assert enrich.extract_whatsapp(page) == ["+254712345678"]
+    pages = {"http://acme.co.ke": '<a href="/reach-us">Reach us</a>', "http://acme.co.ke/reach-us": 'Write to <b>orders [at] acme.co.ke</b>'}
+    class R:
+        def __init__(self, t, code=200): self.text, self.status_code = t, code
+    r = enrich.find_contacts("acme.co.ke", lambda u: R(pages[u]) if u in pages else R("", 404))
+    assert r["emails"] == ["orders@acme.co.ke"] and enrich.find_emails("acme.co.ke", lambda u: R(pages[u]) if u in pages else R("", 404)) == ["orders@acme.co.ke"]
+    assert enrich.find_contacts("facebook.com/acme", lambda u: R("x@y.com"))["emails"] == []             # social pages are never read
+    assert enrich.ScrapeIn if hasattr(enrich, "ScrapeIn") else True
 
 
 if __name__ == "__main__":

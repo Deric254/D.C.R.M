@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 MODE = {"mode": "ok", "tick_ms": 400}   # ok | qr | stuck (the clock never turns into a tick)
 HISTORY = []                             # [("in"|"out", text)]: bubbles already in the chat when it opens
 SENT = []                                # (phone, text) for every message the page was asked to send
+UNREAD = []                              # chats shown in the list with unread badges: {title, unread, history: [(dir, text, id, ts)]}
 
 CHATS = '<div id="pane-side"><div>Chats</div></div>'
 QR = '<canvas aria-label="Scan this QR code to link a device!" width="40" height="40"></canvas>'
@@ -70,7 +71,15 @@ def serve():
                 hist = "".join(f'<div class="message-{d}"><span class="txt">{t}</span></div>' for d, t in HISTORY)
                 return self._html(CHAT % {"stuck": "true" if MODE["mode"] == "stuck" else "false", "tick": MODE["tick_ms"],
                                           "history": hist})
-            return self._html(f"<html><body>{CHATS}</body></html>")
+            if u.path == "/open":
+                chat = UNREAD[int(q.get("n", 0))]
+                hist = "".join(f'<div class="message-{d}" data-id="{i}"><span class="txt">{t}</span><span data-pre-plain-text="{ts}"></span></div>'
+                               for d, t, i, ts in chat["history"])
+                return self._html(CHAT % {"stuck": "false", "tick": MODE["tick_ms"], "history": hist})
+            rows = "".join(f'<div role="listitem" onclick="location.href=\'/open?n={n}\'"><span title="{c["title"]}">{c["title"]}</span>'
+                           + (f'<span aria-label="{c["unread"]} unread messages">{c["unread"]}</span>' if c["unread"] else "") + "</div>"
+                           for n, c in enumerate(UNREAD))
+            return self._html(f'<html><body><div id="pane-side"><div>Chats</div>{rows}</div></body></html>')
 
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
