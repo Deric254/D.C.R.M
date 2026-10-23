@@ -31,16 +31,15 @@
         </div></section>
 
         <div class="kpis">
-          <div class="panel kpi"><b>${sent.sms + sent.email + sent.whatsapp}</b><span>sent today (${sent.sms} SMS, ${sent.email} email, ${sent.whatsapp} WhatsApp)</span></div>
-          <div class="panel kpi"><b>${d.replies_week}</b><span>replies this week</span></div>
-          <div class="panel kpi"><b>${d.reply_rate}%</b><span>of contacted leads replied</span></div>
-          ${['email', 'sms', 'whatsapp'].map((ch) => { const c = d.channels[ch]; return c.contacted ? html`<div class="panel kpi"><b>${Math.round(100 * c.replied / c.contacted)}%</b><span>${ch === 'sms' ? 'SMS' : ch === 'email' ? 'email' : 'WhatsApp'} answered (${c.replied} of ${c.contacted})</span></div>` : ''; })}
-          <div class="panel kpi"><b>KES ${d.won_value.toLocaleString()}</b><span>won</span></div>
-          <div class="panel kpi"><b>KES ${d.open_value.toLocaleString()}</b><span>still open (interested or meeting)</span></div>
-          <div class="panel kpi"><b>${d.by_grade.hot || 0}</b><span>hot leads</span></div>
-          <div class="panel kpi"><b>${d.with_mobile}</b><span>have a mobile number</span></div>
-          <div class="panel kpi"><b>${d.with_email}</b><span>have an email</span></div>
+          <div class="panel kpi"><span class="k">Sent today</span><b>${sent.sms + sent.email + sent.whatsapp}</b><span class="sub">${sent.whatsapp} WhatsApp · ${sent.sms} SMS · ${sent.email} email</span></div>
+          <div class="panel kpi"><span class="k">Replies this week</span><b>${d.replies_week}</b><span class="sub">${d.reply_rate}% of contacted leads replied</span></div>
+          <div class="panel kpi"><span class="k">Hot leads</span><b>${d.by_grade.hot || 0}</b><span class="sub">ready for a personal reply</span></div>
+          <div class="panel kpi"><span class="k">Won</span><b>KES ${d.won_value.toLocaleString()}</b><span class="sub">KES ${d.open_value.toLocaleString()} still open</span></div>
         </div>
+        ${(['whatsapp', 'sms', 'email'].some((ch) => d.channels[ch].contacted) || d.with_mobile || d.with_email) && html`<div class="facts muted small">
+          ${['whatsapp', 'sms', 'email'].map((ch) => { const c = d.channels[ch]; return c.contacted ? html`<span><b>${Math.round(100 * c.replied / c.contacted)}%</b> ${ch === 'sms' ? 'SMS' : ch === 'email' ? 'email' : 'WhatsApp'} answered (${c.replied} of ${c.contacted})</span>` : ''; })}
+          <span><b>${d.with_mobile}</b> with a mobile number</span><span><b>${d.with_email}</b> with an email</span>
+        </div>`}
 
         <div class="grid2">
           <section class="panel"><div class="panel-head"><h2>Hot leads</h2><a class="small right" href="#/leads?grade=hot">See all</a></div>

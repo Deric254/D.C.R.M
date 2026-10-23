@@ -38,15 +38,15 @@
         $('#mix').textContent = `Add ${n} search${n === 1 ? '' : 'es'}`;
       }
       function drawBuilder() {
-        render($('#builder'), html`<div class="stack" style="gap:16px">
-          ${Object.entries(KINDS).map(([k, K]) => html`<div>
+        render($('#builder'), html`<div class="pickers">
+          ${Object.entries(KINDS).map(([k, K]) => html`<div class="picker">
             <div class="row" style="margin-bottom:8px"><h3>${K.title}</h3><span class="muted small" id="count-${k}"></span>
               <span class="right row" style="gap:4px"><button type="button" class="btn small quiet" data-all="${k}">Select shown</button><button type="button" class="btn small quiet" data-none="${k}">Clear</button></span></div>
             <input type="search" data-filter="${k}" value="${Q[k]}" placeholder="Search the list" aria-label="Search ${K.title}" style="margin-bottom:8px">
             <div class="chips chips-scroll" id="chips-${k}"></div>
             <form data-add="${k}" class="row" style="gap:4px;margin-top:8px"><input type="text" placeholder="Add your own (separate several with commas)" aria-label="Add to ${K.title}" style="flex:1;min-width:200px"><button class="btn small">Add</button></form>
           </div>`)}
-          <div class="row"><button class="btn" id="mix"></button><button class="btn quiet" id="orig">Use my original six</button></div>
+          <div class="row pickers-foot"><button class="btn primary" id="mix"></button><button class="btn quiet" id="orig">Use my original six</button><span class="muted small">Every business type you ticked is searched in every town you ticked.</span></div>
         </div>`);
         drawChips('cat'); drawChips('town'); drawSummary();
       }
@@ -61,39 +61,42 @@
         $('#start').textContent = busy ? 'A job is running' : `Start finding leads${S.searches.length ? ` (${S.searches.length})` : ''}`;
       }
 
-      render(el, html`<div class="grid2" style="align-items:start">
-        <div class="stack">
-          <section class="panel"><div class="panel-head"><h2>Ask the AI</h2><button type="button" class="btn small quiet right hidden" id="plan-new">Start over</button></div>
-            <div class="panel-body stack" style="gap:12px">
-              <div id="plan-out" class="stack" style="gap:12px"></div>
-              <form id="plan-form" class="stack" style="gap:8px">
-                <textarea id="plan-text" rows="2" aria-label="Tell the AI what you want" placeholder="Tell the AI who you want to reach. For example: pharmacies and clinics in Kisii and Migori that could use my billing software."></textarea>
-                <div class="row"><button class="btn primary" id="plan-ask">Ask AI</button><span class="muted small">It suggests the searches. Nothing runs until you press a start button.</span></div>
-              </form>
-            </div></section>
-          <section class="panel"><div class="panel-head"><h2>What to look for</h2></div><div class="panel-body stack" style="gap:16px">
-            <div id="builder"></div><hr class="sep"><div id="queue"></div>
+      render(el, html`<div class="stack find">
+        <section class="panel"><div class="panel-head"><h2>Ask the AI</h2><span class="muted small">Optional: describe who you want and it suggests the searches.</span><button type="button" class="btn small quiet right hidden" id="plan-new">Start over</button></div>
+          <div class="panel-body stack" style="gap:12px">
+            <div id="plan-out" class="stack" style="gap:12px"></div>
+            <form id="plan-form" class="plan-form">
+              <textarea id="plan-text" rows="2" aria-label="Tell the AI what you want" placeholder="For example: pharmacies and clinics in Kisii and Migori that could use my billing software."></textarea>
+              <button class="btn primary" id="plan-ask">Ask AI</button>
+            </form>
+            <div class="muted small">Nothing runs until you press a start button.</div>
+          </div></section>
+
+        <section class="panel"><div class="panel-head"><h2>1. What to look for</h2></div>
+          <div class="panel-body"><div id="builder"></div></div></section>
+
+        <div class="grid2 find-run">
+          <section class="panel"><div class="panel-head"><h2>2. Searches to run</h2></div><div class="panel-body stack" style="gap:16px">
+            <div id="queue"></div>
             <hr class="sep">
-            <div class="grid2">
+            <div class="opts">
               <label class="field">New leads to keep per search<input type="number" id="max" min="1" max="300" value="${S.max}"><span class="hint">Stops a search after this many new businesses.</span></label>
-              <div class="stack" style="gap:8px;align-content:start;padding-top:20px">
-                <label class="check"><input type="checkbox" id="show" ${S.show ? 'checked' : ''}>Show the browser window <span class="muted small">(only if Google asks for a CAPTCHA)</span></label>
-                <label class="check"><input type="checkbox" id="enrich" ${S.enrich ? 'checked' : ''}>Look for emails and WhatsApp numbers on their websites after</label></div>
+              <label class="check"><input type="checkbox" id="enrich" ${S.enrich ? 'checked' : ''}>Look for emails and WhatsApp numbers on their websites after</label>
+              <label class="check"><input type="checkbox" id="show" ${S.show ? 'checked' : ''}>Show the browser window <span class="muted small">(only if Google asks for a CAPTCHA)</span></label>
             </div>
             <div class="row"><button class="btn primary" id="start">Start</button>
               <button class="btn" id="emails">Look for emails now</button></div>
             <p class="muted small">Businesses already in your CRM (even archived ones) are skipped automatically, so you can run the same searches again safely. Searches run quietly in the background. If Google ever shows a CAPTCHA the run stops: tick “Show the browser window”, run it again and solve it there.</p>
           </div></section>
-        </div>
-        <div class="stack">
-          <section class="panel"><div class="panel-head"><h2 id="job-title">Progress</h2><span id="job-chip"></span><button class="btn small danger right hidden" id="stop">Stop</button></div>
+          <section class="panel"><div class="panel-head"><h2 id="job-title">3. Progress</h2><span id="job-chip"></span><button class="btn small danger right hidden" id="stop">Stop</button></div>
             <div class="panel-body stack" style="gap:12px">
               <div class="muted" id="job-progress">Nothing has run yet.</div>
               <div class="stats4" id="job-stats"></div>
               <div class="logbox" id="log" aria-live="off" tabindex="0"></div>
             </div></section>
-          <section class="panel"><div class="panel-head"><h2>Recent runs</h2></div><div id="history"></div></section>
         </div>
+
+        <section class="panel"><div class="panel-head"><h2>Recent runs</h2></div><div id="history"></div></section>
       </div>`);
 
       // ---- AI planner: you talk, it proposes searches, you add them (or add and start in one click)

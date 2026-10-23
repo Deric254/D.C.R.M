@@ -37,24 +37,28 @@
     return out;
   }
 
+  const TABS = [['business', 'Business and account', 'Name, logo, people, updates'], ['channels', 'Email, text and WhatsApp', 'How messages are sent'], ['sending', 'Limits and opt-outs', 'Daily caps, sending hours'], ['ai', 'AI writing help', 'Keys and your pitch'], ['data', 'Data and backups', 'Copies and moving computer']];
   App.views.settings = {
     title: 'Settings',
     async render(el) {
       let [s, health, st] = await Promise.all([api('/settings'), api('/health'), api('/status')]);
-      const form = () => html`<div id="account-panels" class="stack" style="max-width:860px;margin-bottom:16px"></div><form id="sform" class="stack" style="max-width:860px">
-        <section class="panel"><div class="panel-head"><h2>Your business</h2></div><div class="panel-body">
+      const form = () => html`<div class="settings-layout">
+        <nav class="subnav" aria-label="Settings sections">${TABS.map(([k, label, hint]) => html`<button type="button" class="subnav-item" data-tab="${k}"><b>${label}</b><span>${hint}</span></button>`)}</nav>
+        <div class="settings-main">
+      <div id="account-panels" data-group="business" class="stack" style="margin-bottom:16px"></div><form id="sform" class="stack">
+        <section class="panel" data-group="business"><div class="panel-head"><h2>Your business</h2></div><div class="panel-body">
           <div class="grid2">${field(s, 'sender_name', 'Sender name', { hint: 'Shown on emails and used for {sender} in your messages.' })}${field(s, 'brand_name', 'Business name', { hint: 'The AI writes as you, from this business ("I\'m Deric, from DericBI").' })}</div>
           <div class="grid2" style="margin-top:14px">${field(s, 'contact_website', 'Your website', { hint: 'Written into messages as {website}.' })}${field(s, 'contact_whatsapp', 'Your WhatsApp number', { hint: 'Written into messages as {whatsapp}.' })}
             ${field(s, 'contact_email', 'Your email', { hint: 'Written into messages as {email}.' })}</div></div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Logo and slogan</h2></div><div class="panel-body stack" style="gap:14px">
+        <section class="panel" data-group="business"><div class="panel-head"><h2>Logo and slogan</h2></div><div class="panel-body stack" style="gap:14px">
           <div class="row"><img id="logo-preview" class="logo-preview" src="/api/branding/logo" alt="Current logo" onerror="this.hidden=true">
             <div class="stack" style="gap:8px"><input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp"><button type="button" class="btn small" id="logo-reset">Use the default logo</button></div></div>
           ${field(s, 'slogan', 'Slogan', { hint: 'Shown under the name in the sidebar. Save settings to apply.' })}
           <p class="muted small">The logo changes straight away inside the app. The program icon itself is set when the app is built: replace <code>backend/static/logo.png</code> (square PNG, 512 px or larger) and push.</p>
         </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Email</h2><span class="chip right ${st.email_ready ? 'ok' : ''}">${st.email_ready ? (st.replies_ready ? 'Sending and replies set up' : 'Sending set up') : 'Not connected'}</span></div>
+        <section class="panel" data-group="channels"><div class="panel-head"><h2>Email</h2><span class="chip right ${st.email_ready ? 'ok' : ''}">${st.email_ready ? (st.replies_ready ? 'Sending and replies set up' : 'Sending set up') : 'Not connected'}</span></div>
           <div class="panel-body stack" style="gap:14px">
             <p class="muted small">Connect your Gmail once and the app can send, and read the replies that come back. If anything fails you'll see exactly which step and what to change.</p>
             ${guide('Where do I get the Gmail App Password? (step by step)', [
@@ -84,7 +88,7 @@
             </div></details>
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Text messages (your Android phone)</h2><span class="chip right ${st.sms_ready ? 'ok' : ''}">${st.sms_ready ? 'Phone set up' : 'Not connected'}</span></div>
+        <section class="panel" data-group="channels"><div class="panel-head"><h2>Text messages (your Android phone)</h2><span class="chip right ${st.sms_ready ? 'ok' : ''}">${st.sms_ready ? 'Phone set up' : 'Not connected'}</span></div>
           <div class="panel-body stack" style="gap:14px">
             <p class="muted small">Texts are sent by your own phone and SIM, over your home or office Wi-Fi (or the phone's hotspot). No sign-up and no per-text fee from this app; your normal SMS bundle or airtime applies.</p>
             ${guide('How do I connect my phone? (step by step)', [
@@ -99,7 +103,7 @@
             <div id="sms-result"></div>
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>WhatsApp</h2><span class="chip right ${st.whatsapp_linked ? 'ok' : ''}" id="wa-chip">${st.whatsapp_linked ? 'Connected' : 'Not connected'}</span></div>
+        <section class="panel" data-group="channels"><div class="panel-head"><h2>WhatsApp</h2><span class="chip right ${st.whatsapp_linked ? 'ok' : ''}" id="wa-chip">${st.whatsapp_linked ? 'Connected' : 'Not connected'}</span></div>
           <div class="panel-body stack" style="gap:14px">
             <p class="muted small">Connect once by scanning a code with your phone (WhatsApp &gt; Linked devices), the same as linking WhatsApp Web. After that, campaigns send by themselves, one at a time, and every message is recorded automatically once WhatsApp shows it as sent. Until it is connected you press send yourself for each lead.</p>
             <div class="notice" style="margin:0"><b>Protect your number.</b> WhatsApp can ban a number that sends many messages to people who never chatted with it. Use a number you can afford to lose (not the one your customers already know), keep the daily limit low, and keep messages relevant.</div>
@@ -111,7 +115,7 @@
             ${st.whatsapp_linked ? html`<div class="row"><button type="button" class="btn" id="wa-sync">Check for replies now</button></div>` : ''}
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Limits and sending hours</h2></div>
+        <section class="panel" data-group="sending"><div class="panel-head"><h2>Limits and sending hours</h2></div>
           <div class="panel-body stack" style="gap:14px">
             ${select(s, 'light_mode', 'Light mode (for a slow computer)', [['auto', 'Automatic'], ['on', 'Always on'], ['off', 'Always off']], health.machine ? `This computer: ${health.machine.cores} processor core${health.machine.cores === 1 ? '' : 's'}${health.machine.ram_mb ? `, ${(health.machine.ram_mb / 1024).toFixed(1)} GB memory` : ''}. Light mode is ${health.machine.light_mode ? 'ON' : 'off'} now. When on, only one browser runs at a time: a lead search and WhatsApp take turns, because each browser needs about 0.7 GB.` : '')}
             <div class="grid2">${field(s, 'email_daily_cap', 'Emails per day', { type: 'number', min: 0, hint: 'Gmail allows about 500. Start low while your address builds a reputation.' })}${field(s, 'sms_daily_cap', 'Texts per day', { type: 'number', min: 0 })}
@@ -122,7 +126,7 @@
             ${field(s, 'followup_wait_days', 'Days before a follow-up can be sent', { type: 'number', min: 0, hint: 'A lead gets one message at a time. After this many days with no reply it can be followed up.' })}
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Opting out</h2></div>
+        <section class="panel" data-group="sending"><div class="panel-head"><h2>Opting out</h2></div>
           <div class="panel-body stack" style="gap:14px">
             ${check(s, 'append_optout', 'Add an opt-out line to every message')}
             <label class="field">Line added to emails<textarea name="optout_footer_email" rows="2">${s.optout_footer_email}</textarea></label>
@@ -130,12 +134,12 @@
             <p class="muted small">Anyone who replies STOP, unsubscribe or similar (in English or Swahili) is marked do-not-contact and never messaged again. Keeping an opt-out line in place is good practice and helps with Kenya's Data Protection Act.</p>
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>About and updates</h2></div><div class="panel-body stack" style="gap:12px">
+        <section class="panel" data-group="business"><div class="panel-head"><h2>About and updates</h2></div><div class="panel-body stack" style="gap:12px">
           <div class="small">DericBI CRM <strong>version ${health.version}</strong></div>
           <div id="update-box"></div>
         </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>AI writing help</h2></div>
+        <section class="panel" data-group="ai"><div class="panel-head"><h2>AI writing help</h2></div>
           <div class="panel-body stack" style="gap:14px">
             <p class="muted small">Paste a free key from any provider below. Keys are tried in order, so when one reaches its free limit the next one answers. Use “Write with AI” when writing a campaign or a message to one lead.</p>
             ${guide('Where do I get a free AI key? (2 minutes)', [
@@ -153,13 +157,13 @@
             <div><button type="button" class="btn" id="test-ai">Test the keys</button></div>
           </div></section>
 
-        <section class="panel"><div class="panel-head"><h2>Your data</h2></div>
+        <section class="panel" data-group="data"><div class="panel-head"><h2>Your data</h2></div>
           <div class="panel-body stack" style="gap:12px">
             <div class="small muted">Everything is stored on this computer in <code>${health.data_dir}</code>. Passwords are stored there too, so keep backups private.</div>
             <div><button type="button" class="btn" id="backup">Download a full copy of the database (advanced)</button> <span class="muted small">Owner only. It includes accounts, the licence and saved passwords: use "Backups" below to move to another computer.</span></div>
           </div></section>
 
-        <section class="panel" id="backups-panel"><div class="panel-head"><h2>Backups and moving to another computer</h2></div>
+        <section class="panel" data-group="data" id="backups-panel"><div class="panel-head"><h2>Backups and moving to another computer</h2></div>
           <div class="panel-body stack" style="gap:12px">
             <div class="small muted">A backup is your whole business in one file: leads, messages, campaigns, history, settings and logo. Use it to recover from a mistake or a broken computer, or to move to another computer. Sign-in accounts and this computer's licence are never in it.</div>
             <div id="bk-notice"></div>
@@ -171,8 +175,8 @@
             </div>
           </div></section>
 
-        <div class="row"><button class="btn primary" type="submit">Save settings</button><span class="muted small" id="saved"></span></div>
-      </form>`;
+        <div class="row savebar"><button class="btn primary" type="submit">Save settings</button><span class="muted small" id="saved">Applies to every section.</span></div>
+      </form></div></div>`;
       // ---- backups, restore, and moving to another computer
       const size = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
       const stamp = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
@@ -244,7 +248,16 @@
         ? html`<p class="muted small">Updates are installed from the desktop app.</p>`
         : html`<div class="row"><button type="button" class="btn" id="check-update">Check for updates</button>
             ${App.state.update ? html`<button type="button" class="btn primary" id="install-update">Install version ${App.state.update.version} and restart</button>` : ''}</div>`);
-      const draw = () => { render(el, form()); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); };
+      let tab = 'business';
+      const applyTab = () => {
+        el.querySelectorAll('[data-group]').forEach((n) => { n.hidden = n.dataset.group !== tab; });
+        el.querySelectorAll('.subnav-item').forEach((b) => { b.classList.toggle('active', b.dataset.tab === tab); b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'); });
+      };
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('.subnav-item'); if (!b) return;
+        tab = b.dataset.tab; applyTab(); const c = document.querySelector('.content'); if (c) c.scrollTop = 0;
+      });
+      const draw = () => { render(el, form()); applyTab(); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); };
       draw();
 
       const save = async () => {

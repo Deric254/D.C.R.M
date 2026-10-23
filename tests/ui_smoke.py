@@ -208,12 +208,17 @@ try:
         # ---- settings
         page.click('#nav a[data-view="settings"]')
         page.wait_for_selector("#sform")
+        page.click('.subnav-item[data-tab="sending"]')          # settings are grouped; one section at a time
         page.fill('input[name=email_daily_cap]', "55")
         page.click("#sform button[type=submit]")
         page.wait_for_selector(".toast")
         shot("7-settings")
         assert call("GET", "/settings")["email_daily_cap"] == 55
+        page.click('.subnav-item[data-tab="business"]')
+        shot("7a-settings-business")
         page.fill('input[name=slogan]', "Leads that reply")
+        page.click('.subnav-item[data-tab="ai"]')
+        shot("7b-settings-ai")
         page.fill('textarea[name=ai_pitch]', "Stock software")
         page.click("#sform button[type=submit]")
         page.wait_for_function("document.querySelector('#slogan').textContent === 'Leads that reply'")
@@ -222,7 +227,7 @@ try:
         page.wait_for_function("document.querySelector('.toasts') && document.querySelector('.toasts').textContent.includes('works')")   # an AI is set up: it says so
         ai_settings = {k: call("GET", "/settings")[k] for k in ("ai_provider", "ai_custom_url", "ai_custom_model")}
         call("PUT", "/settings", {"ai_provider": "gemini", "ai_custom_url": "", "ai_custom_model": ""})
-        page.reload(); page.wait_for_selector("#sform"); page.click("#test-ai")
+        page.reload(); page.wait_for_selector("#sform"); page.click('.subnav-item[data-tab="ai"]'); page.click("#test-ai")
         page.wait_for_selector(".toast.bad")   # no key: a clear error, not a crash
         assert "Add an AI key first" in page.inner_text(".toasts")
         call("PUT", "/settings", ai_settings)   # the Today step below needs the AI again

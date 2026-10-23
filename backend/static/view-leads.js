@@ -24,8 +24,16 @@
       }
       const f = await api('/facets');
       render(el, html`<div>
-        <div class="toolbar">
+        <div class="toolbar tb-top">
           <input type="search" id="q" placeholder="Search name, phone, email, notes" value="${S.q}" aria-label="Search leads">
+          <span class="right row">
+            <button class="btn" id="btn-import">Import CSV</button>
+            <button class="btn" id="btn-export">Export CSV</button>
+            <button class="btn primary" id="btn-add">Add lead</button>
+          </span>
+          <input type="file" id="file" accept=".csv,text/csv" class="hidden">
+        </div>
+        <div class="toolbar tb-filters">
           <select id="f-sector" aria-label="Sector"><option value="">All sectors</option>${f.sectors.map((x) => opt(x, x, S.sector))}</select>
           <select id="f-town" aria-label="Town"><option value="">All towns</option>${f.towns.map((x) => opt(x, x, S.town))}</select>
           <select id="f-status" aria-label="Status"><option value="">Any status</option>${App.STATUSES.map((x) => opt(x, App.STATUS_LABEL[x], S.status))}</select>
@@ -33,12 +41,6 @@
           <select id="f-contact" aria-label="Contact details">${opt('', 'Any contact details', S.contact)}${opt('phone', 'Has a phone', S.contact)}${opt('email', 'Has an email', S.contact)}${opt('noemail', 'No email yet', S.contact)}${opt('dnc', 'Do not contact', S.contact)}</select>
           <select id="f-sort" aria-label="Sort">${opt('created_desc', 'Newest first', S.sort)}${opt('created_asc', 'Oldest first', S.sort)}${opt('name', 'Name', S.sort)}${opt('last_reply', 'Latest reply', S.sort)}${opt('grade', 'Hottest first', S.sort)}</select>
           <label class="check"><input type="checkbox" id="f-arch" ${S.archived ? 'checked' : ''}>Archived</label>
-          <span class="right row">
-            <button class="btn" id="btn-import">Import CSV</button>
-            <button class="btn" id="btn-export">Export CSV</button>
-            <button class="btn primary" id="btn-add">Add lead</button>
-          </span>
-          <input type="file" id="file" accept=".csv,text/csv" class="hidden">
         </div>
         <div id="bulk"></div>
         <div class="panel"><div class="tablewrap" id="table"></div></div>
@@ -86,8 +88,8 @@
             <td><div class="name">${l.name}</div><div class="muted small">${[l.sector, l.town].filter(Boolean).join(' · ')}</div></td>
             <td><div>${l.phone_display || html`<span class="muted">No phone</span>`}</div><div class="muted small">${l.email || ''}</div></td>
             <td>${statusChip(l.status)}</td>
-            <td>${gradeChip(l.grade)} ${l.do_not_contact ? html`<span class="chip optout" title="Won't be messaged">Do not contact</span>` : ''} ${l.email_bounced ? html`<span class="chip bounce">Email bounced</span>` : ''}</td>
-            <td class="muted small nowrap">${l.last_reply_at ? 'Replied ' + when(l.last_reply_at) : l.last_contacted_at ? 'Messaged ' + when(l.last_contacted_at) : ''}</td>
+            <td>${l.grade ? gradeChip(l.grade) : html`<span class="muted">Not graded</span>`} ${l.do_not_contact ? html`<span class="chip optout" title="Won't be messaged">Do not contact</span>` : ''} ${l.email_bounced ? html`<span class="chip bounce">Email bounced</span>` : ''}</td>
+            <td class="muted small nowrap">${l.last_reply_at ? 'Replied ' + when(l.last_reply_at) : l.last_contacted_at ? 'Messaged ' + when(l.last_contacted_at) : 'Not messaged yet'}</td>
           </tr>`)}</tbody></table>`
           : html`<div class="empty"><strong>${S.q || S.sector || S.town || S.status || S.grade || S.contact ? 'No leads match these filters' : S.archived ? 'Nothing archived' : 'No leads yet'}</strong>${S.archived ? '' : html`<a href="#/find">Find leads on Google Maps</a> or use Import CSV to bring in your list.`}</div>`);
         const pages = Math.max(1, Math.ceil(total / PAGE));
