@@ -3539,6 +3539,7 @@ GOOD_AI = lambda: FakeAI([
     (r"naomba", _j("Asante sana. Naweza kukuonyesha jinsi rekodi za duka lako zinavyoweza kusaidia. Unatumia nini kufuatilia dawa sasa?", "interested")),
     (r"call me", _j("Great, Deric will call you tomorrow at 10am. What is the best number to reach you?", "interested", "call_proposed", pain="wants a call")),
     (r"maybe next month", _j("No problem at all. Shall I check back in a month?", "timing", "nurture")),
+    (r"how do i know", _j("A fair question. You can check my work on my website, and you start with a small first step on your own records: you only pay when you see value. Would a short call to meet Deric help?", "question")),
     (r"who is this", _j("I work with Deric at DericBI. He helps small shops see where money leaks in their own records.", "question")),
     (r"phones and laptops", _j("We only help businesses make sense of their own sales and stock records, so not phones. Is stock tracking something you struggle with?", "other")),
     (r"ok thanks", _j("", "smalltalk", reason="the chat is over")),
@@ -3617,7 +3618,14 @@ def a_reply_is_rejected_when_it_invents_a_price_a_link_a_number_or_claims_to_be_
     assert any("link" in p for p in ok("See https://evil.example.com/pay", s)) and ok("Visit https://dericbi.vercel.app", s) == []
     assert any("phone" in p for p in ok("Call me on 0712 345 678", s)) and ok("WhatsApp +254 791 360 805", s) == []
     assert any("human" in p or "guarantee" in p for p in ok("I'm a real person and I guarantee results", s))
-    assert any("blank" in p for p in ok("Hi {name}, how are you", s)) and any("long" in p for p in ok("x" * 460, s)) and ok("", s) == ["empty reply"]
+    assert any("blank" in p for p in ok("Hi {name}, how are you", s)) and any("long" in p for p in ok("x" * 1010, s)) and ok("", s) == ["empty reply"]
+    assert ok("x" * 700, s) == []                                                                           # a fuller message is allowed
+    for fine in ("Feel free to reply whenever suits you.", "It takes about 5 working days.", "You said stock expires on the shelf, and that ties up cash.",
+                 "I will wait till Monday, no rush."):                                                     # everyday wording is never rejected
+        assert ok(fine, s) == [], (fine, ok(fine, s))
+    assert closer.hard_check("I will pay you till Friday") is None and closer.hard_check("what is your till number")[0] == "payment"
+    for bad in ("The report is about KES 1000 or so.", "Offer expires today, hurry.", "It is free for you."):
+        assert ok(bad, s), bad
 
 
 @test
@@ -4282,9 +4290,23 @@ def the_email_finder_reads_hidden_obfuscated_and_structured_addresses_and_whatsa
     assert enrich.ScrapeIn if hasattr(enrich, "ScrapeIn") else True
 
 
+@test
+def the_offer_can_carry_proof_and_credentials_that_the_assistant_may_state_and_the_prompt_asks_for_honest_trust_building():
+    _closer_setup(closer_proof="Worked with 12 pharmacies in Meru and Embu."); s = db.get_settings()
+    assert "Worked with 12 pharmacies" in closer.kb_text(s) and "PROOF YOU MAY STATE" in closer.kb_text(s)
+    assert closer.check_reply("I have worked with 12 pharmacies in Meru and Embu.", s) == []             # stated proof is allowed
+    sysm = closer._system(s)
+    assert "BUILDING CONFIDENCE" in sysm and "NEVER invent" in sysm and "VOICE AND VALUE" in sysm
+    assert "builds confidence honestly" in closer.REVIEWER
+    s2 = {**s, "closer_proof": ""}
+    assert "PROOF YOU MAY STATE" not in closer.kb_text(s2)
+    assert closer.fingerprint(s) != closer.fingerprint(s2)                                             # changing your proof means the Test pack must run again
+
+
 if __name__ == "__main__":
     SMTP.stop()
     PHONE.shutdown()
     bad = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} passed")
     sys.exit(1 if bad else 0)
+

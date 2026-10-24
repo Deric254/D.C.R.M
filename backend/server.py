@@ -713,6 +713,8 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         for k in ("closer_system_once", "closer_system_start", "closer_system_monthly"):
             if k in clean and not 0 <= clean[k] <= 10_000_000:
                 raise ValueError("System prices must be sensible amounts")
+        if len(clean.get("closer_proof", "")) > 3000:
+            raise ValueError("Keep your proof and credentials under 3,000 characters")
         if len(clean.get("closer_kb", "")) > 6000:
             raise ValueError("The knowledge base is too long (6000 characters at most)")
         if clean.get("closer_booking_link") and not clean["closer_booking_link"].startswith(("http://", "https://")):
@@ -891,6 +893,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 "whatsapp_linked": bool(db.get_internal("whatsapp_linked")), "email_ready": C.channel_ready("email", s) and bool(s.get("imap_host")),
                 "sms_ready": C.channel_ready("sms", s), "pack": closer.pack_status(s), "breaker": closer.breaker_open(),
                 "loop_error": loop.last_error if loop else "", "stats": st, "live": C.live_conversations(),
+                "quiet_now": closer.quiet_seconds() > 0,
                 "channels": {"whatsapp": bool(db.get_internal("whatsapp_linked")), "email": C.channel_ready("email", s) and bool(s.get("imap_host")),
                              "sms": C.channel_ready("sms", s)}}
 
