@@ -780,6 +780,20 @@ def email_enrichment():
         assert L.get_lead(c, a)["email"] in ("info@acme.co.ke", "sales@acme.co.ke")
     stats = enrich.enrich_leads(lambda m: None, lambda: False, get=get)
     assert stats["checked"] == 0, "must not retry sites with no email within 30 days"
+    # a lead that gets a (new) website is picked up again on its own, and the background check knows when something is waiting
+    with db.db() as c:
+        nm = c.execute("SELECT id FROM leads WHERE name='NoMail'").fetchone()["id"]
+        assert not enrich.due(c)
+        L.update_lead(c, nm, {"website": "http://acme.co.ke"})
+        assert enrich.due(c)
+    stats = enrich.enrich_leads(lambda m: None, lambda: False, get=get)
+    assert stats["checked"] == 1 and stats["found"] == 1
+    with db.db() as c:
+        assert not enrich.due(c)
+        # older "no email" notes that do not say which site was read are checked once more
+        a2 = L.add_lead(c, {"name": "Old", "town": "T", "website": "http://old.co.ke", "phone": "0700000009"})["id"]
+        db.log_event(c, a2, "enrich", "No email found on website")
+        assert enrich.due(c)
 
 
 # ========================================================================== API
@@ -2991,6 +3005,8 @@ def on_a_small_computer_the_lead_search_and_whatsapp_never_open_two_browsers_at_
             configure(light_mode="off")
             spawned.clear()
             assert cl.post("/api/jobs/scrape", json=body).status_code == 200 and "scrape" in spawned      # off: no restriction
+            with db.db() as c:   # even if "enrich": false is sent, emails are always looked for after a search
+                assert all(json.loads(r["params"]).get("enrich") is True for r in c.execute("SELECT params FROM jobs WHERE kind='scrape' ORDER BY id DESC LIMIT 1"))
             # settings and health
             assert cl.put("/api/settings", json={"light_mode": "sometimes"}).status_code == 400
             assert cl.put("/api/settings", json={"light_mode": "on"}).status_code == 200

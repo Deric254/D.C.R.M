@@ -124,6 +124,7 @@
             <div class="grid2">${field(s, 'send_window_start', 'From', { type: 'time' })}${field(s, 'send_window_end', 'Until', { type: 'time' })}</div>
             ${select(s, 'reach_order', 'When you choose "Best way for each lead", try first', [['whatsapp,email,sms', 'WhatsApp, then email, then text'], ['email,whatsapp,sms', 'Email, then WhatsApp, then text'], ['whatsapp,sms,email', 'WhatsApp, then text, then email'], ['email,sms,whatsapp', 'Email, then text, then WhatsApp'], ['sms,whatsapp,email', 'Text, then WhatsApp, then email'], ['sms,email,whatsapp', 'Text, then email, then WhatsApp']])}
             ${field(s, 'followup_wait_days', 'Days before a follow-up can be sent', { type: 'number', min: 0, hint: 'A lead gets one message at a time. After this many days with no reply it can be followed up.' })}
+            ${check(s, 'auto_find_emails', 'Look for missing emails in the background (leads that have a website but no email, a few at a time, only when nothing else is running)')}
           </div></section>
 
         <section class="panel" data-group="sending"><div class="panel-head"><h2>Opting out</h2></div>

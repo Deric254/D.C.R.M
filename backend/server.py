@@ -22,6 +22,7 @@ import campaigns as C
 import closer
 import config
 import db
+import enrich
 import jobs
 import leads as L
 import messaging
@@ -203,6 +204,23 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                     pass
                 time.sleep(600)
         threading.Thread(target=keep_backups, daemon=True).start()
+
+        def keep_emails_found():  # leads that have a website but no email are read in the background, a few at a time, when nothing else is running
+            time.sleep(150)       # never in the way of starting up
+            while True:
+                try:
+                    if db.get_settings().get("auto_find_emails", True) and not backup.busy():
+                        with db.db() as conn:
+                            if enrich.due(conn) and not jobs.active_job(conn):
+                                jid = jobs.create_job(conn, "enrich", {"limit": 40, "auto": True})
+                            else:
+                                jid = None
+                        if jid:
+                            jobs.spawn(jid, "enrich")
+                except Exception:
+                    pass
+                time.sleep(900)
+        threading.Thread(target=keep_emails_found, daemon=True).start()
 
         def check_health():       # is the data file itself in good shape? checked once per start, out of the way
             time.sleep(45)
@@ -477,7 +495,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             if busy:
                 return JSONResponse({"detail": busy}, status_code=409)
             jid = jobs.create_job(conn, "scrape", {"searches": searches, "max_per_search": body.max_per_search,
-                                                   "headless": body.headless, "enrich": body.enrich})
+                                                   "headless": body.headless, "enrich": True})   # emails and WhatsApp numbers are always looked for after a search
         jobs.spawn(jid, "scrape")
         return {"id": jid}
 

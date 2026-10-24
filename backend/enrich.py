@@ -120,14 +120,22 @@ def find_emails(website: str, get=None) -> list:
     return find_contacts(website, get)["emails"]
 
 
+# Leads that have a website and no email, and whose THAT website has not been checked in the last 30 days. A lead that gets a new or
+# different website (or one that was never checked) is therefore picked up again on its own, and a site that was just read is not re-read.
+_TODO = ("FROM leads l WHERE l.archived=0 AND l.email IS NULL AND l.website != '' "
+         "AND NOT EXISTS (SELECT 1 FROM events e WHERE e.lead_id=l.id AND e.kind='enrich' AND e.ts >= ? AND instr(e.detail, l.website) > 0)")
+
+
+def due(conn) -> bool:
+    """True when at least one lead is waiting for its website to be read (a cheap check: it stops at the first one)."""
+    return conn.execute("SELECT 1 " + _TODO + " LIMIT 1", (days_ago(30),)).fetchone() is not None
+
+
 def enrich_leads(log, should_stop, limit=300, get=None) -> dict:
     """Fill in missing emails. Returns counters."""
     stats = {"checked": 0, "found": 0, "errors": 0}
     with db.db() as conn:
-        rows = conn.execute(
-            "SELECT id, name, website FROM leads l WHERE l.archived=0 AND l.email IS NULL AND l.website != '' "
-            "AND NOT EXISTS (SELECT 1 FROM events e WHERE e.lead_id=l.id AND e.kind='enrich' AND e.ts >= ?) "
-            "ORDER BY l.id LIMIT ?", (days_ago(30), limit)).fetchall()
+        rows = conn.execute("SELECT id, name, website " + _TODO + " ORDER BY l.id DESC LIMIT ?", (days_ago(30), limit)).fetchall()   # newest first
     log(f"Looking for emails on {len(rows)} websites…")
     for r in rows:
         if should_stop():
@@ -149,7 +157,7 @@ def enrich_leads(log, should_stop, limit=300, get=None) -> dict:
                         return e
                     except L.Conflict:
                         continue
-                db.log_event(conn, r["id"], "enrich", "No email found on website")
+                db.log_event(conn, r["id"], "enrich", f"No email found on website: {r['website']}")
                 return None
         def save_phone():
             with db.db() as conn:

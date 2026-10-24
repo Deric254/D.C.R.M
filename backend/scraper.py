@@ -280,7 +280,7 @@ def run_scrape(job_id: int, params: dict, driver_factory=None, sleep=time.sleep)
         if final == "done" and params.get("enrich") and not stopping():
             jobs.update(job_id, progress="Finding emails on websites…")
             try:
-                enrich.enrich_leads(log, stopping)
+                enrich.enrich_leads(log, stopping, limit=120)   # newest first: the leads this run just found come before older ones
             except Exception as e:   # the leads are already saved: a problem finding emails must not turn the run into a failure
                 traceback.print_exc()
                 log(f"Email search stopped early ({type(e).__name__}: {e}). All the leads above were saved. "
