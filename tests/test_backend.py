@@ -517,6 +517,51 @@ def daily_cap_and_window_respected():
 
 
 @test
+def a_stalled_campaign_always_says_why_it_is_not_sending():
+    from datetime import datetime, timedelta
+    fresh(); configure(send_window_enabled=False, light_mode="off")
+    with db.db() as c:
+        for i in range(3):
+            L.add_lead(c, {"name": f"W{i}", "town": "T", "phone": f"07110000{i:02d}"})
+        C.create_campaign(c, "WA", "whatsapp", "", "Hi {name}", {}, launch=True)
+    db.set_internal("whatsapp_linked", False)
+    with db.db() as c:
+        rep = C.sending_report(c)
+    assert len(rep) == 1 and rep[0]["level"] == "bad" and "not connected" in rep[0]["text"] and rep[0]["queued"] == 3, rep
+    sn = C.Sender()                                   # the top pill must say it too, never just "Outreach running"
+    assert sn._whatsapp_tick(db.get_settings()) == 10.0 and sn.status["state"] == "waiting" and "not connected" in sn.status["detail"], sn.status
+    # connected, but a lead search holds the browser on a light-mode computer
+    db.set_internal("whatsapp_linked", True); configure(light_mode="on")
+    with db.db() as c:
+        jid = jobs.create_job(c, "scrape", {}); c.execute("UPDATE jobs SET status='running', progress='Search 10/104: Pharmacy in Nakuru' WHERE id=?", (jid,))
+        rep = C.sending_report(c)
+    assert rep[0]["level"] == "warn" and "lead search" in rep[0]["text"] and "Search 10/104" in rep[0]["text"], rep
+    configure(light_mode="off")
+    with db.db() as c:
+        c.execute("DELETE FROM jobs")
+        rep = C.sending_report(c)
+    assert rep[0]["level"] == "info" and "about to start" in rep[0]["text"], rep
+    t = datetime.now()                                 # outside the sending hours
+    configure(send_window_enabled=True, send_window_start=(t + timedelta(hours=2)).strftime("%H:%M"), send_window_end=(t + timedelta(hours=3)).strftime("%H:%M"))
+    if (t + timedelta(hours=3)).day == t.day:
+        with db.db() as c:
+            rep = C.sending_report(c)
+        assert rep[0]["level"] == "warn" and "sending hours" in rep[0]["text"], rep
+    configure(send_window_enabled=False, whatsapp_daily_cap=0)
+    fresh(); configure(send_window_enabled=False, email_daily_cap=1, smtp_host="", from_email="")   # email not set up
+    with db.db() as c:
+        L.add_lead(c, {"name": "E", "town": "T", "email": "e@shop.test"})
+        c.execute("INSERT INTO campaigns(name, channel, subject, body, filters, status, created_at, launched_at, total) VALUES('E','email','Hi','Hello','{}','running',?,?,1)", (now(), now()))
+        cid = c.execute("SELECT MAX(id) FROM campaigns").fetchone()[0]
+        lid = c.execute("SELECT id FROM leads").fetchone()[0]
+        c.execute("INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, created_at) VALUES(?,?,'out','email','e@shop.test','Hi','Hello','queued',?)", (lid, cid, now()))
+        rep = C.sending_report(c)
+    assert rep and rep[0]["level"] == "bad" and "not set up" in rep[0]["text"], rep
+    with db.db() as c:
+        assert C.sending_report(c, linked=True) and not C.sending_report(db.connect()) is None
+
+
+@test
 def dnc_after_queueing_is_skipped():
     fresh(); SMTP_INBOX.clear(); configure()
     with db.db() as c:
@@ -2180,7 +2225,8 @@ def sender_starts_the_whatsapp_worker_only_when_linked_in_hours_and_under_the_li
     real_spawn, jobs.spawn = jobs.spawn, lambda jid, kind: spawned.append(kind)
     try:
         sender = C.Sender()
-        assert sender._whatsapp_tick(db.get_settings()) is None and not spawned          # not linked: nothing starts
+        assert sender._whatsapp_tick(db.get_settings()) == 10.0 and not spawned          # not linked: nothing starts, and it says why
+        assert "not connected" in sender.status["detail"]
         db.set_internal("whatsapp_linked", True)
         assert sender._whatsapp_tick(db.get_settings()) and spawned == ["whatsapp"]
         sender._whatsapp_tick(db.get_settings()); assert spawned == ["whatsapp"]         # a worker is already running
@@ -3556,7 +3602,7 @@ GOOD_AI = lambda: FakeAI([
     (r"call me", _j("Great, Deric will call you tomorrow at 10am. What is the best number to reach you?", "interested", "call_proposed", pain="wants a call")),
     (r"maybe next month", _j("No problem at all. Shall I check back in a month?", "timing", "nurture")),
     (r"how do i know", _j("A fair question. You can check my work on my website, and you start with a small first step on your own records: you only pay when you see value. Would a short call to meet Deric help?", "question")),
-    (r"who is this", _j("I work with Deric at DericBI. He helps small shops see where money leaks in their own records.", "question")),
+    (r"who is this", _j("I work with Deric at DericBI. He helps businesses like yours see where money leaks in their own records.", "question")),
     (r"phones and laptops", _j("We only help businesses make sense of their own sales and stock records, so not phones. Is stock tracking something you struggle with?", "other")),
     (r"ok thanks", _j("", "smalltalk", reason="the chat is over")),
     (r"nothing, it is all in books", _j("Thank you for telling me. A ready-to-use system is KES 20,000 once for the whole system, or KES 1,000 to start and then KES 200 per month. Which way suits you better?",
@@ -3566,7 +3612,7 @@ GOOD_AI = lambda: FakeAI([
     (r"think about it", _j("Of course, take all the time you need, there is no pressure at all. Shall I check in with you next week?", "timing", "nurture")),
     (r"saw your page", _j("Hello,\n\nThank you for writing. Yes, we help pharmacies understand their own stock and sales records. What do you use to track stock today?\n\nKind regards,\nDeric's AI assistant at DericBI", "question", subject="Re: Stock reports")),
     (r"how much for the system", _j("KES 20,000 once, or KES 1,000 to start then KES 200 per month. Which suits you?", "price", offer="system_once")),
-    (r"got your number from a friend", _j("Welcome, and thank you for writing. We help small businesses understand their own sales and stock records. What kind of business do you run?", "question")),
+    (r"got your number from a friend", _j("Welcome, and thank you for writing. We help businesses understand their own sales and stock records. What kind of business do you run?", "question")),
 ])
 
 
@@ -4317,6 +4363,58 @@ def the_offer_can_carry_proof_and_credentials_that_the_assistant_may_state_and_t
     s2 = {**s, "closer_proof": ""}
     assert "PROOF YOU MAY STATE" not in closer.kb_text(s2)
     assert closer.fingerprint(s) != closer.fingerprint(s2)                                             # changing your proof means the Test pack must run again
+
+
+@test
+def no_message_or_prompt_calls_a_business_small_and_the_assistant_is_stopped_from_doing_so():
+    import re, library, ai as AI, db as DB
+    bad = re.compile(r"\b(small|tiny|little|micro)[- ]?(and medium )?(business|shop|enterprise|firm|owner)", re.I)
+    texts = list(library.WHATSAPP.values()) + [v for pair in library.EMAIL.values() for v in pair] + [AI.SYSTEM, AI.CRAFT, DB.DEFAULT_PITCH, closer.REVIEWER]
+    for grp in (library.SMS, ):
+        for v in grp.values():
+            texts += list(v)
+    for ch in ("sms", "email", "whatsapp"):
+        for sector in ("Pharmacy", "Agrovet", "Salon", "School", "Garage", "Shop"):
+            for step in (0, 1, 2, 3):
+                try:
+                    texts += [x for x in library.first_message(ch, sector, 0) if isinstance(x, str)] if step == 0 else [x for x in library.followup_message(ch, step) if isinstance(x, str)]
+                except Exception:
+                    pass
+    _closer_setup(); s = db.get_settings()
+    texts += [closer._system(s, c) for c in ("whatsapp", "sms", "email")]
+    assert not [x for x in texts if bad.search(x)], [bad.search(x).group(0) for x in texts if bad.search(x)]
+    assert any("calls their business small" in p for p in closer.check_reply("A small business like yours often loses money on expiry.", s))
+    assert closer.check_reply("A business like yours often loses money on expiry.", s) == []
+    assert "RESPECT" in closer._system(s) and "never call" in AI.CRAFT.lower()
+
+
+@test
+def whatsapp_failure_never_stalls_a_best_way_campaign_silently():
+    fresh(); configure(send_window_enabled=False, light_mode="off")
+    db.set_internal("whatsapp_linked", True)
+    with db.db() as c:
+        for i in range(2):
+            L.add_lead(c, {"name": f"A{i}", "town": "T", "phone": f"07220000{i:02d}"})
+        aid = C.create_campaign(c, "Auto", "auto", "Hi", "Hello {name}", {}, launch=True)
+        for i in range(2):
+            L.add_lead(c, {"name": f"B{i}", "town": "T", "phone": f"07330000{i:02d}"})
+        wid = C.create_campaign(c, "WA", "whatsapp", "", "Hi {name}", {}, launch=True)
+    C.wa_pause_campaigns("WhatsApp logged out.")
+    with db.db() as c:
+        st = {r["id"]: r for r in c.execute("SELECT id, status, last_error FROM campaigns")}
+        rep = C.sending_report(c)
+    assert st[wid]["status"] == "paused" and "logged out" in st[wid]["last_error"], dict(st[wid])
+    assert st[aid]["status"] == "running" and "logged out" in (st[aid]["last_error"] or ""), dict(st[aid])   # visible, not silent
+    assert C.wa_hold_active()
+    sn = C.Sender()                                   # no respawn while resting, and the pill says why
+    assert sn._whatsapp_tick(db.get_settings()) == 60.0 and "resting" in sn.status["detail"], sn.status
+    assert count("SELECT COUNT(*) FROM jobs WHERE kind='whatsapp'") == 0
+    assert any("resting" in r["text"] for r in rep), rep
+    with db.db() as c:
+        C.set_campaign_status(c, wid, "resume")        # resume = try again now
+    assert not C.wa_hold_active()
+    C.wa_hold("x"); import whatsapp as W; W.set_linked(True)   # linking again also ends the rest
+    assert not C.wa_hold_active()
 
 
 if __name__ == "__main__":

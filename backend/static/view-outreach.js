@@ -72,21 +72,25 @@
           <button class="btn primary right ${showForm ? 'hidden' : ''}" id="new">New campaign</button></div>
         <div id="formwrap">${showForm ? formHtml() : ''}</div>
         <div id="waq"></div>
+        <div id="chealth" class="stack" style="gap:8px"></div>
         <section class="panel"><div class="panel-head"><h2>Campaigns</h2></div><div id="clist"></div></section>
       </div>`);
 
       // ---------------------------------------------------------------- list
       let lastDrawn = '';
       async function drawList() {
-        let rows; try { [rows, linked] = await Promise.all([api('/campaigns'), api('/status').then((x) => !!x.whatsapp_linked)]); } catch (_) { return; }
+        let rows, health = []; try { [rows, linked] = await Promise.all([api('/campaigns'), api('/status').then((x) => !!x.whatsapp_linked)]); } catch (_) { return; }
         known = rows;
-        const sig = JSON.stringify([rows, linked]);
+        if (rows.some((c) => c.status === 'running' && c.queued)) { try { health = await api('/campaigns/health'); } catch (_) { health = []; } }
+        const sig = JSON.stringify([rows, linked, health]);
         if (sig === lastDrawn) return;   // nothing changed since the last look: leave the page alone
         lastDrawn = sig;
+        render($('#chealth'), html`${health.filter((h) => h.level !== 'ok').map((h) => html`<div class="notice ${h.level === 'bad' ? 'bad' : ''}" style="margin:0">${h.text}${h.fix ? html` <a href="${h.fix}">${h.fix === '#/find' ? 'Open Find leads' : 'Open Settings'}</a>` : ''}</div>`)}
+          ${health.filter((h) => h.level === 'ok').map((h) => html`<div class="notice ok" style="margin:0">${h.text}</div>`)}`);
         rows = rows.filter((c) => c.style !== 'single' || c.status !== 'done');   // one-lead WhatsApp sends show only while they are in progress
         render($('#clist'), rows.length ? html`<div class="tablewrap"><table class="t"><thead><tr><th>Campaign</th><th>Status</th><th style="width:170px">Progress</th><th>Failed</th><th>Replies</th><th></th></tr></thead><tbody>
           ${rows.map((c) => { const [lab, cls] = CSTATUS[c.status] || [c.status, '']; return html`<tr style="cursor:default">
-            <td><div class="name">${c.name}</div><div class="muted small">${CHLAB[c.channel] || c.channel}${c.channel === 'auto' ? ' (' + [c.n_whatsapp && c.n_whatsapp + ' WhatsApp', c.n_email && c.n_email + ' email', c.n_sms && c.n_sms + ' text'].filter(Boolean).join(', ') + ')' : ''}${c.style === 'ready' ? ' · ready-made' : c.ai_personalize ? ' · AI-written' : ''}${c.followup_days || c.followup_of ? ` · follow-up${c.followup_days ? ` after ${c.followup_days} day${c.followup_days === 1 ? '' : 's'} of silence` : ''}` : ''} · ${c.launched_at ? 'Started ' + when(c.launched_at) : 'Not started'}</div>${c.last_error ? html`<div class="small" style="color:var(--bad)">${c.last_error}</div>` : ''}</td>
+            <td><div class="name">${c.name}</div>${c.last_error && ['running', 'paused'].includes(c.status) ? html`<div class="small" style="color:var(--bad)">${c.last_error}</div>` : ''}<div class="muted small">${CHLAB[c.channel] || c.channel}${c.channel === 'auto' && (c.n_whatsapp || c.n_email || c.n_sms) ? ' (' + [c.n_whatsapp && c.n_whatsapp + ' WhatsApp', c.n_email && c.n_email + ' email', c.n_sms && c.n_sms + ' text'].filter(Boolean).join(', ') + ')' : ''}${c.style === 'ready' ? ' · ready-made' : c.ai_personalize ? ' · AI-written' : ''}${c.followup_days || c.followup_of ? ` · follow-up${c.followup_days ? ` after ${c.followup_days} day${c.followup_days === 1 ? '' : 's'} of silence` : ''}` : ''} · ${c.launched_at ? 'Started ' + when(c.launched_at) : 'Not started'}</div>${c.last_error ? html`<div class="small" style="color:var(--bad)">${c.last_error}</div>` : ''}</td>
             <td><span class="chip ${cls}">${lab}</span></td>
             <td><div class="progress"><i style="width:${App.pct(c.sent, c.total)}%"></i></div><div class="small muted">${c.sent} of ${c.total} sent${c.queued ? ` · ${c.queued} waiting` : ''}</div></td>
             <td>${c.failed || '0'}${c.skipped ? html`<div class="small muted">${c.skipped} skipped</div>` : ''}</td>

@@ -454,6 +454,8 @@ def set_campaign_status(conn, cid: int, action: str):
         conn.execute("UPDATE campaigns SET status='paused' WHERE id=?", (cid,))
     elif action == "resume" and c["status"] == "paused":
         conn.execute("UPDATE campaigns SET status='running', last_error='' WHERE id=?", (cid,))
+        if c["channel"] in ("whatsapp", "auto"):
+            wa_clear_hold(conn)   # you decided to go on: WhatsApp tries again now
     elif action == "cancel" and c["status"] in ("running", "paused", "draft", "scheduled"):
         conn.execute("UPDATE messages SET status='skipped', error='Campaign cancelled' "
                      "WHERE campaign_id=? AND status='queued'", (cid,))
@@ -977,10 +979,37 @@ def wa_result(mid: int, outcome: str, detail: str = ""):
             Sender._maybe_finish(conn, cid)
 
 
+WA_HOLD_MIN = 30   # how long WhatsApp rests after it crashed, logged out or failed three sends in a row
+
+
+def wa_hold(reason: str, minutes: int = WA_HOLD_MIN):
+    """WhatsApp rests for a while (nothing opens a browser again and again). The reason is shown on the Outreach page."""
+    until = (datetime.now() + timedelta(minutes=minutes)).isoformat(sep=" ", timespec="seconds")
+    db.set_internal("wa_hold", {"until": until, "reason": reason})
+
+
+def wa_hold_active():
+    h = db.get_internal("wa_hold")
+    return h if isinstance(h, dict) and str(h.get("until") or "") > now() else None
+
+
+def wa_clear_hold(conn=None):
+    """End the rest. Inside an open write (Resume) pass that connection: a second write would wait on the first."""
+    if db.get_internal("wa_hold"):
+        if conn is not None:
+            conn.execute("INSERT INTO settings(key, value) VALUES('wa_hold', 'null') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        else:
+            db.set_internal("wa_hold", None)
+
+
 def wa_pause_campaigns(reason: str):
-    """Stop every running WhatsApp campaign (WhatsApp logged out, or sending keeps failing) so nothing is burned."""
+    """Stop every running WhatsApp campaign (WhatsApp logged out, or sending keeps failing) so nothing is burned. A 'best way'
+    campaign has other ways to go on, so it is not paused: its WhatsApp part rests (WhatsApp is put on hold) and the reason shows."""
     with db.db() as conn:
         conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE channel='whatsapp' AND status='running'", (reason,))
+        conn.execute("UPDATE campaigns SET last_error=? WHERE channel='auto' AND status='running' AND id IN "
+                     "(SELECT campaign_id FROM messages WHERE channel='whatsapp' AND status='queued')", (reason,))
+    wa_hold(reason)
 
 
 # ------------------------------------------- WhatsApp replies (read from the chats by the worker's own session)
@@ -1195,6 +1224,67 @@ def wa_wait_seconds():
     if not row["t"]:
         return 0
     return max(0.0, (datetime.strptime(row["t"], "%Y-%m-%d %H:%M:%S") - datetime.now()).total_seconds())
+
+
+def sending_report(conn, s: dict = None, linked: bool = None) -> list:
+    """Why queued messages are not going out right now, one plain sentence per channel, for the Outreach page.
+    Each item: {channel, queued, level ('ok' | 'info' | 'warn' | 'bad'), text, fix (where to go, or '')}. Empty when nothing is waiting."""
+    s = s or db.get_settings(conn)
+    linked = bool(db.get_internal("whatsapp_linked")) if linked is None else linked
+    rows = conn.execute(
+        "SELECT m.channel AS ch, COUNT(*) AS n, SUM(CASE WHEN m.scheduled_at IS NULL OR m.scheduled_at <= ? THEN 1 ELSE 0 END) AS ready, "
+        "MIN(m.scheduled_at) AS first_at FROM messages m JOIN campaigns c ON c.id = m.campaign_id "
+        "WHERE m.direction='out' AND m.status='queued' AND c.status='running' GROUP BY m.channel", (now(),)).fetchall()
+    names = {"whatsapp": "WhatsApp", "email": "email", "sms": "text"}
+    out = []
+    for r in rows:
+        ch, n, ready = r["ch"], r["n"], r["ready"] or 0
+        if ch not in names or not n:
+            continue
+        def add(level, text, fix=""):
+            out.append({"channel": ch, "queued": n, "level": level, "text": text, "fix": fix})
+        label = names[ch]
+        if ch == "whatsapp" and not linked:
+            add("bad", f"{n} WhatsApp message{'s' if n != 1 else ''} are waiting, but WhatsApp is not connected, so nothing can be sent. "
+                       "Connect it once (scan the QR code with your phone); sending then starts by itself.", "#/settings")
+            continue
+        hold = wa_hold_active() if ch == "whatsapp" else None
+        if hold:
+            add("warn", f"WhatsApp is resting: {hold.get('reason')} {n} message{'s' if n != 1 else ''} wait. It tries again by itself at "
+                        f"{str(hold['until'])[11:16]}, or press Resume on the campaign to try now.", "#/settings")
+            continue
+        if ch in ("email", "sms") and not channel_ready(ch, s):
+            add("bad", f"{n} {label} message{'s' if n != 1 else ''} are waiting, but {label} is not set up yet. Finish it in Settings and sending starts by itself.", "#/settings")
+            continue
+        if not ready:
+            first = r["first_at"] or ""
+            add("info", f"{n} {label} message{'s' if n != 1 else ''} are scheduled" + (f" for {first[11:16]}" if first else "") + ". They go out then.")
+            continue
+        if not Sender.in_window(s):
+            add("warn", f"Outside sending hours ({s['send_window_start']} to {s['send_window_end']}). {n} {label} message{'s' if n != 1 else ''} will go out when the window opens. "
+                        "You can change the hours in Settings > Limits and opt-outs.", "#/settings")
+            continue
+        sent = wa_sent_today(conn) if ch == "whatsapp" else conn.execute(
+            "SELECT COUNT(*) FROM messages m LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.direction='out' AND m.channel=? "
+            "AND m.status='sent' AND m.sent_at >= ? AND COALESCE(c.style, '') <> 'single'", (ch, today_start())).fetchone()[0]
+        cap = int(s.get(f"{ch}_daily_cap") or 0)
+        if cap and sent >= cap:
+            add("warn", f"Today's {label} limit ({cap}) is reached. {n} message{'s' if n != 1 else ''} will go out tomorrow, or raise the limit in Settings > Limits and opt-outs.", "#/settings")
+            continue
+        if ch == "whatsapp":
+            wait = perf.browser_conflict(conn, s, "whatsapp")
+            if wait:
+                job = jobs.active_job(conn, "scrape")
+                add("warn", "A lead search is using the browser" + (f" ({job['progress']})" if job and job.get("progress") else "") +
+                            ". This computer runs one browser at a time to stay fast, so WhatsApp waits. Stop the search to send now, or let it finish.", "#/find")
+                continue
+            if jobs.active_job(conn, "whatsapp"):
+                add("ok", f"Sending on WhatsApp now. {n} waiting.")
+                continue
+            add("info", f"{n} WhatsApp message{'s' if n != 1 else ''} waiting. WhatsApp is about to start.")
+            continue
+        add("ok", f"Sending {label}. {n} waiting, one at a time with a pause between each.")
+    return out
 
 
 def _mark_sent(conn, mid, lead_id, provider_id, header):
@@ -1439,6 +1529,13 @@ class Sender(threading.Thread):
         """Starts the WhatsApp worker while there is something to send (and sending hours and the daily limit allow).
         Returns how long to wait before looking again, or None when there is nothing WhatsApp to do."""
         if not db.get_internal("whatsapp_linked"):
+            with db.db() as conn:   # WhatsApp messages are waiting but it is not connected: say so (the pill shows this), never sit silent
+                waiting = conn.execute(
+                    "SELECT COUNT(*) FROM messages m JOIN campaigns c ON c.id = m.campaign_id WHERE m.channel='whatsapp' "
+                    "AND m.direction='out' AND m.status='queued' AND c.status='running'").fetchone()[0]
+            if waiting:
+                self._set("waiting", "WhatsApp is not connected: connect it in Settings so its messages can go")
+                return 10.0
             return None
         sync_only = False
         with db.db() as conn:
@@ -1450,6 +1547,11 @@ class Sender(threading.Thread):
             if not wa_sync_due(s):
                 return None
             sync_only = True   # nothing to send: the worker only reads the chats for replies
+        hold = wa_hold_active()
+        if hold:   # it crashed, logged out or kept failing: rest, say why, and try again by itself afterwards
+            if not sync_only:
+                self._set("waiting", "WhatsApp is resting: " + str(hold.get("reason") or "")[:140])
+            return 60.0
         with db.db() as conn:
             if jobs.active_job(conn, "whatsapp") or jobs.active_job(conn, "whatsapp_link"):
                 return 5.0
@@ -1483,7 +1585,14 @@ class Sender(threading.Thread):
         with db.db() as conn:
             jid = jobs.create_job(conn, "whatsapp", {})
         self.wa_job = jid
-        jobs.spawn(jid, "whatsapp")
+        try:
+            jobs.spawn(jid, "whatsapp")
+        except Exception as e:   # the browser worker could not even start: never leave a job "queued" that blocks every later try
+            with db.db() as conn:
+                conn.execute("UPDATE jobs SET status='failed', finished_at=?, progress=? WHERE id=?", (now(), f"Could not start: {str(e)[:120]}", jid))
+            self.wa_job = None
+            wa_pause_campaigns(f"WhatsApp could not start ({str(e)[:120]}). Restart the app; if it stays, reinstall it.")
+            return 60.0
         self._set("sending", "Reading WhatsApp replies" if sync_only else "Sending on WhatsApp")
         return 5.0
 

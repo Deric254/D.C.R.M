@@ -70,6 +70,7 @@ def is_linked() -> bool:
 def set_linked(on: bool):
     db.set_internal("whatsapp_linked", bool(on))
     if on:
+        C.wa_clear_hold()   # linked again: sending may go on at once
         db.set_internal("whatsapp_linked_at", now())
 
 

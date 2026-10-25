@@ -195,8 +195,16 @@ PREVIOUS_DEFAULT_PITCH = (
     "to see what is selling, what is not, and where money is being lost, so they can decide with facts. I also have "
     "ready-made tools that I adapt to each business. You pay only when you are satisfied with my work."
 )
-DEFAULT_PITCH = (
+# The pitch of the version before this one ("micro and small businesses"): an unedited saved copy of it is replaced too.
+PREVIOUS_DEFAULT_PITCH_2 = (
     "I'm Deric Marangu, a Business Intelligence specialist, and I run DericBI. I help micro and small businesses turn their "
+    "existing data into better decisions, improved profitability and clear visibility into where money is being lost. I can "
+    "identify slow-moving stock tying up cash, their best-performing sales periods and profitable product combinations based "
+    "on actual buying patterns. I can provide a ready-to-use tracking system or a clear report showing what needs attention "
+    "and where the opportunities lie. You only pay when you see value."
+)
+DEFAULT_PITCH = (
+    "I'm Deric Marangu, a Business Intelligence specialist, and I run DericBI. I help hardworking businesses turn their "
     "existing data into better decisions, improved profitability and clear visibility into where money is being lost. I can "
     "identify slow-moving stock tying up cash, their best-performing sales periods and profitable product combinations based "
     "on actual buying patterns. I can provide a ready-to-use tracking system or a clear report showing what needs attention "
@@ -346,7 +354,7 @@ def init_db():
             if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         # Settings still on the old built-in defaults move to the current ones (anything the owner wrote is kept).
-        for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("ai_pitch", OLD_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH), ("sms_delay_sec", 4),
+        for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("ai_pitch", OLD_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH_2), ("sms_delay_sec", 4),
                          ("optout_suffix_sms", " Reply STOP to opt out.")):
             conn.execute("DELETE FROM settings WHERE key=? AND value=?", (key, json.dumps(old)))
         # Let the database learn how the data is spread, so it picks the fastest index for each query. Done once; after that

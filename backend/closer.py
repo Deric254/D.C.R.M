@@ -96,6 +96,7 @@ _PRESSURE = re.compile(r"\b(hurry|last chance|only today|today only|don'?t miss|
 _VAGUE = re.compile(r"\b(maybe|perhaps|probably|approximately|approx\.?|around|roughly|about|some|something like|like) (kes|ksh|sh\.?\s?\d|\d{4,})|"
                     r"(kes|ksh|sh\.?)\s?\d[\d,]*\s?(-|\u2013|to)\s?(kes |ksh |sh\.? )?\d|\bor so\b|\betc\b|"
                     r"\bwhatever (works|you)\b|\bi think (it|the price|we)\b|\bi guess\b|\bhopefully\b|\bnot sure\b", re.I)
+_DIMINISH = re.compile(r"\b(small|tiny|little|micro|humble)[- ]?(and medium )?(business(es)?|shops?|enterprises?|firms?|outlets?|stores?|traders?|operations?)\b", re.I)
 _FREE = re.compile(r"(?<!feel )\b(free(?!\s+(to|up)\b)|bure|bila malipo|at no cost)\b", re.I)
 
 
@@ -217,6 +218,8 @@ def check_reply(reply: str, s: dict, lead: dict = None, extra_allowed: str = "",
         problems.append("a promise, a guarantee or a claim to be human")
     if _PLACEHOLDER.search(text):
         problems.append("a blank left to fill in")
+    if _DIMINISH.search(text):
+        problems.append("calls their business small (speak of it with respect)")
     if _PRESSURE.search(text):
         problems.append("pressure or false urgency")
     if _VAGUE.search(text):
@@ -265,7 +268,7 @@ def _system(s: dict, channel: str = "whatsapp", nudge: bool = False) -> str:
     first, brand = _first(s), (s.get("brand_name") or "").strip() or "the business"
     book = (s.get("closer_booking_link") or "").strip()
     return (
-        f"You are the AI assistant of {first}, who runs {brand}, writing to the owner of a small local business in Kenya "
+        f"You are the AI assistant of {first}, who runs {brand}, writing to the owner of a business in Kenya "
         f"who has been in touch with {first}. You are not {first} and you never claim to be human; you work for {first}, who can take over any time.\n"
         f"{_style(s, channel)} Match their language (English, Swahili or a mix) and their formality. "
         "No emojis, no exclamation marks, no jargon, no filler.\n"
@@ -278,9 +281,11 @@ def _system(s: dict, channel: str = "whatsapp", nudge: bool = False) -> str:
         "(e) name the cost of the problem only with facts they gave you ('you said stock expires on the shelf'); (f) offer a clear choice of two "
         "options rather than an open question; (g) end with ONE clear next step they can answer with a single word. Social proof only if the "
         "OFFER contains it. Never invent anything.\n"
+        "RESPECT: speak of them and their business with dignity. They built something real and they serve their community. Never call a "
+        "business small, tiny, little or micro and never talk down to them; show respect through specifics about their work, not through praise.\n"
         "VOICE AND VALUE: write the way the owner writes in the PITCH: plain, confident, specific and benefit-led, never terse and never only a "
         "question. Every reply carries at least one concrete piece of value from the OFFER that fits what they just said (or, if they said nothing "
-        "about their situation yet, the most relevant one), explained so the owner of a small shop can picture it in their own business.\n"
+        "about their situation yet, the most relevant one), explained so a busy owner can picture it in their own business.\n"
         "BUILDING CONFIDENCE, HONESTLY: people buy from someone they trust, and trust is earned, never requested. In every reply: (a) be specific, "
         "not vague: name their kind of business and the exact thing you would look at in their records; (b) explain how it works in plain steps "
         "and what they will have in their hands at the end; (c) lower their risk using only what the OFFER allows: a small first step, paying "
@@ -404,7 +409,7 @@ def _parse(text: str) -> dict:
             "reason": re.sub(r"\s+", " ", str(d.get("reason") or "")).strip()[:240]}
 
 
-REVIEWER = ("You are a strict reviewer of a draft reply that an AI sales assistant wants to send to a small-business owner in Kenya. "
+REVIEWER = ("You are a strict reviewer of a draft reply that an AI sales assistant wants to send to a business owner in Kenya. "
             "Check, in this order: (1) every price, number, time frame and claim is in the OFFER, exactly; (2) it answers what they actually said "
             "and does not ignore a question; (3) it is courteous and respectful, with no pressure, urgency, flattery, guilt or manipulation; "
             "(4) nothing is ambiguous: one clear next step, exact prices, no vague words; (5) at most one question; (6) it does not repeat "

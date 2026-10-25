@@ -543,6 +543,12 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 return C.campaign_stats(conn)
         return cache.get("campaigns", 20, compute)
 
+    @app.get("/api/campaigns/health")
+    def campaigns_health():
+        """Why queued messages are not going out right now, in plain words (empty when nothing is waiting)."""
+        with db.db() as conn:
+            return C.sending_report(conn)
+
     @app.post("/api/campaigns/preview")
     def preview_campaign(body: CampaignIn):
         with db.db() as conn:
