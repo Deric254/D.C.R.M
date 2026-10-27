@@ -216,14 +216,21 @@ def send_email(to: str, subject: str, body: str, s: dict) -> str:
         msg["Reply-To"] = reply_to
     msg["List-Unsubscribe"] = f"<mailto:{reply_to}?subject=unsubscribe>"
     msg.set_content(body)
+    handing_over = False
     try:
         smtp = _smtp_open(s)
         with smtp:
             _smtp_login(smtp, s)
+            handing_over = True
             smtp.send_message(msg)
     except SendError:
         raise
     except Exception as e:
+        if handing_over and (isinstance(e, smtplib.SMTPServerDisconnected) or (isinstance(e, OSError) and not isinstance(e, smtplib.SMTPException))):
+            # The connection died AFTER the message was handed over: the server may have taken it. Sending it again could
+            # mean the person gets it twice, so it is never retried by itself.
+            raise SendError(f"The connection dropped while sending ({type(e).__name__}). This email may or may not have been "
+                            "delivered: check your Sent folder before sending it again.", "permanent")
         raise _explain_smtp(e, s)
     return mid
 
@@ -377,10 +384,10 @@ def _gateway_auth(s: dict):
 
 
 def _phone_unreachable(base: str, e) -> SendError:
-    return SendError(f"Couldn't reach your phone at {base} ({type(e).__name__}). Check that the phone is on the same Wi-Fi or "
+    return SendError(f"Couldn't reach the phone at {base} ({type(e).__name__}). Check that the phone is on the same Wi-Fi or "
                      "hotspot as this PC, that the SMS Gateway app is open with its Local server switched on, and that the "
-                     "address matches the one the app shows (it can change when the phone reconnects). The campaign is paused: fix it, "
-                     "then press Resume.", "pause")
+                     "address matches the one the app shows (it can change when the phone reconnects). Texts wait and are tried again by "
+                     "themselves; nothing is lost.", "transient")
 
 
 def _sms_state(j) -> str:

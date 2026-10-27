@@ -455,7 +455,10 @@ def set_campaign_status(conn, cid: int, action: str):
     elif action == "resume" and c["status"] == "paused":
         conn.execute("UPDATE campaigns SET status='running', last_error='' WHERE id=?", (cid,))
         if c["channel"] in ("whatsapp", "auto"):
-            wa_clear_hold(conn)   # you decided to go on: WhatsApp tries again now
+            wa_clear_hold(conn)
+        if c["channel"] in ("email", "auto"):   # resuming after a bounce stop means: I know, go on (for a day)
+            conn.execute("INSERT INTO settings(key, value) VALUES('bounce_ok_until', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (json.dumps((datetime.now() + timedelta(days=1)).isoformat(sep=" ", timespec="seconds")),))   # you decided to go on: WhatsApp tries again now
     elif action == "cancel" and c["status"] in ("running", "paused", "draft", "scheduled"):
         conn.execute("UPDATE messages SET status='skipped', error='Campaign cancelled' "
                      "WHERE campaign_id=? AND status='queued'", (cid,))
@@ -950,6 +953,7 @@ def wa_result(mid: int, outcome: str, detail: str = ""):
         cid, lead_id = m["campaign_id"], m["lead_id"]
         if outcome == "sent":
             _mark_sent(conn, mid, lead_id, "whatsapp-web", None)
+            conn.execute("UPDATE campaigns SET last_error='' WHERE channel='auto' AND status='running' AND last_error LIKE '%WhatsApp%'")   # it works again: drop the old warning
         elif outcome == "already_sent":   # the chat already ends with this very message: record it, never send it twice
             _mark_sent(conn, mid, lead_id, "whatsapp-web", None)
             db.log_event(conn, lead_id, "note", "This message was already the last one in the WhatsApp chat, so it was not sent again")
@@ -993,9 +997,44 @@ def wa_hold_active():
     return h if isinstance(h, dict) and str(h.get("until") or "") > now() else None
 
 
+BOUNCE_MIN_SENT, BOUNCE_LIMIT = 20, 0.08   # of the last 3 days of emails, 8% bouncing is a bad list: stop before the sender name is hurt
+
+
+def bounce_rate(conn):
+    """(sent, bounced) emails over the last 3 days. A sender whose mail keeps bouncing is treated as spam by mail providers."""
+    since = days_ago(3)
+    sent = conn.execute("SELECT COUNT(*) FROM messages WHERE direction='out' AND channel='email' AND status='sent' AND sent_at >= ?", (since,)).fetchone()[0]
+    bad = conn.execute("SELECT COUNT(DISTINCT lead_id) FROM events WHERE kind='bounce' AND ts >= ?", (since,)).fetchone()[0]
+    return sent, bad
+
+
+def bounce_brake(sender):
+    """Too many bounces: pause the email campaigns (and rest the email part of Best-way ones) and say why. Resume overrides it."""
+    with db.db() as conn:
+        sent, bad = bounce_rate(conn)
+        if sent < BOUNCE_MIN_SENT or bad / sent < BOUNCE_LIMIT:
+            return
+        if db.get_internal("bounce_ok_until") and str(db.get_internal("bounce_ok_until")) > now():
+            return   # you pressed Resume: you decided to go on
+        why = (f"{bad} of the last {sent} emails bounced ({round(100 * bad / sent)}%). Sending more to a list like this can get "
+               "your email address marked as spam. Remove or fix the bad addresses (Leads > Bounced), then resume.")
+        conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE channel='email' AND status='running'", (why,))
+        held = conn.execute("UPDATE campaigns SET last_error=? WHERE channel='auto' AND status='running' AND id IN "
+                            "(SELECT campaign_id FROM messages WHERE channel='email' AND status='queued')", (why,)).rowcount
+        if held:
+            sender.net["email"] = [0, time.time() + 6 * 3600]
+            sender._set("waiting", "Email is resting: too many bounces")
+
+
 def wa_clear_hold(conn=None):
     """End the rest. Inside an open write (Resume) pass that connection: a second write would wait on the first."""
     if db.get_internal("wa_hold"):
+        stale = "UPDATE campaigns SET last_error='' WHERE channel='auto' AND status='running' AND last_error LIKE '%WhatsApp%'"
+        if conn is not None:
+            conn.execute(stale)
+        else:
+            with db.db() as c2:
+                c2.execute(stale)
         if conn is not None:
             conn.execute("INSERT INTO settings(key, value) VALUES('wa_hold', 'null') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         else:
@@ -1429,6 +1468,8 @@ class Sender(threading.Thread):
         self.wa_job = None       # the WhatsApp worker started last
         self.wa_crashes = 0      # workers in a row that died without a word
         self.fails = {}
+        self.last_bounce_check = 0.0
+        self.net = {}            # channel -> [failures in a row because the internet or server could not be reached, rest-until time]
         self.status = {"state": "idle", "detail": ""}
 
     def stop(self):
@@ -1503,6 +1544,17 @@ class Sender(threading.Thread):
             if sent_today >= int(s[f"{ch}_daily_cap"]) and row["style"] != "single":   # answers in a conversation are never capped
                 self._set("waiting", f"Daily {ch} limit reached ({sent_today})")
                 waits.append(60)
+                continue
+            if ch == "email" and time.time() - self.last_bounce_check >= 60:
+                self.last_bounce_check = time.time()
+                try:
+                    bounce_brake(self)
+                except Exception:
+                    traceback.print_exc()
+            rest = self.net.get(ch, [0, 0.0])[1] - time.time()
+            if rest > 0:   # the internet or mail server could not be reached: rest, then try again by itself
+                self._set("waiting", f"{ch.upper() if ch == 'sms' else ch.title()} is resting: can't reach it. Trying again in {int(rest // 60) + 1} min")
+                waits.append(rest)
                 continue
             gap = self.next_ok[ch] - time.time()
             if gap > 0:
@@ -1652,6 +1704,9 @@ class Sender(threading.Thread):
             return
 
         self.fails[cid] = 0
+        if self.net.pop(ch, None):   # it got through: the connection is back, forget the trouble
+            with db.db() as conn:
+                conn.execute("UPDATE campaigns SET last_error='' WHERE status='running' AND (last_error LIKE '%could not be reached%' OR last_error LIKE '%reach the mail server%')")
         with db.db() as conn:
             _mark_sent(conn, mid, lead_id, provider, header)
             self._maybe_finish(conn, cid)
@@ -1685,6 +1740,24 @@ class Sender(threading.Thread):
                 if held:
                     self.next_ok[ch] = time.time() + 120   # try this way again in two minutes; the others carry on
                 self._set("paused", str(e))
+                return
+            if e.kind == "transient" and "Couldn't reach" in str(e):
+                # Slow or no internet: the message is fine and is not "failed". Put it back, rest longer each time, and only
+                # after many tries in a row pause the campaign so that you are told.
+                n = (self.net.get(ch) or [0, 0.0])[0] + 1
+                mins = (2, 5, 10, 20, 30)[min(n - 1, 4)]
+                self.net[ch] = [n, time.time() + mins * 60]
+                what = "phone" if ch == "sms" else "server"
+                conn.execute("UPDATE messages SET status='queued', attempts=MAX(attempts-1,0), error=? WHERE id=?", (str(e), mid))
+                if n >= 8:
+                    self.net.pop(ch, None)
+                    conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE channel=? AND status='running'",
+                                 (f"Could not reach the {what} {n} times in a row. Check the connection, then resume. Last error: {e}", ch))
+                else:
+                    conn.execute("UPDATE campaigns SET last_error=? WHERE channel IN (?, 'auto') AND status='running' AND id IN "
+                                 "(SELECT campaign_id FROM messages WHERE channel=? AND status='queued')",
+                                 (f"The {what} could not be reached (try {n}). Trying again in {mins} min. {e}", ch, ch))
+                self._set("waiting", f"{ch.upper() if ch == 'sms' else ch.title()} is resting: can't reach the {what} (try {n}). Trying again in {mins} min")
                 return
             if e.kind == "transient" and attempts < 3:
                 retry_at = (datetime.now() + timedelta(minutes=5 * attempts)).isoformat(sep=" ", timespec="seconds")

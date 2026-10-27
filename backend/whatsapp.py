@@ -55,6 +55,26 @@ SEL = {
 }
 
 
+class SlowNetwork(RuntimeError):
+    """WhatsApp Web did not load or answer in time: the internet is slow or down. Not a reason to pause a campaign."""
+
+
+SLOW_BACKOFF = (5, 10, 20, 30)   # minutes WhatsApp rests after each slow-internet failure in a row
+SLOW_GIVE_UP = 6                 # this many in a row: pause so you are told, instead of trying for ever
+
+
+def _slow_network(reason: str):
+    """Rest and try again by itself (a little longer each time). Only a long run of failures pauses the campaigns."""
+    n = int(db.get_internal("wa_slow") or 0) + 1
+    db.set_internal("wa_slow", n)
+    if n >= SLOW_GIVE_UP:
+        db.set_internal("wa_slow", 0)
+        C.wa_pause_campaigns("WhatsApp could not load %d times in a row (slow or no internet). Check the connection, then resume." % n)
+        return
+    mins = SLOW_BACKOFF[min(n - 1, len(SLOW_BACKOFF) - 1)]
+    C.wa_hold(f"The internet is slow or down, so WhatsApp did not load (try {n}). Trying again in {mins} min.", mins)
+
+
 class LoggedOut(Exception):
     """WhatsApp Web is showing the link code: this PC is no longer linked."""
 
@@ -387,7 +407,7 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
     driver = (driver_factory or (lambda: WhatsAppWeb(log=log, headless=hidden)))()
     driver.should_stop = stopping
     jobs.update(job_id, status="running", started_at=now(), progress="Opening WhatsApp…")
-    final, sent, failures, idle = "done", 0, 0, 0
+    final, sent, failures, idle, timeouts = "done", 0, 0, 0, 0
     talk_until, talk_rounds = time.time() + CONVO_STAY, 0
     watch_left = watch_rounds   # None: watch until conversation mode is switched off (tests give a number)
     try:
@@ -396,9 +416,10 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
         if state == "qr":
             raise LoggedOut()
         if state != "ready":
-            raise RuntimeError("WhatsApp Web did not finish loading (check the internet connection)."
+            raise SlowNetwork("WhatsApp Web did not finish loading (check the internet connection)."
                                + (" If this keeps happening, switch off 'Hide the WhatsApp window' in Settings > WhatsApp." if hidden else ""))
         log("WhatsApp is open and linked.")
+        db.set_internal("wa_slow", 0)
         while not stopping():
             s = db.get_settings()
             if not C.Sender.in_window(s):
@@ -459,6 +480,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
                 C.wa_result(mid, "retry", f"{type(e).__name__}: {str(e)[:120]}")
                 log(f"  ! {msg['name']}: {type(e).__name__}: {str(e)[:100]}")
                 failures += 1
+                if "timeout" in (type(e).__name__ + str(e)).lower():
+                    timeouts += 1
             else:
                 C.wa_result(mid, outcome)
                 if outcome == "sent":
@@ -473,7 +496,12 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
                     log(f"  - {msg['name']} has written back since our last message: follow-up not sent")
                 else:
                     log(f"  - {msg['name']} is not on WhatsApp (skipped)")
-                failures = 0
+                failures = timeouts = 0
+            if failures >= 3 and timeouts >= 3:   # all timeouts: the internet, not WhatsApp. Rest, do not pause.
+                _slow_network("timeouts")
+                log("Stopped: 3 messages in a row timed out (slow internet). WhatsApp rests and tries again by itself.")
+                final = "failed"
+                break
             if failures >= 3:
                 C.wa_pause_campaigns("WhatsApp stopped after 3 failed messages in a row. Check WhatsApp Web, then resume.")
                 log("Stopped: 3 messages in a row failed. WhatsApp campaigns are paused.")
@@ -491,6 +519,10 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
         final = "failed"
     except StopRequested:
         final = "stopped"
+    except SlowNetwork as e:
+        log(f"WhatsApp is not loading ({str(e)[:120]}). It rests and tries again by itself.")
+        final = "failed"
+        _slow_network(str(e))
     except Exception as e:
         log(f"WhatsApp worker crashed: {type(e).__name__}: {str(e)[:200]}")
         final = "failed"

@@ -460,10 +460,12 @@ def phone_problems_pause_the_campaign_instead_of_burning_the_queue():
         with db.db() as c:
             L.add_lead(c, {"name": "A", "town": "T", "phone": "0700000001"})
             cid = C.create_campaign(c, "K", "sms", "", "Hello", {}, launch=True)
-        run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", timeout=10)
-        assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", label
+        unreachable = label == "phone not reachable"   # a sleeping phone is waited for (rest + retry), a wrong password pauses
+        run_sender(lambda: bool(count("SELECT last_error FROM campaigns WHERE id=?", cid)) or count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", timeout=10)
+        assert count("SELECT status FROM campaigns WHERE id=?", cid) == ("running" if unreachable else "paused"), label
         assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 1, label     # still waiting, not failed
         assert count("SELECT last_error FROM campaigns WHERE id=?", cid), label
+        assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0, label
     configure()
 
 
@@ -4415,6 +4417,85 @@ def whatsapp_failure_never_stalls_a_best_way_campaign_silently():
     assert not C.wa_hold_active()
     C.wa_hold("x"); import whatsapp as W; W.set_linked(True)   # linking again also ends the rest
     assert not C.wa_hold_active()
+
+
+@test
+def slow_internet_rests_and_retries_instead_of_pausing_or_losing_messages():
+    fresh(); configure(send_window_enabled=False, light_mode="off", email_delay_sec=0)
+    with db.db() as c:
+        for i in range(3):
+            L.add_lead(c, {"name": f"N{i}", "town": "T", "email": f"n{i}@shop.test"})
+        cid = C.create_campaign(c, "Net", "email", "Hi", "Hello", {}, launch=True)
+    sn = C.Sender()
+    row = None
+    for k in range(7):                                  # more failures than the old limit of 5
+        with db.db() as c:
+            row = c.execute("SELECT * FROM messages WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+            c.execute("UPDATE messages SET attempts=attempts+1 WHERE id=?", (row["id"],))
+            row = c.execute("SELECT * FROM messages WHERE id=?", (row["id"],)).fetchone()
+        sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out. Check the internet.", "transient"))
+    with db.db() as c:
+        st = c.execute("SELECT status, last_error FROM campaigns WHERE id=?", (cid,)).fetchone()
+    assert st["status"] == "running" and "could not be reached" in st["last_error"], dict(st)
+    assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 3
+    sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out.", "transient"))   # the 8th: now you are told
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()["status"] == "paused"
+    # WhatsApp page that never loads: rests with a longer wait each time, pauses only after many
+    import whatsapp as W
+    fresh(); db.set_internal("wa_slow", 0)
+    with db.db() as c:
+        L.add_lead(c, {"name": "P", "town": "T", "phone": "0744000111"})
+        wid = C.create_campaign(c, "WA", "whatsapp", "", "Hi {name}", {}, launch=True)
+    W._slow_network("x"); h = C.wa_hold_active()
+    assert h and "slow or down" in h["reason"], h
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (wid,)).fetchone()["status"] == "running"
+    for _ in range(W.SLOW_GIVE_UP - 1):
+        W._slow_network("x")
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (wid,)).fetchone()["status"] == "paused"
+
+
+@test
+def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
+    fresh(); configure(send_window_enabled=False, light_mode="off", email_delay_sec=0)
+    with db.db() as c:
+        ids = [L.add_lead(c, {"name": f"B{i}", "town": "T", "email": f"b{i}@shop.test"})["id"] for i in range(30)]
+        cid = C.create_campaign(c, "Bnc", "email", "Hi", "Hello", {}, launch=True)
+        for i in ids[:25]:   # 25 already went out; 3 of them bounced back (12%)
+            c.execute("UPDATE messages SET status='sent', sent_at=? WHERE lead_id=? AND campaign_id=?", (now(), i, cid))
+        for i in ids[:3]:
+            L.mark_bounced(c, i, "bounced")
+    sn = C.Sender(); C.bounce_brake(sn)
+    with db.db() as c:
+        st = c.execute("SELECT status, last_error FROM campaigns WHERE id=?", (cid,)).fetchone()
+    assert st["status"] == "paused" and "bounced" in st["last_error"], dict(st)
+    with db.db() as c:
+        C.set_campaign_status(c, cid, "resume")        # you decide to go on: the brake leaves it alone
+    C.bounce_brake(sn)
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()["status"] == "running"
+    # a sleeping phone is waited for, not a reason to pause texts
+    err = messaging.SendError("x", "transient")
+    e = messaging._phone_unreachable("http://192.168.1.5:8080", OSError("down"))
+    assert e.kind == "transient" and "Couldn't reach" in str(e), e
+    # a connection that dies after the message was handed over is never retried by itself
+    import smtplib
+    class Dropping:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def login(self, *a): pass
+        def send_message(self, m): raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+    orig = messaging._smtp_open; messaging._smtp_open = lambda s: Dropping()
+    try:
+        messaging.send_email("a@shop.test", "hi", "body", dict(db.get_settings(), smtp_host="x", from_email="me@shop.test", smtp_pass="", smtp_security="none"))
+        raise AssertionError("expected an error")
+    except messaging.SendError as ex:
+        assert ex.kind == "permanent" and "may or may not" in str(ex), ex
+    finally:
+        messaging._smtp_open = orig
 
 
 if __name__ == "__main__":
