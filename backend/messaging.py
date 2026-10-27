@@ -1,7 +1,8 @@
 """Sending (SMTP email, SMS through your own Android phone) and receiving (IMAP replies).
 
 SendError.kind tells the caller what to do:
-  transient  network/server hiccup  -> retry later
+  offline    the internet, the mail server or the phone can't be reached -> put the message back, rest, retry by itself
+  transient  the server answered with a temporary error  -> retry later
   permanent  this recipient/message can't be delivered -> mark failed
   pause      account-level problem (bad login, no SMS balance, not configured)
              -> pause the campaign so the queue isn't burned
@@ -28,6 +29,7 @@ import library
 from util import normalize_email
 
 SMS_LIMIT = 160   # one text; anything longer is split and billed as several
+SMTP_TIMEOUT = 60   # seconds per step (connect, secure, log in, send): a slow line needs more than the default patience
 
 
 class SendError(Exception):
@@ -170,16 +172,49 @@ def _login_help(host: str, detail: str, what: str = "mail") -> str:
 
 
 def _smtp_open(s: dict):
-    """A connected, secured SMTP session (not yet logged in)."""
+    """A connected, secured SMTP session (not yet logged in). Many networks block port 587 or 465 but not the other: when the
+    connection itself fails, the other standard pair is tried (nothing has been sent yet, so this is safe) and the one that
+    worked is tried first next time."""
+    port, sec = int(s.get("smtp_port") or 587), s.get("smtp_security", "starttls")
+    other = {(587, "starttls"): (465, "ssl"), (465, "ssl"): (587, "starttls")}.get((port, sec))
+    host = clean_text(s.get("smtp_host"))
+    memo = db.get_internal("smtp_pair")
+    memo = memo if isinstance(memo, dict) else {}
+    first, second = (port, sec), other
+    if other and memo.get(host) == list(other):   # this network worked with the other pair last time: start there
+        first, second = other, (port, sec)
+    try:
+        smtp = _smtp_open_once(dict(s, smtp_port=first[0], smtp_security=first[1]))
+        err = None
+    except Exception as e:
+        smtp, err = None, e
+    if smtp is None:
+        if not second or isinstance(err, UnicodeError):
+            raise err
+        try:
+            smtp = _smtp_open_once(dict(s, smtp_port=second[0], smtp_security=second[1]), timeout=15)
+        except Exception:
+            raise err   # report the first problem: it is the one the person set up
+        first = second
+    if other and memo.get(host) != list(first):
+        try:
+            memo[host] = list(first)
+            db.set_internal("smtp_pair", memo)
+        except Exception:
+            pass
+    return smtp
+
+
+def _smtp_open_once(s: dict, timeout: int = SMTP_TIMEOUT):
     host, port = clean_text(s.get("smtp_host")), int(s.get("smtp_port") or 587)
     security = s.get("smtp_security", "starttls")
     ctx = ssl.create_default_context()
     # local_hostname is fixed so Python never has to look up this PC's own name, which can be slow on a hotspot
     # and fails outright when the computer's name has a character that is not plain English.
     if security == "ssl":
-        smtp = smtplib.SMTP_SSL(host, port, timeout=30, context=ctx, local_hostname="localhost")
+        smtp = smtplib.SMTP_SSL(host, port, timeout=timeout, context=ctx, local_hostname="localhost")
     else:
-        smtp = smtplib.SMTP(host, port, timeout=30, local_hostname="localhost")
+        smtp = smtplib.SMTP(host, port, timeout=timeout, local_hostname="localhost")
     try:
         smtp.ehlo()
         if security == "starttls":
@@ -237,6 +272,18 @@ def send_email(to: str, subject: str, body: str, s: dict) -> str:
 
 # ------------------------------------------------------------ backup email accounts
 _cool: dict = {}      # account number -> time before which it is not tried again (it just failed)
+_last_err: dict = {}  # account number -> what went wrong the last time (cleared by the next success)
+
+
+def email_health(s: dict) -> list:
+    """One row per email account for the Settings screen: how much it sent today, its limit, and whether it is resting and why."""
+    out = []
+    for a in smtp_accounts(s):
+        n = a["_acct"]
+        rest = max(0, int(_cool.get(n, 0) - time.time()))
+        out.append({"n": n, "from": a["from_email"], "host": a["smtp_host"], "sent_today": _used_today(n), "limit": account_cap(a),
+                    "warming_up": bool(warmup_limit(n, a)), "resting_min": (rest // 60 + 1) if rest else 0, "last_error": _last_err.get(n, "")})
+    return out
 
 
 def smtp_accounts(s: dict) -> list:
@@ -318,7 +365,17 @@ def send_email_any(to: str, subject: str, body: str, s: dict) -> str:
     its own daily limit, the next account is used. Nothing is retried after the message was handed over (that could mean twice)."""
     accts = smtp_accounts(s)
     if len(accts) <= 1:
-        return send_email(to, subject, body, s)
+        try:
+            mid = send_email(to, subject, body, s)
+        except SendError as e:
+            _last_err[1] = str(e)[:300]
+            raise
+        _last_err.pop(1, None)
+        try:
+            _count_use(1)
+        except Exception:
+            pass
+        return mid
     now_t = time.time()
     order = [a for a in accts if _cool.get(a["_acct"], 0) <= now_t and (not account_cap(a) or _used_today(a["_acct"]) < account_cap(a))]
     # spread the load: the account that has used the smallest share of its own limit goes first (each stays quiet and safe)
@@ -328,11 +385,13 @@ def send_email_any(to: str, subject: str, body: str, s: dict) -> str:
         try:
             mid = send_email(to, subject, body, a)
         except SendError as e:
-            if e.kind not in ("pause", "transient"):
+            if e.kind not in ("pause", "transient", "offline"):
                 raise   # refused recipient, unconfirmed delivery: not the account's fault, never try another
-            _cool[a["_acct"]] = time.time() + (300 if "reach" in str(e) else 1800)
+            _cool[a["_acct"]] = time.time() + (300 if e.kind == "offline" else 1800)
+            _last_err[a["_acct"]] = str(e)[:300]
             last = e
             continue
+        _last_err.pop(a["_acct"], None)
         try:
             _count_use(a["_acct"])
         except Exception:
@@ -363,8 +422,10 @@ def _explain_smtp(e: Exception, s: dict) -> SendError:
     if isinstance(e, UnicodeError):
         return SendError("A mail setting has a character the mail server can't accept (usually a hidden one in the "
                          "password). Type the password again by hand and save.", "pause")
-    if isinstance(e, (smtplib.SMTPException, OSError, ssl.SSLError)):
-        return SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "transient")
+    if isinstance(e, (smtplib.SMTPServerDisconnected, OSError, ssl.SSLError)):
+        return SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "offline")
+    if isinstance(e, smtplib.SMTPException):
+        return SendError(f"Mail server error: {e}. {_smtp_hint(s)}", "transient")
     return SendError(f"Unexpected email error: {type(e).__name__}: {e}", "transient")
 
 
@@ -493,7 +554,7 @@ def _phone_unreachable(base: str, e) -> SendError:
     return SendError(f"Couldn't reach the phone at {base} ({type(e).__name__}). Check that the phone is on the same Wi-Fi or "
                      "hotspot as this PC, that the SMS Gateway app is open with its Local server switched on, and that the "
                      "address matches the one the app shows (it can change when the phone reconnects). Texts wait and are tried again by "
-                     "themselves; nothing is lost.", "transient")
+                     "themselves; nothing is lost.", "offline")
 
 
 def _sms_state(j) -> str:

@@ -824,6 +824,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         return {"ok": all(r[1] for r in results),
                 "message": ". ".join(f"{label}: {detail}" for label, _, detail in results)}
 
+    @app.get("/api/email/health")
+    def email_health():
+        return {"accounts": messaging.email_health(db.get_settings())}
+
     @app.post("/api/settings/test-email")
     def test_email(body: TestSend):
         s = db.get_settings()

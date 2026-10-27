@@ -4433,13 +4433,13 @@ def slow_internet_rests_and_retries_instead_of_pausing_or_losing_messages():
             row = c.execute("SELECT * FROM messages WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
             c.execute("UPDATE messages SET attempts=attempts+1 WHERE id=?", (row["id"],))
             row = c.execute("SELECT * FROM messages WHERE id=?", (row["id"],)).fetchone()
-        sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out. Check the internet.", "transient"))
+        sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out. Check the internet.", "offline"))
     with db.db() as c:
         st = c.execute("SELECT status, last_error FROM campaigns WHERE id=?", (cid,)).fetchone()
     assert st["status"] == "running" and "could not be reached" in st["last_error"], dict(st)
     assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0
     assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 3
-    sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out.", "transient"))   # the 8th: now you are told
+    sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out.", "offline"))   # the 8th: now you are told
     with db.db() as c:
         assert c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()["status"] == "paused"
     # WhatsApp page that never loads: rests with a longer wait each time, pauses only after many
@@ -4480,7 +4480,7 @@ def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
     # a sleeping phone is waited for, not a reason to pause texts
     err = messaging.SendError("x", "transient")
     e = messaging._phone_unreachable("http://192.168.1.5:8080", OSError("down"))
-    assert e.kind == "transient" and "Couldn't reach" in str(e), e
+    assert e.kind == "offline" and "Couldn't reach" in str(e), e
     # a connection that dies after the message was handed over is never retried by itself
     import smtplib
     class Dropping:
@@ -4499,6 +4499,74 @@ def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
 
 
 @test
+def an_unreachable_mail_server_rests_once_and_loses_nothing():
+    fresh(); configure(smtp_port=9, email_delay_sec=0)   # nothing listens there: the same as a dead or blocked connection
+    with db.db() as c:
+        for i in range(6):
+            L.add_lead(c, {"name": f"Shop {i}", "town": "Meru", "sector": "Pharmacy", "email": f"off{i}@shop.test"})
+        cid = C.create_campaign(c, "Offline", "email", "Hi {name}", "Hello {name}", {"sectors": ["Pharmacy"]}, launch=True)
+    s = C.Sender(); s.start()
+    t0 = time.time()
+    while time.time() - t0 < 10 and not s.net.get("email"):
+        time.sleep(0.2)
+    time.sleep(1.5)   # still running: if it did not rest it would try (and fail) again in this time
+    s.stop()
+    assert s.net["email"][0] == 1 and s.net["email"][1] > time.time() + 60          # one try, then it rests
+    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "running"       # never paused for a bad connection
+    assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0        # nothing burned
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued' AND attempts=0") == 6
+    configure()
+
+
+@test
+def the_whatsapp_link_code_only_counts_as_logged_out_when_it_stays_up():
+    class Page:
+        def wait_for_timeout(self, ms): time.sleep(ms / 1000)
+
+    def driver(shows):   # shows(seconds since start) -> what the page holds then: "qr" or "ready"
+        d, t0 = whatsapp.WhatsAppWeb(), time.time()
+        d.page = Page()
+        d._any = lambda key: (key == "qr" and shows(time.time() - t0) == "qr") or (key == "chat_list" and shows(time.time() - t0) == "ready")
+        return d
+
+    old, whatsapp.QR_GRACE = whatsapp.QR_GRACE, 1
+    try:
+        assert driver(lambda s: "qr" if s < 0.3 else "ready").logged_out() is False        # flashed while loading, then the chats came
+        assert driver(lambda s: "qr").logged_out() is True                                  # never went away: really logged out
+        assert driver(lambda s: "qr" if s < 0.3 else "ready").wait_ready(5) == "ready"      # a flash is not "qr" either
+        assert driver(lambda s: "qr").wait_ready(5) == "qr"                                 # a steady code is
+    finally:
+        whatsapp.QR_GRACE = old
+
+
+@test
+def logged_out_again_within_a_day_of_linking_stops_whatsapp_for_a_day_as_a_probable_block():
+    def stamp(**kw): return (datetime.now() + timedelta(**kw)).isoformat(sep=" ", timespec="seconds")
+    for linked_ago, flagged in ((timedelta(hours=3), True), (timedelta(days=3), False)):
+        fresh(); configure(whatsapp_delay_sec=20); _wa_leads(1)
+        db.set_internal("whatsapp_linked", True); db.set_internal("whatsapp_linked_at", stamp(seconds=-linked_ago.total_seconds()))
+        with db.db() as c:
+            cid = C.create_campaign(c, "Blk", "whatsapp", "", "", {}, launch=True, style="ready")
+        assert _run_wa(FakeWA(ready=False))[0] == "failed" and not whatsapp.is_linked()
+        h = C.wa_hold_active()
+        assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused"
+        assert ("flagged" in h["reason"]) == flagged and (h["until"] > stamp(hours=23)) == flagged, h
+
+
+@test
+def resume_switches_the_bounce_brake_off_only_when_the_brake_paused_the_campaign():
+    for why, expected in (("Email login failed. The server refused the username or password.", False),
+                          ("3 of the last 25 emails bounced (12%). Remove or fix the bad addresses.", True)):
+        fresh(); configure()
+        with db.db() as c:
+            L.add_lead(c, {"name": "R", "town": "T", "email": "r@shop.test"})
+            cid = C.create_campaign(c, "Rsm", "email", "Hi", "Hello", {}, launch=True)
+            c.execute("UPDATE campaigns SET status='paused', last_error=? WHERE id=?", (why, cid))
+            C.set_campaign_status(c, cid, "resume")
+        assert bool(db.get_internal("bounce_ok_until")) == expected, why
+
+
+@test
 def backup_email_accounts_take_over_without_double_sending_or_losing_replies():
     fresh(); configure(send_window_enabled=False)
     base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", reply_to="", email_daily_cap=1,
@@ -4511,7 +4579,7 @@ def backup_email_accounts_take_over_without_double_sending_or_losing_replies():
     def fake(to, subject, body, a):
         calls.append(a["_acct"])
         if a["_acct"] == 1 and state["main"] == "down":
-            raise messaging.SendError("Couldn't reach the mail server: timed out.", "transient")
+            raise messaging.SendError("Couldn't reach the mail server: timed out.", "offline")
         if a["_acct"] == 1 and state["main"] == "refuse":
             raise messaging.SendError("Recipient refused: x", "permanent")
         return f"<id{a['_acct']}@x>"
@@ -4559,6 +4627,66 @@ def many_email_accounts_share_the_load_and_new_ones_warm_up_slowly():
     finally:
         messaging.send_email = orig
     assert set(used) == {1, 2, 3, 4, 5} and used.count(1) <= 6, used   # spread in proportion to each account's own limit
+
+
+@test
+def email_network_fallback_and_health_panel():
+    fresh()
+    tried = []
+    orig = messaging._smtp_open_once
+    def fake(s, timeout=30):
+        tried.append((int(s["smtp_port"]), s["smtp_security"]))
+        if int(s["smtp_port"]) == 587:
+            raise OSError("timed out")                      # this network blocks 587 but not 465
+        return "session"
+    messaging._smtp_open_once = fake; db.set_internal("smtp_pair", None)
+    try:
+        st = dict(db.get_settings(), smtp_host="mail.example.test", smtp_port=587, smtp_security="starttls")
+        assert messaging._smtp_open(st) == "session" and tried == [(587, "starttls"), (465, "ssl")], tried
+        tried.clear(); assert messaging._smtp_open(st) == "session" and tried == [(465, "ssl")], tried   # remembered: no waiting on 587
+        fail_all = lambda s, timeout=30: (_ for _ in ()).throw(OSError("down"))
+        messaging._smtp_open_once = fail_all
+        try:
+            messaging._smtp_open(dict(st, smtp_host="other.example.test")); raise AssertionError("expected an error")
+        except OSError as e:
+            assert "down" in str(e)
+    finally:
+        messaging._smtp_open_once = orig; db.set_internal("smtp_pair", None)
+    base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", email_daily_cap=50)
+    messaging._last_err.clear(); messaging._cool.clear(); db.set_internal("smtp_used", None)
+    rows = messaging.email_health(base)
+    assert rows and rows[0]["from"] == "main@shop.test" and rows[0]["limit"] == 50 and rows[0]["sent_today"] == 0 and not rows[0]["last_error"]
+    o2 = messaging.send_email
+    messaging.send_email = lambda *a, **k: (_ for _ in ()).throw(messaging.SendError("Couldn't reach the mail server: x", "offline"))
+    try:
+        try: messaging.send_email_any("a@x.test", "s", "b", base)
+        except messaging.SendError: pass
+    finally:
+        messaging.send_email = o2
+    assert "reach" in messaging.email_health(base)[0]["last_error"]
+    messaging._last_err.clear()
+
+
+@test
+def when_every_email_account_is_unreachable_the_channel_rests_once_and_nothing_is_lost():
+    fresh(); messaging._cool.clear(); messaging._last_err.clear()
+    configure(smtp_port=9, email_delay_sec=0, smtp2_host="127.0.0.1", smtp2_port=9, smtp2_from="back@shop.test", smtp2_cap=5, email_warmup=False)
+    with db.db() as c:
+        for i in range(4):
+            L.add_lead(c, {"name": f"Shop {i}", "town": "Meru", "sector": "Pharmacy", "email": f"all{i}@shop.test"})
+        cid = C.create_campaign(c, "AllDown", "email", "Hi {name}", "Hello {name}", {"sectors": ["Pharmacy"]}, launch=True)
+    s = C.Sender(); s.start()
+    t0 = time.time()
+    while time.time() - t0 < 15 and not s.net.get("email"):
+        time.sleep(0.2)
+    time.sleep(1.5)
+    s.stop()
+    assert s.net["email"][0] == 1 and s.net["email"][1] > time.time() + 60            # both were tried, then the channel rests once
+    assert set(messaging._cool) == {1, 2}                                                 # each account is resting on its own too
+    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "running"
+    assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued' AND attempts=0") == 4
+    messaging._cool.clear(); messaging._last_err.clear(); configure(smtp2_host="", smtp2_from="")
 
 
 if __name__ == "__main__":

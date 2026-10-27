@@ -71,6 +71,7 @@
               <label class="field">App Password<input type="password" id="gm-pass" placeholder="${s.smtp_pass_set ? 'Saved. Type to replace' : 'abcd efgh ijkl mnop'}" autocomplete="off"></label></div>
             <div class="row"><button type="button" class="btn primary" id="gm-connect">Connect Gmail</button></div>
             <div id="mail-result"></div>
+            <div id="mail-health"></div>
             <div class="row"><input type="email" id="t-email" placeholder="Send a test email to…" style="max-width:280px" value=""><button type="button" class="btn" id="test-email">Send test email</button></div>
             <details><summary class="small muted" style="cursor:pointer">More email accounts (spread the sending, and take over if one fails)</summary><div class="stack" style="gap:14px;margin-top:12px">
               <p class="muted small">Add up to nine more email accounts (free Gmail, Yahoo, Outlook, Zoho…). Sending is spread across them so each one stays quiet and safe, and if one fails or reaches its limit another takes over. New accounts start with about 20 emails a day and rise over three weeks, which protects them from being marked as spam. Each sends from its own address; replies still come to your main address. Yahoo and others need an app password, not the normal one (Yahoo: smtp.mail.yahoo.com, port 587, STARTTLS). Keep each account's daily limit low at first.</p>
@@ -193,6 +194,16 @@
       const stamp = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
       const nice = (n) => Number(n || 0).toLocaleString();
       const KIND = { auto: 'Automatic', manual: 'Made by you', 'before-restore': 'Safety copy before a restore', 'older backup': 'Older copy of the data file' };
+      const drawMailHealth = async () => {
+        const box = $('#mail-health'); if (!box) return;
+        const r = await api('/email/health');
+        if (!r.accounts.length) return render(box, html``);
+        render(box, html`<div class="small" style="border:1px solid var(--line);border-radius:8px;padding:8px 12px">
+          <b>Email accounts today</b>
+          ${r.accounts.map((a) => html`<div class="row" style="gap:8px;margin-top:4px"><span>${a.from}</span><span class="muted">${a.sent_today} of ${a.limit || 'no limit'}${a.warming_up ? ' (warming up)' : ''}</span>
+            ${a.resting_min ? html`<span class="chip">resting ${a.resting_min} min</span>` : ''}${a.last_error ? html`<span style="color:var(--bad)">${a.last_error}</span>` : ''}</div>`)}
+        </div>`);
+      };
       const drawBackups = async () => {
         const box = $('#bk-body'); if (!box) return;
         let bk;
@@ -268,7 +279,7 @@
         const b = e.target.closest('.subnav-item'); if (!b) return;
         tab = b.dataset.tab; applyTab(); const c = document.querySelector('.content'); if (c) c.scrollTop = 0;
       });
-      const draw = () => { render(el, form()); applyTab(); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); };
+      const draw = () => { render(el, form()); applyTab(); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); drawMailHealth().catch(() => {}); };
       draw();
 
       const save = async () => {
@@ -318,7 +329,7 @@
           } else if (id === 'test-email') {
             const to = $('#t-email').value.trim(); if (!to) return toast('Enter an address to send the test to', true);
             e.target.disabled = true; await save(); render($('#mail-result'), html`<p class="muted small">Testing…</p>`);
-            showResult('mail-result', await api('/settings/test-email', { method: 'POST', body: { to }, timeout: 120000 }));
+            showResult('mail-result', await api('/settings/test-email', { method: 'POST', body: { to }, timeout: 120000 })); drawMailHealth().catch(() => {});
           } else if (id === 'test-imap') {
             e.target.disabled = true; await save(); render($('#mail-result'), html`<p class="muted small">Testing…</p>`);
             showResult('mail-result', await api('/settings/test-imap', { method: 'POST', timeout: 120000 }));
