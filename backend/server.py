@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -23,6 +23,7 @@ import closer
 import config
 import db
 import enrich
+import grow
 import jobs
 import leads as L
 import messaging
@@ -134,6 +135,12 @@ class GradeIn(BaseModel):
 
 class HandledIn(BaseModel):
     handled: bool = True
+
+
+class GrowPostsIn(BaseModel):
+    finding: str
+    platforms: list = []
+    audience: str = ""
 
 
 class TestSend(BaseModel):
@@ -815,6 +822,41 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         if not lead:
             raise KeyError("Lead not found")
         return {"summary": ai.summarize(db.get_settings(), lead)}
+
+    # ------------------------------------------------------------- Grow (content drafts and partners: nothing here sends)
+    @app.post("/api/grow/posts")
+    def grow_posts(body: GrowPostsIn):
+        return grow.draft_posts(db.get_settings(), body.finding, body.platforms, body.audience)
+
+    @app.get("/api/grow/posts")
+    def grow_posts_list():
+        return {"posts": grow.recent_posts(), "platforms": {k: v[0] for k, v in grow.PLATFORMS.items()}}
+
+    @app.delete("/api/grow/posts/{pid}")
+    def grow_post_delete(pid: int):
+        grow.delete_post(pid)
+        return {"ok": True}
+
+    @app.get("/api/grow/partners")
+    def grow_partners():
+        return {"partners": grow.list_partners(), "kinds": list(grow.PARTNER_KINDS), "statuses": list(grow.PARTNER_STATUS)}
+
+    @app.post("/api/grow/partners")
+    def grow_partner_add(body: dict = Body(...)):
+        return grow.add_partner(body)
+
+    @app.put("/api/grow/partners/{pid}")
+    def grow_partner_update(pid: int, body: dict = Body(...)):
+        return grow.update_partner(pid, body)
+
+    @app.delete("/api/grow/partners/{pid}")
+    def grow_partner_delete(pid: int):
+        grow.delete_partner(pid)
+        return {"ok": True}
+
+    @app.post("/api/grow/partners/{pid}/pitch")
+    def grow_partner_pitch(pid: int):
+        return grow.partner_pitch(db.get_settings(), pid)
 
     @app.post("/api/settings/test-ai")
     def test_ai():

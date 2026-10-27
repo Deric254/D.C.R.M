@@ -1,8 +1,7 @@
 """Sending (SMTP email, SMS through your own Android phone) and receiving (IMAP replies).
 
 SendError.kind tells the caller what to do:
-  offline    the internet, the mail server or the phone can't be reached -> put the message back, rest, retry by itself
-  transient  the server answered with a temporary error  -> retry later
+  transient  network/server hiccup  -> retry later
   permanent  this recipient/message can't be delivered -> mark failed
   pause      account-level problem (bad login, no SMS balance, not configured)
              -> pause the campaign so the queue isn't burned
@@ -29,7 +28,6 @@ import library
 from util import normalize_email
 
 SMS_LIMIT = 160   # one text; anything longer is split and billed as several
-SMTP_TIMEOUT = 60   # seconds per step (connect, secure, log in, send): a slow line needs more than the default patience
 
 
 class SendError(Exception):
@@ -205,7 +203,7 @@ def _smtp_open(s: dict):
     return smtp
 
 
-def _smtp_open_once(s: dict, timeout: int = SMTP_TIMEOUT):
+def _smtp_open_once(s: dict, timeout: int = 30):
     host, port = clean_text(s.get("smtp_host")), int(s.get("smtp_port") or 587)
     security = s.get("smtp_security", "starttls")
     ctx = ssl.create_default_context()
@@ -385,9 +383,9 @@ def send_email_any(to: str, subject: str, body: str, s: dict) -> str:
         try:
             mid = send_email(to, subject, body, a)
         except SendError as e:
-            if e.kind not in ("pause", "transient", "offline"):
+            if e.kind not in ("pause", "transient"):
                 raise   # refused recipient, unconfirmed delivery: not the account's fault, never try another
-            _cool[a["_acct"]] = time.time() + (300 if e.kind == "offline" else 1800)
+            _cool[a["_acct"]] = time.time() + (300 if "reach" in str(e) else 1800)
             _last_err[a["_acct"]] = str(e)[:300]
             last = e
             continue
@@ -422,10 +420,8 @@ def _explain_smtp(e: Exception, s: dict) -> SendError:
     if isinstance(e, UnicodeError):
         return SendError("A mail setting has a character the mail server can't accept (usually a hidden one in the "
                          "password). Type the password again by hand and save.", "pause")
-    if isinstance(e, (smtplib.SMTPServerDisconnected, OSError, ssl.SSLError)):
-        return SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "offline")
-    if isinstance(e, smtplib.SMTPException):
-        return SendError(f"Mail server error: {e}. {_smtp_hint(s)}", "transient")
+    if isinstance(e, (smtplib.SMTPException, OSError, ssl.SSLError)):
+        return SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "transient")
     return SendError(f"Unexpected email error: {type(e).__name__}: {e}", "transient")
 
 
@@ -554,7 +550,7 @@ def _phone_unreachable(base: str, e) -> SendError:
     return SendError(f"Couldn't reach the phone at {base} ({type(e).__name__}). Check that the phone is on the same Wi-Fi or "
                      "hotspot as this PC, that the SMS Gateway app is open with its Local server switched on, and that the "
                      "address matches the one the app shows (it can change when the phone reconnects). Texts wait and are tried again by "
-                     "themselves; nothing is lost.", "offline")
+                     "themselves; nothing is lost.", "transient")
 
 
 def _sms_state(j) -> str:
