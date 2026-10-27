@@ -838,6 +838,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             except SendError as e:
                 res["steps"].append({"label": "Send", "ok": False, "detail": str(e)})
                 res.update(ok=False, message=f"Send: {e}")
+        for a in messaging.smtp_accounts(s)[1:]:   # the backup accounts are checked too (nothing is sent through them)
+            r = messaging.diagnose_email(a)
+            res["steps"].append({"label": f"Backup {a['_acct'] - 1} ({a['from_email']})", "ok": r["ok"], "detail": r.get("message") or ""})
         return res
 
     @app.post("/api/settings/connect-gmail")

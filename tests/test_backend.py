@@ -4498,6 +4498,69 @@ def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
         messaging._smtp_open = orig
 
 
+@test
+def backup_email_accounts_take_over_without_double_sending_or_losing_replies():
+    fresh(); configure(send_window_enabled=False)
+    base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", reply_to="", email_daily_cap=1,
+                smtp2_host="127.0.0.1", smtp2_from="back@shop.test", smtp2_cap=5, smtp2_security="starttls")
+    accts = messaging.smtp_accounts(base)
+    assert [a["_acct"] for a in accts] == [1, 2] and accts[1]["reply_to"] == "main@shop.test"   # replies come to the main inbox
+    assert messaging.total_email_cap(base) == 6
+    assert len(messaging.smtp_accounts(dict(base, smtp2_host=""))) == 1
+    calls = []
+    def fake(to, subject, body, a):
+        calls.append(a["_acct"])
+        if a["_acct"] == 1 and state["main"] == "down":
+            raise messaging.SendError("Couldn't reach the mail server: timed out.", "transient")
+        if a["_acct"] == 1 and state["main"] == "refuse":
+            raise messaging.SendError("Recipient refused: x", "permanent")
+        return f"<id{a['_acct']}@x>"
+    state = {"main": "down"}
+    orig = messaging.send_email; messaging.send_email = fake; messaging._cool.clear()
+    try:
+        assert messaging.send_email_any("a@x.test", "s", "b", base) == "<id2@x>" and calls == [1, 2]   # main down: backup sends
+        calls.clear(); assert messaging.send_email_any("b@x.test", "s", "b", base) == "<id2@x>" and calls == [2]   # main rests
+        messaging._cool.clear(); state["main"] = "refuse"; calls.clear()
+        try:
+            messaging.send_email_any("c@x.test", "s", "b", base); raise AssertionError("a refused address must not go to the backup")
+        except messaging.SendError as e:
+            assert e.kind == "permanent" and calls == [1]
+        messaging._cool.clear(); state["main"] = "ok"; calls.clear()
+        db.set_internal("smtp_used", None)
+        messaging.send_email_any("d@x.test", "s", "b", base)       # main's own limit (1) is used up: the next goes to the backup
+        messaging.send_email_any("e@x.test", "s", "b", base)
+        assert calls == [1, 2], calls
+    finally:
+        messaging.send_email = orig; messaging._cool.clear()
+    assert "smtp2_pass" in db.SECRET_KEYS
+
+
+@test
+def many_email_accounts_share_the_load_and_new_ones_warm_up_slowly():
+    fresh(); configure(send_window_enabled=False)
+    extra = {}
+    for n in range(2, 6):
+        extra.update({f"smtp{n}_host": "127.0.0.1", f"smtp{n}_from": f"a{n}@shop.test", f"smtp{n}_cap": 150})
+    base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", email_daily_cap=80, email_warmup=True, **extra)
+    db.set_internal("smtp_used", None); db.set_internal("smtp_first", None)
+    assert len(messaging.smtp_accounts(base)) == 5
+    assert messaging.total_email_cap(base) == 80 + 4 * 20          # new accounts: 20 a day each at first, the main one as set
+    assert messaging.total_email_cap(dict(base, email_warmup=False)) == 80 + 4 * 150
+    db.set_internal("smtp_first", {"2": time.strftime("%Y-%m-%d", time.localtime(time.time() - 10 * 86400))})
+    assert messaging.account_cap(dict(base, _acct=2)) == 80 and messaging.account_cap(dict(base, _acct=1)) == 80   # day 10: 80 a day
+    db.set_internal("smtp_first", {"2": time.strftime("%Y-%m-%d", time.localtime(time.time() - 30 * 86400))})
+    assert messaging.account_cap(dict(base, _acct=2)) == 150          # after three weeks: the limit you set
+    db.set_internal("smtp_first", None)
+    used = []
+    orig = messaging.send_email; messaging.send_email = lambda to, sub, body, a: (used.append(a["_acct"]), f"<{len(used)}@x>")[1]; messaging._cool.clear()
+    try:
+        for i in range(10):
+            messaging.send_email_any(f"x{i}@t.test", "s", "b", base)
+    finally:
+        messaging.send_email = orig
+    assert set(used) == {1, 2, 3, 4, 5} and used.count(1) <= 6, used   # spread in proportion to each account's own limit
+
+
 if __name__ == "__main__":
     SMTP.stop()
     PHONE.shutdown()

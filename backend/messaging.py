@@ -235,6 +235,112 @@ def send_email(to: str, subject: str, body: str, s: dict) -> str:
     return mid
 
 
+# ------------------------------------------------------------ backup email accounts
+_cool: dict = {}      # account number -> time before which it is not tried again (it just failed)
+
+
+def smtp_accounts(s: dict) -> list:
+    """The email accounts to send from, main one first. A backup that is not filled in is left out. Each carries its own login
+    and From address; replies still go to the main address, which is the inbox the app reads."""
+    main = clean_text(s.get("from_email"))
+    out = []
+    if clean_text(s.get("smtp_host")) and main:
+        out.append(dict(s, _acct=1))
+    for n in range(2, 11):
+        host, frm = clean_text(s.get(f"smtp{n}_host")), clean_text(s.get(f"smtp{n}_from"))
+        if host and frm:
+            a = dict(s)
+            a.update(smtp_host=host, smtp_port=int(s.get(f"smtp{n}_port") or 587), smtp_security=s.get(f"smtp{n}_security") or "starttls",
+                     smtp_user=s.get(f"smtp{n}_user") or "", smtp_pass=s.get(f"smtp{n}_pass") or "", from_email=frm,
+                     reply_to=clean_text(s.get("reply_to")) or main or frm, _acct=n)
+            out.append(a)
+    return out
+
+
+WARMUP = ((3, 20), (7, 40), (14, 80), (21, 150))   # (days since the account first sent, emails per day allowed until then)
+
+
+def _first_day(n: int) -> str:
+    f = db.get_internal("smtp_first")
+    return (f or {}).get(str(n), "") if isinstance(f, dict) else ""
+
+
+def warmup_limit(n: int, s: dict) -> int:
+    """A new account that suddenly sends hundreds of emails is marked as spam. Extra accounts therefore start small and grow for
+    three weeks (the main account is left exactly as you set it). 0 = no ramp."""
+    if n == 1 or not s.get("email_warmup", True):
+        return 0
+    first = _first_day(n)
+    if not first:
+        return WARMUP[0][1]
+    try:
+        age = (time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d")) - time.mktime(time.strptime(first, "%Y-%m-%d"))) / 86400
+    except ValueError:
+        return 0
+    for days, lim in WARMUP:
+        if age < days:
+            return lim
+    return 0
+
+
+def account_cap(a: dict) -> int:
+    n = a.get("_acct", 1)
+    cap = int(a.get("email_daily_cap") or 0) if n == 1 else int(a.get(f"smtp{n}_cap") or 0)
+    ramp = warmup_limit(n, a)
+    return min(cap, ramp) if cap and ramp else (ramp or cap)
+
+
+def total_email_cap(s: dict) -> int:
+    accts = smtp_accounts(s)
+    return sum(account_cap(a) for a in accts) if len(accts) > 1 else int(s.get("email_daily_cap") or 0)
+
+
+def _used_today(n: int) -> int:
+    u = db.get_internal("smtp_used")
+    return int(u["n"].get(str(n), 0)) if isinstance(u, dict) and u.get("day") == time.strftime("%Y-%m-%d") else 0
+
+
+def _count_use(n: int):
+    u = db.get_internal("smtp_used")
+    if not isinstance(u, dict) or u.get("day") != time.strftime("%Y-%m-%d"):
+        u = {"day": time.strftime("%Y-%m-%d"), "n": {}}
+    u["n"][str(n)] = int(u["n"].get(str(n), 0)) + 1
+    db.set_internal("smtp_used", u)
+    f = db.get_internal("smtp_first")
+    f = f if isinstance(f, dict) else {}
+    if str(n) not in f:   # the warm-up clock starts the day the account first sends
+        f[str(n)] = time.strftime("%Y-%m-%d")
+        db.set_internal("smtp_first", f)
+
+
+def send_email_any(to: str, subject: str, body: str, s: dict) -> str:
+    """send_email, with backup accounts: if the main account fails (login, its sending limit, cannot be reached) or has reached
+    its own daily limit, the next account is used. Nothing is retried after the message was handed over (that could mean twice)."""
+    accts = smtp_accounts(s)
+    if len(accts) <= 1:
+        return send_email(to, subject, body, s)
+    now_t = time.time()
+    order = [a for a in accts if _cool.get(a["_acct"], 0) <= now_t and (not account_cap(a) or _used_today(a["_acct"]) < account_cap(a))]
+    # spread the load: the account that has used the smallest share of its own limit goes first (each stays quiet and safe)
+    order.sort(key=lambda a: (_used_today(a["_acct"]) / account_cap(a)) if account_cap(a) else 0.5)
+    last = None
+    for a in order or accts:
+        try:
+            mid = send_email(to, subject, body, a)
+        except SendError as e:
+            if e.kind not in ("pause", "transient"):
+                raise   # refused recipient, unconfirmed delivery: not the account's fault, never try another
+            _cool[a["_acct"]] = time.time() + (300 if "reach" in str(e) else 1800)
+            last = e
+            continue
+        try:
+            _count_use(a["_acct"])
+        except Exception:
+            pass
+        return mid
+    raise last or SendError("No email account is ready.", "pause")
+
+
 def _explain_smtp(e: Exception, s: dict) -> SendError:
     """Any failure while sending, in plain words and with the right next step (pause the campaign, retry, or give up)."""
     host = clean_text(s.get("smtp_host"))

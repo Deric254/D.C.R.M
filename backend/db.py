@@ -230,6 +230,7 @@ SETTING_DEFAULTS = {
     "sms_gateway_url": "", "sms_gateway_user": "", "sms_gateway_pass": "", "sms_sim": 0,
     # WhatsApp is sent from WhatsApp Web on this PC (linked once by scanning a code)
     # sending limits
+    "email_warmup": True,   # extra email accounts start with a few emails a day and rise over three weeks
     "email_daily_cap": 80, "sms_daily_cap": 150, "whatsapp_daily_cap": 40,
     "email_delay_sec": 25, "sms_delay_sec": 65, "whatsapp_delay_sec": 60,
     # WhatsApp runs in a hidden browser (no window), and reads replies from the chats every this many minutes (0 = never)
@@ -254,7 +255,10 @@ SETTING_DEFAULTS = {
     "ai_key_gemini": "", "ai_key_groq": "", "ai_key_nvidia": "", "ai_key_openrouter": "", "ai_key_mistral": "",
     "ai_custom_url": "", "ai_custom_model": "", "ai_key_custom": "",
 }
-SECRET_KEYS = {"smtp_pass", "imap_pass", "sms_gateway_pass", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
+for _n in range(2, 11):   # extra email accounts (up to 9): used when the main one fails, hits its limit, or cannot be reached
+    SETTING_DEFAULTS.update({f"smtp{_n}_host": "", f"smtp{_n}_port": 587, f"smtp{_n}_security": "starttls", f"smtp{_n}_user": "",
+                     f"smtp{_n}_pass": "", f"smtp{_n}_from": "", f"smtp{_n}_cap": 80})
+SECRET_KEYS = {*(f"smtp{_n}_pass" for _n in range(2, 11)), "smtp_pass", "imap_pass", "sms_gateway_pass", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
                "ai_key_openrouter", "ai_key_mistral", "ai_key_custom"}
 
 

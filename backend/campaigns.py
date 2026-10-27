@@ -598,7 +598,7 @@ def send_now(lead_id: int, channel: str, subject: str, body: str) -> dict:
         mid = cur.lastrowid
     try:
         if channel == "email":
-            header = messaging.send_email(to, subj, text, s)
+            header = messaging.send_email_any(to, subj, text, s)
             provider = header
         else:
             header, provider = None, messaging.send_sms(to, text, s)
@@ -1306,7 +1306,7 @@ def sending_report(conn, s: dict = None, linked: bool = None) -> list:
         sent = wa_sent_today(conn) if ch == "whatsapp" else conn.execute(
             "SELECT COUNT(*) FROM messages m LEFT JOIN campaigns c ON c.id = m.campaign_id WHERE m.direction='out' AND m.channel=? "
             "AND m.status='sent' AND m.sent_at >= ? AND COALESCE(c.style, '') <> 'single'", (ch, today_start())).fetchone()[0]
-        cap = int(s.get(f"{ch}_daily_cap") or 0)
+        cap = messaging.total_email_cap(s) if ch == "email" else int(s.get(f"{ch}_daily_cap") or 0)
         if cap and sent >= cap:
             add("warn", f"Today's {label} limit ({cap}) is reached. {n} message{'s' if n != 1 else ''} will go out tomorrow, or raise the limit in Settings > Limits and opt-outs.", "#/settings")
             continue
@@ -1541,7 +1541,8 @@ class Sender(threading.Thread):
                 self._set("waiting", f"Outside sending hours ({s['send_window_start']}–{s['send_window_end']})")
                 waits.append(30)
                 continue
-            if sent_today >= int(s[f"{ch}_daily_cap"]) and row["style"] != "single":   # answers in a conversation are never capped
+            cap_now = messaging.total_email_cap(s) if ch == "email" else int(s[f"{ch}_daily_cap"])
+            if sent_today >= cap_now and row["style"] != "single":   # answers in a conversation are never capped
                 self._set("waiting", f"Daily {ch} limit reached ({sent_today})")
                 waits.append(60)
                 continue
@@ -1691,7 +1692,7 @@ class Sender(threading.Thread):
             if ch == "sms" and len(body) > messaging.SMS_LIMIT:
                 raise SendError(f"Too long for one text ({len(body)} of {messaging.SMS_LIMIT} characters)", "permanent")
             if ch == "email":
-                header = messaging.send_email(to, subject, body, s)
+                header = messaging.send_email_any(to, subject, body, s)
                 provider = header
             else:
                 header, provider = None, messaging.send_sms(to, body, s)
