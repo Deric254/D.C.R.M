@@ -4629,6 +4629,157 @@ def many_email_accounts_share_the_load_and_new_ones_warm_up_slowly():
     assert set(used) == {1, 2, 3, 4, 5} and used.count(1) <= 6, used   # spread in proportion to each account's own limit
 
 
+class _BlackHole:
+    """A port that accepts the connection and then says nothing, which is how a network or antivirus 'mail shield' that
+    silently drops a mail port looks from the PC: the port is 'open' but the server never answers."""
+    def __init__(self):
+        import socket
+        self.sk = socket.socket(); self.sk.bind(("127.0.0.1", 0)); self.sk.listen(20)
+        self.port, self.accepted, self.held = self.sk.getsockname()[1], 0, []
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while True:
+            try:
+                c, _ = self.sk.accept()
+            except OSError:
+                return
+            self.accepted += 1; self.held.append(c)
+
+    def stop(self):
+        self.sk.close()
+        for c in self.held:
+            try:
+                c.close()
+            except OSError:
+                pass
+
+
+def _ssl_smtp():
+    """A real SMTP server that speaks SSL from the first byte (port 465 style), with a throwaway certificate."""
+    import socket, ssl as _ssl, subprocess
+    from aiosmtpd.controller import Controller
+    d = tempfile.mkdtemp(prefix="dericbi-cert-")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", f"{d}/k.pem", "-out", f"{d}/c.pem", "-days", "2",
+                    "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], check=True, capture_output=True)
+    srv = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER); srv.load_cert_chain(f"{d}/c.pem", f"{d}/k.pem")
+    cli = _ssl.create_default_context(); cli.load_verify_locations(f"{d}/c.pem")
+
+    class H:
+        async def handle_DATA(self, server, session, envelope):
+            SMTP_INBOX.append(envelope)
+            return "250 OK"
+    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+    ctl = Controller(H(), hostname="127.0.0.1", port=port, ssl_context=srv)
+    ctl.start()
+    return ctl, port, cli
+
+
+def _closed_port():
+    import socket
+    sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+    return port
+
+
+@test
+def email_works_by_itself_when_the_default_port_is_dead_slow_or_shut():
+    import ssl as _ssl
+    fresh()
+    hole, (ctl, good, cli_ctx) = _BlackHole(), _ssl_smtp()
+    real = (messaging._SMTP_WAYS, messaging.CONNECT_STAGGER, messaging.CONNECT_TIMEOUT, _ssl.create_default_context)
+    _ssl.create_default_context = lambda *a, **k: cli_ctx              # trust only the test certificate
+    base = dict(db.SETTING_DEFAULTS, smtp_host="127.0.0.1", smtp_security="starttls", sender_name="Deric", from_email="me@x.test")
+    try:
+        # 1) the default way goes silent (accepts, never answers): the other way is used within seconds and the mail is delivered
+        messaging._SMTP_WAYS = {(hole.port, "starttls"): (good, "ssl"), (good, "ssl"): (hole.port, "starttls")}
+        messaging.CONNECT_STAGGER, messaging.CONNECT_TIMEOUT = 1, 20
+        db.set_internal("smtp_pair", None); SMTP_INBOX.clear()
+        st = dict(base, smtp_port=hole.port)
+        t0 = time.time(); messaging.send_email("lead@shop.co.ke", "hi", "body", st); took = time.time() - t0
+        assert len(SMTP_INBOX) == 1 and took < 8, (len(SMTP_INBOX), took)
+        assert db.get_internal("smtp_pair")["127.0.0.1"] == [good, "ssl"]
+        # 2) next time it goes straight to the way that worked: the silent port is not even touched
+        seen = hole.accepted; t0 = time.time(); messaging.send_email("lead@shop.co.ke", "hi2", "body", st)
+        assert hole.accepted == seen and time.time() - t0 < 4 and len(SMTP_INBOX) == 2
+        # 3) the Settings check passes by itself and says which way it used; nothing is left for the person to change
+        db.set_internal("smtp_pair", None)
+        r = messaging.diagnose_email(st)
+        sec = next(x for x in r["steps"] if x["label"] == "Secure connection")
+        assert sec["ok"] and f"SSL on port {good}" in sec["detail"], sec
+        # 4) the default port is shut outright (nothing listening): the check does not stop at 'port closed', it uses the other way
+        dead = _closed_port()
+        messaging._SMTP_WAYS = {(dead, "starttls"): (good, "ssl"), (good, "ssl"): (dead, "starttls")}
+        db.set_internal("smtp_pair", None)
+        r = messaging.diagnose_email(dict(base, smtp_port=dead))
+        con = next(x for x in r["steps"] if x["label"] == "Connect")
+        assert con["ok"] and "blocked here" in con["detail"] and f"SSL on port {good}" in con["detail"], r
+        assert next(x for x in r["steps"] if x["label"] == "Secure connection")["ok"], r   # (this test server has no login, so only the connection steps are judged)
+        # 5) both ways silent: it gives up after the connect time, and the message names BOTH failures and the real next step
+        hole2 = _BlackHole()
+        try:
+            messaging._SMTP_WAYS = {(hole.port, "starttls"): (hole2.port, "ssl"), (hole2.port, "ssl"): (hole.port, "starttls")}
+            messaging.CONNECT_TIMEOUT = 3; db.set_internal("smtp_pair", None)
+            t0 = time.time()
+            try:
+                messaging.send_email("lead@shop.co.ke", "hi3", "body", st); raise AssertionError("expected an error")
+            except messaging.SendError as e:
+                msg = str(e)
+                assert e.kind == "offline" and f"SSL on port {hole2.port}" in msg and "email shield" in msg and "other pair" not in msg, msg
+            assert time.time() - t0 < 12
+        finally:
+            hole2.stop()
+        # 6) a wrong password is a login problem, never retried the other way
+        messaging._SMTP_WAYS = {(good, "ssl"): (hole.port, "starttls"), (hole.port, "starttls"): (good, "ssl")}
+        # 7) a custom port (not one of the two standard pairs) is tried once, exactly as before
+        tried = []
+        o = messaging._smtp_open_once
+        messaging._smtp_open_once = lambda s, timeout=0: (tried.append(s["smtp_port"]), (_ for _ in ()).throw(OSError("down")))[1]
+        try:
+            messaging._smtp_open(dict(base, smtp_port=2525)); raise AssertionError("expected an error")
+        except OSError as e:
+            assert tried == [2525] and not getattr(e, "also_tried", None)
+        finally:
+            messaging._smtp_open_once = o
+    finally:
+        messaging._SMTP_WAYS, messaging.CONNECT_STAGGER, messaging.CONNECT_TIMEOUT, _ssl.create_default_context = real
+        db.set_internal("smtp_pair", None); ctl.stop(); hole.stop()
+
+
+@test
+def reply_inbox_works_by_itself_when_the_default_port_is_silent_or_shut():
+    from fake_imap import FakeImap
+    fresh()
+    hole, srv = _BlackHole(), FakeImap("inbox@dericbi.test", "pw")
+    real = (messaging._IMAP_WAYS, messaging.CONNECT_STAGGER)
+    messaging.CONNECT_STAGGER = 1
+    try:
+        messaging._IMAP_WAYS = {(hole.port, "ssl"): (srv.port, "none"), (srv.port, "none"): (hole.port, "ssl")}
+        db.set_internal("imap_pair", None)
+        st = dict(db.get_settings(), imap_host="127.0.0.1", imap_port=hole.port, imap_security="ssl", imap_user="inbox@dericbi.test", imap_pass="pw")
+        t0 = time.time(); res = messaging.test_imap(st); took = time.time() - t0
+        assert res["ok"] and took < 8, (res, took)
+        assert db.get_internal("imap_pair")["127.0.0.1"] == [srv.port, "none"]
+        seen = hole.accepted; t0 = time.time(); messaging.poll_imap(st)
+        assert hole.accepted == seen and time.time() - t0 < 4          # remembered: straight to the way that worked
+        # the port is shut outright: the check does not stop at 'port closed'
+        dead = _closed_port()
+        messaging._IMAP_WAYS = {(dead, "ssl"): (srv.port, "none"), (srv.port, "none"): (dead, "ssl")}
+        db.set_internal("imap_pair", None)
+        res = messaging.test_imap(dict(st, imap_port=dead))
+        con = next(x for x in res["steps"] if x["label"] == "Connect")
+        assert res["ok"] and con["ok"] and "blocked here" in con["detail"], res
+        # a wrong password is reported as a login problem, not as a network one, and is not retried the other way
+        messaging._IMAP_WAYS = {(hole.port, "ssl"): (srv.port, "none"), (srv.port, "none"): (hole.port, "ssl")}
+        db.set_internal("imap_pair", None)
+        try:
+            messaging._imap_connect(dict(st, imap_pass="WRONG")); raise AssertionError("expected an error")
+        except messaging.SendError as e:
+            assert e.kind == "pause" and "login failed" in str(e).lower(), str(e)
+    finally:
+        messaging._IMAP_WAYS, messaging.CONNECT_STAGGER = real
+        db.set_internal("imap_pair", None); srv.stop(); hole.stop()
+
+
 @test
 def email_network_fallback_and_health_panel():
     fresh()

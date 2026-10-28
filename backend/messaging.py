@@ -13,8 +13,10 @@ import email.utils
 import imaplib
 import re
 import smtplib
+import queue
 import socket
 import ssl
+import threading
 import time
 import unicodedata
 from email.message import EmailMessage
@@ -29,7 +31,9 @@ import library
 from util import normalize_email
 
 SMS_LIMIT = 160   # one text; anything longer is split and billed as several
-SMTP_TIMEOUT = 60   # seconds per step (connect, secure, log in, send): a slow line needs more than the default patience
+SMTP_TIMEOUT = 60   # seconds per step once connected (log in, send): a slow line needs more than the default patience
+CONNECT_TIMEOUT = 40   # seconds one way of connecting (connect + secure) may take before it is given up on
+CONNECT_STAGGER = 5    # seconds the preferred way gets alone; after that the other standard way is tried alongside it
 
 
 class SendError(Exception):
@@ -171,41 +175,98 @@ def _login_help(host: str, detail: str, what: str = "mail") -> str:
             "and the Password.")
 
 
+_SMTP_WAYS = {(587, "starttls"): (465, "ssl"), (465, "ssl"): (587, "starttls")}
+_IMAP_WAYS = {(993, "ssl"): (143, "starttls"), (143, "starttls"): (993, "ssl")}
+_HOW = {"ssl": "SSL", "starttls": "STARTTLS", "none": "no encryption"}
+
+
+def _way(pair) -> str:
+    return f"{_HOW.get(pair[1], pair[1])} on port {pair[0]}"
+
+
+def _open_either(first, second, open_one):
+    """Opens a connection the first way, or the second way when the first fails or is slow.
+
+    The preferred way starts at once. If it fails, or has not answered after CONNECT_STAGGER seconds, the other way is started
+    alongside it, and whichever connects first is used (the other is closed). So a network that silently drops one port costs a
+    few seconds, not a minute, and nothing is left for the person to change by hand. Nothing is sent or logged in here, so
+    trying two ways is safe. Returns (pair that worked, connection). When both fail, the first way's error is raised with
+    .also_tried listing why the other way failed too (so the person sees both reasons, not only one)."""
+    ways = [first] + ([second] if second else [])
+    results = queue.Queue()
+
+    def run(pair):
+        try:
+            results.put((pair, open_one(pair), None))
+        except BaseException as e:   # reported to the caller below; a thread must never die silently
+            results.put((pair, None, e))
+
+    def start(pair):
+        threading.Thread(target=run, args=(pair,), daemon=True).start()
+
+    def reap(n):   # a way that finishes after another already won: close it
+        def drain():
+            for _ in range(n):
+                try:
+                    _, conn, _e = results.get(timeout=CONNECT_TIMEOUT + 15)
+                except queue.Empty:
+                    return
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+        threading.Thread(target=drain, daemon=True).start()
+
+    started, failures = 1, {}
+    start(ways[0])
+    while True:
+        try:
+            pair, conn, err = results.get(timeout=CONNECT_STAGGER if started < len(ways) else None)
+        except queue.Empty:
+            start(ways[started]); started += 1   # the first way is slow: try the other one alongside it
+            continue
+        if conn is not None:
+            reap(started - len(failures) - 1)
+            return pair, conn
+        failures[pair] = err
+        if started < len(ways):
+            start(ways[started]); started += 1
+        elif len(failures) == started:
+            break
+    err = failures[ways[0]]
+    if isinstance(err, UnicodeError) or len(ways) == 1:
+        raise err
+    try:
+        err.also_tried = [f"{_way(p)}: {e}" for p, e in failures.items() if p != ways[0]]
+    except Exception:
+        pass
+    raise err
+
+
 def _smtp_open(s: dict):
-    """A connected, secured SMTP session (not yet logged in). Many networks block port 587 or 465 but not the other: when the
-    connection itself fails, the other standard pair is tried (nothing has been sent yet, so this is safe) and the one that
-    worked is tried first next time."""
+    """A connected, secured SMTP session (not yet logged in). Gmail and most providers accept both STARTTLS on 587 and SSL on 465,
+    and many networks, antivirus 'email shields' and phone hotspots block or stall one of them but not the other. So both are
+    tried (see _open_either) and the one that worked is tried first next time."""
     port, sec = int(s.get("smtp_port") or 587), s.get("smtp_security", "starttls")
-    other = {(587, "starttls"): (465, "ssl"), (465, "ssl"): (587, "starttls")}.get((port, sec))
+    other = _SMTP_WAYS.get((port, sec))
     host = clean_text(s.get("smtp_host"))
     memo = db.get_internal("smtp_pair")
     memo = memo if isinstance(memo, dict) else {}
     first, second = (port, sec), other
-    if other and memo.get(host) == list(other):   # this network worked with the other pair last time: start there
+    if other and memo.get(host) == list(other):   # this network worked with the other way last time: start there
         first, second = other, (port, sec)
-    try:
-        smtp = _smtp_open_once(dict(s, smtp_port=first[0], smtp_security=first[1]))
-        err = None
-    except Exception as e:
-        smtp, err = None, e
-    if smtp is None:
-        if not second or isinstance(err, UnicodeError):
-            raise err
+    won, smtp = _open_either(first, second, lambda pair: _smtp_open_once(dict(s, smtp_port=pair[0], smtp_security=pair[1]), timeout=CONNECT_TIMEOUT))
+    if other and memo.get(host) != list(won):
         try:
-            smtp = _smtp_open_once(dict(s, smtp_port=second[0], smtp_security=second[1]), timeout=15)
-        except Exception:
-            raise err   # report the first problem: it is the one the person set up
-        first = second
-    if other and memo.get(host) != list(first):
-        try:
-            memo[host] = list(first)
+            memo[host] = list(won)
             db.set_internal("smtp_pair", memo)
         except Exception:
             pass
     return smtp
 
 
-def _smtp_open_once(s: dict, timeout: int = SMTP_TIMEOUT):
+def _smtp_open_once(s: dict, timeout: int = CONNECT_TIMEOUT):
     host, port = clean_text(s.get("smtp_host")), int(s.get("smtp_port") or 587)
     security = s.get("smtp_security", "starttls")
     ctx = ssl.create_default_context()
@@ -220,6 +281,7 @@ def _smtp_open_once(s: dict, timeout: int = SMTP_TIMEOUT):
         if security == "starttls":
             smtp.starttls(context=ctx)
             smtp.ehlo()
+        smtp.sock.settimeout(SMTP_TIMEOUT)   # connecting is judged by CONNECT_TIMEOUT; logging in and sending get the patient one
     except Exception:
         try:
             smtp.close()
@@ -423,21 +485,26 @@ def _explain_smtp(e: Exception, s: dict) -> SendError:
         return SendError("A mail setting has a character the mail server can't accept (usually a hidden one in the "
                          "password). Type the password again by hand and save.", "pause")
     if isinstance(e, (smtplib.SMTPServerDisconnected, OSError, ssl.SSLError)):
-        return SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "offline")
+        also = getattr(e, "also_tried", None)
+        return SendError(f"Couldn't reach the mail server: {e}." + (f" The other standard way failed too ({'; '.join(also)})." if also else "")
+                         + f" {_smtp_hint(s, bool(also))}", "offline")
     if isinstance(e, smtplib.SMTPException):
         return SendError(f"Mail server error: {e}. {_smtp_hint(s)}", "transient")
     return SendError(f"Unexpected email error: {type(e).__name__}: {e}", "transient")
 
 
-def _smtp_hint(s: dict) -> str:
+def _smtp_hint(s: dict, both_tried: bool = False) -> str:
     """Why a timeout usually happens, in words, so it can be fixed without guessing."""
     port, sec = int(s.get("smtp_port") or 0), s.get("smtp_security", "starttls")
     if (port == 465 and sec != "ssl") or (port == 587 and sec == "ssl"):
         return (f"Port {port} needs the Connection set to " + ("SSL" if port == 465 else "STARTTLS") +
                 ". Change Connection in Settings to match the port.")
+    if both_tried:   # the app has already tried STARTTLS on 587 and SSL on 465 by itself: only the network is left
+        return ("The app tried both standard ways (STARTTLS on port 587 and SSL on port 465) and this network stops both. Check the "
+                "internet connection first. If other sites work, something on this PC or network is blocking mail: turn off any "
+                "antivirus 'email shield' or mail scanning for a minute, or try a phone hotspot.")
     return ("Check the internet connection first. If other sites work, something on this PC or network is blocking "
-            f"mail on port {port or 587}: try the other pair (SSL with port 465, or STARTTLS with port 587), turn off "
-            "any antivirus 'email shield' for a minute, or try a phone hotspot.")
+            f"mail on port {port or 587}: turn off any antivirus 'email shield' for a minute, or try a phone hotspot.")
 
 
 def _smtp_text(e) -> str:
@@ -496,15 +563,25 @@ def diagnose_email(s: dict) -> dict:
         steps.append({"label": "Settings", "ok": False, "detail": "Fill in the Mail server and the Send from address first."})
         return _result(steps)
     steps.append({"label": "Settings", "ok": True, "detail": f"{host}, port {port}, {s.get('smtp_security', 'starttls')}"})
+    sec = s.get("smtp_security", "starttls")
     steps += _reach(host, port, ((587, "STARTTLS"), (465, "SSL")))
+    blocked = None
     if not steps[-1]["ok"]:
-        return _result(steps)
+        if (port, sec) not in _SMTP_WAYS:
+            return _result(steps)
+        blocked = steps.pop()   # this port is shut, but the other standard one may be open: sending tries it by itself
     try:
         smtp = _smtp_open(s)
     except Exception as e:
-        steps.append({"label": "Secure connection", "ok": False, "detail": str(_explain_smtp(e, s))})
+        steps.append({"label": "Connect" if blocked else "Secure connection", "ok": False, "detail": str(_explain_smtp(e, s))})
         return _result(steps)
-    steps.append({"label": "Secure connection", "ok": True, "detail": "encrypted" if s.get("smtp_security") != "none" else "no encryption"})
+    memo = db.get_internal("smtp_pair")
+    used = memo.get(host) if isinstance(memo, dict) else None
+    used = tuple(used) if used else (port, sec)
+    if blocked:
+        steps.append({"label": "Connect", "ok": True, "detail": f"port {port} is blocked here, so {_way(used)} is used instead"})
+    steps.append({"label": "Secure connection", "ok": True,
+                  "detail": f"encrypted ({_way(used)})" if sec != "none" else "no encryption"})
     try:
         user, pw = mail_login(s)
         if pw:
@@ -664,26 +741,64 @@ def diagnose_sms(s: dict) -> dict:
 
 
 # ------------------------------------------------------------------------ IMAP
+def _imap_open_once(host: str, pair, timeout: int = 30):
+    port, sec = pair
+    if sec == "ssl":
+        return imaplib.IMAP4_SSL(host, port, timeout=timeout)
+    M = imaplib.IMAP4(host, port, timeout=timeout)
+    try:
+        if sec == "starttls":
+            M.starttls(ssl_context=ssl.create_default_context())
+    except Exception:
+        try:
+            M.shutdown()
+        except Exception:
+            pass
+        raise
+    return M
+
+
 def _imap_connect(s: dict):
+    """The reply inbox, connected and logged in. Like sending, it uses SSL on 993 or STARTTLS on 143, whichever this network lets
+    through (the one that worked is tried first next time). A wrong password is never retried the other way."""
     user, pw = inbox_login(s)
     host = clean_text(s.get("imap_host"))
     if not host or not user:
         raise SendError("Reply tracking isn't set up yet (Settings → Replies).", "pause")
     port, sec = int(s.get("imap_port") or 993), s.get("imap_security", "ssl")
+    other = _IMAP_WAYS.get((port, sec))
+    memo = db.get_internal("imap_pair")
+    memo = memo if isinstance(memo, dict) else {}
+    first, second = (port, sec), other
+    if other and memo.get(host) == list(other):
+        first, second = other, (port, sec)
+    logging_in = False
     try:
-        if sec == "ssl":
-            M = imaplib.IMAP4_SSL(host, port, timeout=30)
-        else:
-            M = imaplib.IMAP4(host, port, timeout=30)
-            if sec == "starttls":
-                M.starttls()
-        M.login(user, pw)
+        won, M = _open_either(first, second, lambda pair: _imap_open_once(host, pair))
+        if other and memo.get(host) != list(won):
+            try:
+                memo[host] = list(won)
+                db.set_internal("imap_pair", memo)
+            except Exception:
+                pass
+        logging_in = True
+        try:
+            M.login(user, pw)
+        except BaseException:
+            try:
+                M.shutdown()
+            except Exception:
+                pass
+            raise
     except imaplib.IMAP4.error as e:
+        if not logging_in:   # the server greeted us badly before any login: that is a connection problem, not a password one
+            raise SendError(f"Couldn't reach the reply inbox: {e}", "transient")
         raise SendError("Reply-inbox login failed. " + _login_help(host, str(e), "inbox"), "pause")
     except UnicodeError:
         raise SendError("The reply-inbox password has a hidden character. Type it again by hand and save.", "pause")
     except (OSError, ssl.SSLError) as e:
-        raise SendError(f"Couldn't reach the reply inbox: {e}", "transient")
+        also = getattr(e, "also_tried", None)
+        raise SendError(f"Couldn't reach the reply inbox: {e}" + (f" (the other standard way failed too: {'; '.join(also)})" if also else ""), "transient")
     return M
 
 
@@ -702,13 +817,20 @@ def test_imap(s: dict) -> dict:
         return _result([{"label": "Settings", "ok": False, "detail": "Fill in the Inbox server and the login first."}])
     steps = [{"label": "Settings", "ok": True, "detail": f"{host}, port {port}"}]
     steps += _reach(host, port, ((993, "SSL"), (143, "STARTTLS")))
+    blocked = None
     if not steps[-1]["ok"]:
-        return _result(steps)
+        if (port, s.get("imap_security", "ssl")) not in _IMAP_WAYS:
+            return _result(steps)
+        blocked = steps.pop()   # this port is shut, but the other standard one may be open: the inbox tries it by itself
     try:
         M = _imap_connect(s)
     except SendError as e:
-        steps.append({"label": "Login", "ok": False, "detail": str(e)})
+        steps.append({"label": "Connect" if blocked else "Login", "ok": False, "detail": str(e)})
         return _result(steps)
+    if blocked:
+        memo = db.get_internal("imap_pair")
+        used = tuple(memo.get(host)) if isinstance(memo, dict) and memo.get(host) else (port, s.get("imap_security", "ssl"))
+        steps.append({"label": "Connect", "ok": True, "detail": f"port {port} is blocked here, so {_way(used)} is used instead"})
     steps.append({"label": "Login", "ok": True, "detail": f"signed in as {user}"})
     try:
         M.select("INBOX", readonly=True)
