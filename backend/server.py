@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,6 +22,8 @@ import campaigns as C
 import closer
 import config
 import db
+import enrich
+import grow
 import jobs
 import leads as L
 import messaging
@@ -135,6 +137,12 @@ class HandledIn(BaseModel):
     handled: bool = True
 
 
+class GrowPostsIn(BaseModel):
+    finding: str
+    platforms: list = []
+    audience: str = ""
+
+
 class TestSend(BaseModel):
     to: str
 
@@ -203,6 +211,23 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                     pass
                 time.sleep(600)
         threading.Thread(target=keep_backups, daemon=True).start()
+
+        def keep_emails_found():  # leads that have a website but no email are read in the background, a few at a time, when nothing else is running
+            time.sleep(150)       # never in the way of starting up
+            while True:
+                try:
+                    if db.get_settings().get("auto_find_emails", True) and not backup.busy():
+                        with db.db() as conn:
+                            if enrich.due(conn) and not jobs.active_job(conn):
+                                jid = jobs.create_job(conn, "enrich", {"limit": 40, "auto": True})
+                            else:
+                                jid = None
+                        if jid:
+                            jobs.spawn(jid, "enrich")
+                except Exception:
+                    pass
+                time.sleep(900)
+        threading.Thread(target=keep_emails_found, daemon=True).start()
 
         def check_health():       # is the data file itself in good shape? checked once per start, out of the way
             time.sleep(45)
@@ -477,7 +502,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             if busy:
                 return JSONResponse({"detail": busy}, status_code=409)
             jid = jobs.create_job(conn, "scrape", {"searches": searches, "max_per_search": body.max_per_search,
-                                                   "headless": body.headless, "enrich": body.enrich})
+                                                   "headless": body.headless, "enrich": True})   # emails and WhatsApp numbers are always looked for after a search
         jobs.spawn(jid, "scrape")
         return {"id": jid}
 
@@ -524,6 +549,12 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             with db.db() as conn:
                 return C.campaign_stats(conn)
         return cache.get("campaigns", 20, compute)
+
+    @app.get("/api/campaigns/health")
+    def campaigns_health():
+        """Why queued messages are not going out right now, in plain words (empty when nothing is waiting)."""
+        with db.db() as conn:
+            return C.sending_report(conn)
 
     @app.post("/api/campaigns/preview")
     def preview_campaign(body: CampaignIn):
@@ -713,8 +744,14 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         for k in ("closer_system_once", "closer_system_start", "closer_system_monthly"):
             if k in clean and not 0 <= clean[k] <= 10_000_000:
                 raise ValueError("System prices must be sensible amounts")
+        if len(clean.get("closer_proof", "")) > 3000:
+            raise ValueError("Keep your proof and credentials under 3,000 characters")
         if len(clean.get("closer_kb", "")) > 6000:
             raise ValueError("The knowledge base is too long (6000 characters at most)")
+        if clean.get("free_report_token") and not 16 <= len(clean["free_report_token"]) <= 100:
+            raise ValueError("The lead-capture secret should be 16 to 100 characters. Use the Generate button.")
+        if clean.get("free_report_url") and not clean["free_report_url"].startswith(("http://", "https://")):
+            raise ValueError("The free-report link must start with https://")
         if clean.get("closer_booking_link") and not clean["closer_booking_link"].startswith(("http://", "https://")):
             raise ValueError("The booking link must start with https://")
         if "sms_sim" in clean and clean["sms_sim"] > 3:
@@ -790,6 +827,45 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise KeyError("Lead not found")
         return {"summary": ai.summarize(db.get_settings(), lead)}
 
+    # ------------------------------------------------------------- Grow (content drafts and partners: nothing here sends)
+    @app.post("/api/grow/posts")
+    def grow_posts(body: GrowPostsIn):
+        return grow.draft_posts(db.get_settings(), body.finding, body.platforms, body.audience)
+
+    @app.get("/api/grow/posts")
+    def grow_posts_list():
+        return {"posts": grow.recent_posts(), "platforms": {k: v[0] for k, v in grow.PLATFORMS.items()}}
+
+    @app.delete("/api/grow/posts/{pid}")
+    def grow_post_delete(pid: int):
+        grow.delete_post(pid)
+        return {"ok": True}
+
+    @app.get("/api/grow/partners")
+    def grow_partners():
+        return {"partners": grow.list_partners(), "kinds": list(grow.PARTNER_KINDS), "statuses": list(grow.PARTNER_STATUS)}
+
+    @app.post("/api/grow/partners")
+    def grow_partner_add(body: dict = Body(...)):
+        return grow.add_partner(body)
+
+    @app.put("/api/grow/partners/{pid}")
+    def grow_partner_update(pid: int, body: dict = Body(...)):
+        return grow.update_partner(pid, body)
+
+    @app.delete("/api/grow/partners/{pid}")
+    def grow_partner_delete(pid: int):
+        grow.delete_partner(pid)
+        return {"ok": True}
+
+    @app.get("/api/grow/due")
+    def grow_due():
+        return {"partners": grow.due_partners()}
+
+    @app.post("/api/grow/partners/{pid}/pitch")
+    def grow_partner_pitch(pid: int):
+        return grow.partner_pitch(db.get_settings(), pid)
+
     @app.post("/api/settings/test-ai")
     def test_ai():
         results = ai.check(db.get_settings())
@@ -797,6 +873,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise ValueError("Add an AI key first")
         return {"ok": all(r[1] for r in results),
                 "message": ". ".join(f"{label}: {detail}" for label, _, detail in results)}
+
+    @app.get("/api/email/health")
+    def email_health():
+        return {"accounts": messaging.email_health(db.get_settings())}
 
     @app.post("/api/settings/test-email")
     def test_email(body: TestSend):
@@ -812,6 +892,9 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             except SendError as e:
                 res["steps"].append({"label": "Send", "ok": False, "detail": str(e)})
                 res.update(ok=False, message=f"Send: {e}")
+        for a in messaging.smtp_accounts(s)[1:]:   # the backup accounts are checked too (nothing is sent through them)
+            r = messaging.diagnose_email(a)
+            res["steps"].append({"label": f"Backup {a['_acct'] - 1} ({a['from_email']})", "ok": r["ok"], "detail": r.get("message") or ""})
         return res
 
     @app.post("/api/settings/connect-gmail")
@@ -891,6 +974,7 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
                 "whatsapp_linked": bool(db.get_internal("whatsapp_linked")), "email_ready": C.channel_ready("email", s) and bool(s.get("imap_host")),
                 "sms_ready": C.channel_ready("sms", s), "pack": closer.pack_status(s), "breaker": closer.breaker_open(),
                 "loop_error": loop.last_error if loop else "", "stats": st, "live": C.live_conversations(),
+                "quiet_now": closer.quiet_seconds() > 0,
                 "channels": {"whatsapp": bool(db.get_internal("whatsapp_linked")), "email": C.channel_ready("email", s) and bool(s.get("imap_host")),
                              "sms": C.channel_ready("sms", s)}}
 

@@ -81,7 +81,7 @@
             <hr class="sep">
             <div class="opts">
               <label class="field">New leads to keep per search<input type="number" id="max" min="1" max="300" value="${S.max}"><span class="hint">Stops a search after this many new businesses.</span></label>
-              <label class="check"><input type="checkbox" id="enrich" ${S.enrich ? 'checked' : ''}>Look for emails and WhatsApp numbers on their websites after</label>
+              <div class="small muted">After every search the app reads each new lead's website for an email and a WhatsApp number. Leads that get a website later are checked in the background, a few at a time.</div>
               <label class="check"><input type="checkbox" id="show" ${S.show ? 'checked' : ''}>Show the browser window <span class="muted small">(only if Google asks for a CAPTCHA)</span></label>
             </div>
             <div class="row"><button class="btn primary" id="start">Start</button>
@@ -138,7 +138,6 @@
         const t = e.target;
         if (t.dataset.pick) { pick(t.dataset.pick, t.value, t.checked); save(S); drawSummary(); }
         else if (t.id === 'show') { S.show = t.checked; save(S); }
-        else if (t.id === 'enrich') { S.enrich = t.checked; save(S); }
         else if (t.id === 'max') { S.max = Math.max(1, Math.min(300, +t.value || 60)); save(S); }
       });
       el.addEventListener('keydown', (e) => {
@@ -162,7 +161,7 @@
       });
       async function startRun() {
         try {
-          const r = await api('/jobs/scrape', { method: 'POST', body: { searches: S.searches.map(([category, town]) => ({ category, town })), max_per_search: S.max, headless: !S.show, enrich: S.enrich } });
+          const r = await api('/jobs/scrape', { method: 'POST', body: { searches: S.searches.map(([category, town]) => ({ category, town })), max_per_search: S.max, headless: !S.show, enrich: true } });
           viewJob = r.id; lastLog = 0; $('#log').textContent = ''; toast('Started'); App.pollStatus(); tick();
         } catch (err) { fail(err); }
       }

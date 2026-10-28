@@ -39,7 +39,7 @@ _PREFER = {
 
 GRADES = ("hot", "warm", "cold", "optout")
 SYSTEM = (
-    "You write short, warm, honest outreach and follow-up messages for a small business in Kenya. "
+    "You write short, warm, honest outreach and follow-up messages for a Kenyan business. Speak of the people you write to, and of their businesses, with dignity: never call a business small, tiny, little or micro. "
     "Sound like a real person, not an advertisement: friendly, specific, no hype, no pressure, no made-up claims. "
     "Reply in the language the other person uses (English or Swahili); default to English. "
     "Never invent facts about the person or the offer. Output only the message, with no preface and no quotation marks."
@@ -323,7 +323,7 @@ def summarize(s: dict, lead: dict) -> str:
     thread = _thread(lead, 20)
     if not thread:
         raise ValueError("There are no messages with this lead yet.")
-    return ask(s, "You summarise sales conversations for a small business owner. Be factual and brief and never invent details.", (
+    return ask(s, "You summarise sales conversations for a business owner. Be factual and brief and never invent details.", (
         f"{_lead_facts(lead)}\n"
         f"Conversation:\n{thread}\n"
         "Give a two-sentence summary, then how interested they seem, then the best next step. Plain text, no markdown, under 90 words."),
@@ -358,7 +358,7 @@ WHATSAPP_CHARS = 300
 
 # How a message is written so it is read and answered. Short on purpose: a long list of rules makes long, stiff messages.
 CRAFT = (
-    "Plain words a shop owner uses every day, short sentences, one idea and ONE easy question. Never open with 'I hope this "
+    "Plain words a business owner uses every day, spoken with respect for what they have built (never call a business small, tiny, little or micro), short sentences, one idea and ONE easy question. Never open with 'I hope this "
     "finds you well', 'My name is' or 'I am writing to'. No jargon (leverage, solutions, optimise, insights, data-driven, "
     "streamline), no lists, no bold, no emojis, no exclamation marks, no ALL CAPS, no spam words (free money, guaranteed, "
     "urgent, act now, winner, limited offer). Do not flatter, and never say I saw their work, reviews, shop or website unless "
@@ -381,13 +381,13 @@ def _example(s: dict, channel: str, convo: list) -> str:
         if channel == "email":
             return ("Subject: a quick idea for Kamau Pharmacy\n\nHi Kamau Pharmacy,\n\nI came across Kamau Pharmacy online and was "
                     "impressed by what you're doing in Meru.\n\n"
-                    f"I'm {first}, a Business Intelligence specialist. I help small businesses turn their data into "
+                    f"I'm {first}, a Business Intelligence specialist. I help businesses like yours turn their data into "
                     "better decisions and show where money is being lost: medicines that run out or expire unsold, your best-selling "
                     "periods, and what customers buy together.\n\nI can provide a ready-to-use tracking system or a short "
                     "report on what needs attention first.\n\nWould you like to see what your records could reveal? Just "
                     "reply. If not, no response is needed." + (f" {pay}" if pay else "") + f"\n\n{first}{line}")
         return (f"Hi Kamau Pharmacy, {first} here. I came across you online and was impressed by what you do. "
-                "I'm a Business Intelligence specialist helping small businesses see where money is being lost. "
+                "I'm a Business Intelligence specialist helping hardworking businesses see where money is being lost. "
                 "Want to see what your records could reveal? Just reply, or ignore this."
                 + (f" {pay}" if pay else ""))
     if channel == "email":
@@ -472,7 +472,7 @@ def draft_for_lead(s: dict, lead: dict, channel: str, notes: str, avoid: str = "
 
 # ------------------------------------------------------------ search planning
 PLAN_SYSTEM = (
-    "You help a small business owner in Kenya decide which Google Maps searches will find good sales leads. "
+    "You help a business owner in Kenya decide which Google Maps searches will find good sales leads. "
     "A search is a business type plus a town, for example category 'Pharmacy' and town 'Meru'. "
     "Answer with ONLY a JSON object, no markdown and no text around it, shaped exactly like: "
     '{"reply": "...", "searches": [{"category": "...", "town": "..."}]}. '
@@ -541,7 +541,7 @@ def plan_searches(s: dict, goal: str, history: list) -> dict:
 
 # ------------------------------------------------------------ campaign planning
 CAMPAIGN_SYSTEM = (
-    "You set up an outreach campaign for a small business owner in Kenya from a plain-language request. "
+    "You set up an outreach campaign for a business owner in Kenya from a plain-language request. "
     "Answer with ONLY a JSON object, no markdown and no text around it, shaped exactly like: "
     '{"reply": "...", "name": "...", "channel": "email", "brief": "...", "sectors": ["..."], "towns": ["..."], "limit": 0}. '
     "reply: one or two friendly sentences (under 50 words) saying what you set up; if the request is too vague, "

@@ -460,10 +460,12 @@ def phone_problems_pause_the_campaign_instead_of_burning_the_queue():
         with db.db() as c:
             L.add_lead(c, {"name": "A", "town": "T", "phone": "0700000001"})
             cid = C.create_campaign(c, "K", "sms", "", "Hello", {}, launch=True)
-        run_sender(lambda: count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", timeout=10)
-        assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", label
+        unreachable = label == "phone not reachable"   # a sleeping phone is waited for (rest + retry), a wrong password pauses
+        run_sender(lambda: bool(count("SELECT last_error FROM campaigns WHERE id=?", cid)) or count("SELECT status FROM campaigns WHERE id=?", cid) == "paused", timeout=10)
+        assert count("SELECT status FROM campaigns WHERE id=?", cid) == ("running" if unreachable else "paused"), label
         assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 1, label     # still waiting, not failed
         assert count("SELECT last_error FROM campaigns WHERE id=?", cid), label
+        assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0, label
     configure()
 
 
@@ -514,6 +516,51 @@ def daily_cap_and_window_respected():
             C.create_campaign(c, "Win", "email", "Hi", "Hello", {}, launch=True)
         run_sender(lambda: False, timeout=3)
         assert count("SELECT COUNT(*) FROM messages WHERE status='sent'") == 0
+
+
+@test
+def a_stalled_campaign_always_says_why_it_is_not_sending():
+    from datetime import datetime, timedelta
+    fresh(); configure(send_window_enabled=False, light_mode="off")
+    with db.db() as c:
+        for i in range(3):
+            L.add_lead(c, {"name": f"W{i}", "town": "T", "phone": f"07110000{i:02d}"})
+        C.create_campaign(c, "WA", "whatsapp", "", "Hi {name}", {}, launch=True)
+    db.set_internal("whatsapp_linked", False)
+    with db.db() as c:
+        rep = C.sending_report(c)
+    assert len(rep) == 1 and rep[0]["level"] == "bad" and "not connected" in rep[0]["text"] and rep[0]["queued"] == 3, rep
+    sn = C.Sender()                                   # the top pill must say it too, never just "Outreach running"
+    assert sn._whatsapp_tick(db.get_settings()) == 10.0 and sn.status["state"] == "waiting" and "not connected" in sn.status["detail"], sn.status
+    # connected, but a lead search holds the browser on a light-mode computer
+    db.set_internal("whatsapp_linked", True); configure(light_mode="on")
+    with db.db() as c:
+        jid = jobs.create_job(c, "scrape", {}); c.execute("UPDATE jobs SET status='running', progress='Search 10/104: Pharmacy in Nakuru' WHERE id=?", (jid,))
+        rep = C.sending_report(c)
+    assert rep[0]["level"] == "warn" and "lead search" in rep[0]["text"] and "Search 10/104" in rep[0]["text"], rep
+    configure(light_mode="off")
+    with db.db() as c:
+        c.execute("DELETE FROM jobs")
+        rep = C.sending_report(c)
+    assert rep[0]["level"] == "info" and "about to start" in rep[0]["text"], rep
+    t = datetime.now()                                 # outside the sending hours
+    configure(send_window_enabled=True, send_window_start=(t + timedelta(hours=2)).strftime("%H:%M"), send_window_end=(t + timedelta(hours=3)).strftime("%H:%M"))
+    if (t + timedelta(hours=3)).day == t.day:
+        with db.db() as c:
+            rep = C.sending_report(c)
+        assert rep[0]["level"] == "warn" and "sending hours" in rep[0]["text"], rep
+    configure(send_window_enabled=False, whatsapp_daily_cap=0)
+    fresh(); configure(send_window_enabled=False, email_daily_cap=1, smtp_host="", from_email="")   # email not set up
+    with db.db() as c:
+        L.add_lead(c, {"name": "E", "town": "T", "email": "e@shop.test"})
+        c.execute("INSERT INTO campaigns(name, channel, subject, body, filters, status, created_at, launched_at, total) VALUES('E','email','Hi','Hello','{}','running',?,?,1)", (now(), now()))
+        cid = c.execute("SELECT MAX(id) FROM campaigns").fetchone()[0]
+        lid = c.execute("SELECT id FROM leads").fetchone()[0]
+        c.execute("INSERT INTO messages(lead_id, campaign_id, direction, channel, to_addr, subject, body, status, created_at) VALUES(?,?,'out','email','e@shop.test','Hi','Hello','queued',?)", (lid, cid, now()))
+        rep = C.sending_report(c)
+    assert rep and rep[0]["level"] == "bad" and "not set up" in rep[0]["text"], rep
+    with db.db() as c:
+        assert C.sending_report(c, linked=True) and not C.sending_report(db.connect()) is None
 
 
 @test
@@ -780,6 +827,20 @@ def email_enrichment():
         assert L.get_lead(c, a)["email"] in ("info@acme.co.ke", "sales@acme.co.ke")
     stats = enrich.enrich_leads(lambda m: None, lambda: False, get=get)
     assert stats["checked"] == 0, "must not retry sites with no email within 30 days"
+    # a lead that gets a (new) website is picked up again on its own, and the background check knows when something is waiting
+    with db.db() as c:
+        nm = c.execute("SELECT id FROM leads WHERE name='NoMail'").fetchone()["id"]
+        assert not enrich.due(c)
+        L.update_lead(c, nm, {"website": "http://acme.co.ke"})
+        assert enrich.due(c)
+    stats = enrich.enrich_leads(lambda m: None, lambda: False, get=get)
+    assert stats["checked"] == 1 and stats["found"] == 1
+    with db.db() as c:
+        assert not enrich.due(c)
+        # older "no email" notes that do not say which site was read are checked once more
+        a2 = L.add_lead(c, {"name": "Old", "town": "T", "website": "http://old.co.ke", "phone": "0700000009"})["id"]
+        db.log_event(c, a2, "enrich", "No email found on website")
+        assert enrich.due(c)
 
 
 # ========================================================================== API
@@ -2166,7 +2227,8 @@ def sender_starts_the_whatsapp_worker_only_when_linked_in_hours_and_under_the_li
     real_spawn, jobs.spawn = jobs.spawn, lambda jid, kind: spawned.append(kind)
     try:
         sender = C.Sender()
-        assert sender._whatsapp_tick(db.get_settings()) is None and not spawned          # not linked: nothing starts
+        assert sender._whatsapp_tick(db.get_settings()) == 10.0 and not spawned          # not linked: nothing starts, and it says why
+        assert "not connected" in sender.status["detail"]
         db.set_internal("whatsapp_linked", True)
         assert sender._whatsapp_tick(db.get_settings()) and spawned == ["whatsapp"]
         sender._whatsapp_tick(db.get_settings()); assert spawned == ["whatsapp"]         # a worker is already running
@@ -2991,6 +3053,8 @@ def on_a_small_computer_the_lead_search_and_whatsapp_never_open_two_browsers_at_
             configure(light_mode="off")
             spawned.clear()
             assert cl.post("/api/jobs/scrape", json=body).status_code == 200 and "scrape" in spawned      # off: no restriction
+            with db.db() as c:   # even if "enrich": false is sent, emails are always looked for after a search
+                assert all(json.loads(r["params"]).get("enrich") is True for r in c.execute("SELECT params FROM jobs WHERE kind='scrape' ORDER BY id DESC LIMIT 1"))
             # settings and health
             assert cl.put("/api/settings", json={"light_mode": "sometimes"}).status_code == 400
             assert cl.put("/api/settings", json={"light_mode": "on"}).status_code == 200
@@ -3539,7 +3603,8 @@ GOOD_AI = lambda: FakeAI([
     (r"naomba", _j("Asante sana. Naweza kukuonyesha jinsi rekodi za duka lako zinavyoweza kusaidia. Unatumia nini kufuatilia dawa sasa?", "interested")),
     (r"call me", _j("Great, Deric will call you tomorrow at 10am. What is the best number to reach you?", "interested", "call_proposed", pain="wants a call")),
     (r"maybe next month", _j("No problem at all. Shall I check back in a month?", "timing", "nurture")),
-    (r"who is this", _j("I work with Deric at DericBI. He helps small shops see where money leaks in their own records.", "question")),
+    (r"how do i know", _j("A fair question. You can check my work on my website, and you start with a small first step on your own records: you only pay when you see value. Would a short call to meet Deric help?", "question")),
+    (r"who is this", _j("I work with Deric at DericBI. He helps businesses like yours see where money leaks in their own records.", "question")),
     (r"phones and laptops", _j("We only help businesses make sense of their own sales and stock records, so not phones. Is stock tracking something you struggle with?", "other")),
     (r"ok thanks", _j("", "smalltalk", reason="the chat is over")),
     (r"nothing, it is all in books", _j("Thank you for telling me. A ready-to-use system is KES 20,000 once for the whole system, or KES 1,000 to start and then KES 200 per month. Which way suits you better?",
@@ -3549,7 +3614,7 @@ GOOD_AI = lambda: FakeAI([
     (r"think about it", _j("Of course, take all the time you need, there is no pressure at all. Shall I check in with you next week?", "timing", "nurture")),
     (r"saw your page", _j("Hello,\n\nThank you for writing. Yes, we help pharmacies understand their own stock and sales records. What do you use to track stock today?\n\nKind regards,\nDeric's AI assistant at DericBI", "question", subject="Re: Stock reports")),
     (r"how much for the system", _j("KES 20,000 once, or KES 1,000 to start then KES 200 per month. Which suits you?", "price", offer="system_once")),
-    (r"got your number from a friend", _j("Welcome, and thank you for writing. We help small businesses understand their own sales and stock records. What kind of business do you run?", "question")),
+    (r"got your number from a friend", _j("Welcome, and thank you for writing. We help businesses understand their own sales and stock records. What kind of business do you run?", "question")),
 ])
 
 
@@ -3617,7 +3682,14 @@ def a_reply_is_rejected_when_it_invents_a_price_a_link_a_number_or_claims_to_be_
     assert any("link" in p for p in ok("See https://evil.example.com/pay", s)) and ok("Visit https://dericbi.vercel.app", s) == []
     assert any("phone" in p for p in ok("Call me on 0712 345 678", s)) and ok("WhatsApp +254 791 360 805", s) == []
     assert any("human" in p or "guarantee" in p for p in ok("I'm a real person and I guarantee results", s))
-    assert any("blank" in p for p in ok("Hi {name}, how are you", s)) and any("long" in p for p in ok("x" * 460, s)) and ok("", s) == ["empty reply"]
+    assert any("blank" in p for p in ok("Hi {name}, how are you", s)) and any("long" in p for p in ok("x" * 1010, s)) and ok("", s) == ["empty reply"]
+    assert ok("x" * 700, s) == []                                                                           # a fuller message is allowed
+    for fine in ("Feel free to reply whenever suits you.", "It takes about 5 working days.", "You said stock expires on the shelf, and that ties up cash.",
+                 "I will wait till Monday, no rush."):                                                     # everyday wording is never rejected
+        assert ok(fine, s) == [], (fine, ok(fine, s))
+    assert closer.hard_check("I will pay you till Friday") is None and closer.hard_check("what is your till number")[0] == "payment"
+    for bad in ("The report is about KES 1000 or so.", "Offer expires today, hurry.", "It is free for you."):
+        assert ok(bad, s), bad
 
 
 @test
@@ -3629,7 +3701,7 @@ def a_reply_that_fails_the_checks_is_rewritten_once_and_if_it_still_fails_it_goe
     answers = [_j("It is only KES 99,999 and I guarantee it."), _j("It starts with a short check of your own records. What do you use now?")]
     fake = FakeAI(); fake.__call__ = None
     seq = iter(answers)
-    d = closer.analyze(s, lead, ask=lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else next(seq))
+    d = closer.analyze({**s, "closer_disclose": "first"}, lead, ask=lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else next(seq))
     assert "99,999" not in d["reply"] and d["problems"] == [] and "AI assistant here" in d["reply"]     # the second try was used
     bad = lambda s_, system, *a, **k: '{"ok": true, "issues": []}' if system.startswith("You are a strict") else _j("It is only KES 99,999 and I guarantee it.")
     d = closer.analyze(s, lead, ask=bad)
@@ -3637,13 +3709,21 @@ def a_reply_that_fails_the_checks_is_rewritten_once_and_if_it_still_fails_it_goe
 
 
 @test
-def the_first_reply_says_it_is_an_ai_assistant_and_the_owner_can_make_it_only_when_asked():
+def by_default_it_does_not_announce_itself_but_the_owner_can_make_it_say_it_is_an_ai_and_it_always_answers_honestly_when_asked():
     _closer_setup(); s = db.get_settings()
+    assert s["closer_disclose"] == "ask"                                                                  # the default: only when someone asks
     lead = {"name": "X", "sector": "Shop", "town": "T", "messages": [{"id": 1, "direction": "in", "status": "received", "body": "tell me more", "channel": "whatsapp"}]}
-    d = closer.analyze(s, lead, True, ask=FakeAI())
-    assert d["reply"].startswith("Deric's AI assistant here. ")
-    assert not closer.analyze(s, lead, False, ask=FakeAI())["reply"].startswith("Deric's")                 # later replies: no repeat
-    assert not closer.analyze({**s, "closer_disclose": "ask"}, lead, True, ask=FakeAI())["reply"].startswith("Deric's")
+    assert "AI assistant" not in closer.analyze(s, lead, True, ask=FakeAI())["reply"]
+    signed = FakeAI(default=_j("Hello,\n\nThank you for writing. What do you use to track stock today?\n\nKind regards,\nDeric's AI assistant at DericBI", "question", subject="Re: Stock"))
+    em = closer.analyze(s, {**lead, "messages": [{**lead["messages"][0], "channel": "email"}]}, True, ask=signed, channel="email")["reply"]
+    assert "AI assistant" not in em and em.rstrip().endswith("DericBI"), em                              # email is signed with the business, not "AI assistant"
+    wa = closer.analyze(s, lead, True, ask=FakeAI(default=_j("Deric's AI assistant here. What do you use to track stock today?", "question")))["reply"]
+    assert "AI assistant" not in wa and wa.startswith("What do you use"), wa
+    on = {**s, "closer_disclose": "first"}
+    assert closer.analyze(on, lead, True, ask=FakeAI())["reply"].startswith("Deric's AI assistant here. ")
+    assert not closer.analyze(on, lead, False, ask=FakeAI())["reply"].startswith("Deric's")                # later replies: no repeat
+    bot = {**lead, "messages": [{**lead["messages"][0], "body": "Are you a bot?"}]}
+    assert "AI assistant" in closer.analyze(s, bot, True, ask=FakeAI())["reply"]                            # asked: honest, whatever the setting
 
 
 @test
@@ -4274,9 +4354,480 @@ def the_email_finder_reads_hidden_obfuscated_and_structured_addresses_and_whatsa
     assert enrich.ScrapeIn if hasattr(enrich, "ScrapeIn") else True
 
 
+@test
+def the_offer_can_carry_proof_and_credentials_that_the_assistant_may_state_and_the_prompt_asks_for_honest_trust_building():
+    _closer_setup(closer_proof="Worked with 12 pharmacies in Meru and Embu."); s = db.get_settings()
+    assert "Worked with 12 pharmacies" in closer.kb_text(s) and "PROOF YOU MAY STATE" in closer.kb_text(s)
+    assert closer.check_reply("I have worked with 12 pharmacies in Meru and Embu.", s) == []             # stated proof is allowed
+    sysm = closer._system(s)
+    assert "BUILDING CONFIDENCE" in sysm and "NEVER invent" in sysm and "VOICE AND VALUE" in sysm
+    assert "builds confidence honestly" in closer.REVIEWER
+    s2 = {**s, "closer_proof": ""}
+    assert "PROOF YOU MAY STATE" not in closer.kb_text(s2)
+    assert closer.fingerprint(s) != closer.fingerprint(s2)                                             # changing your proof means the Test pack must run again
+
+
+@test
+def no_message_or_prompt_calls_a_business_small_and_the_assistant_is_stopped_from_doing_so():
+    import re, library, ai as AI, db as DB
+    bad = re.compile(r"\b(small|tiny|little|micro)[- ]?(and medium )?(business|shop|enterprise|firm|owner)", re.I)
+    texts = list(library.WHATSAPP.values()) + [v for pair in library.EMAIL.values() for v in pair] + [AI.SYSTEM, AI.CRAFT, DB.DEFAULT_PITCH, closer.REVIEWER]
+    for grp in (library.SMS, ):
+        for v in grp.values():
+            texts += list(v)
+    for ch in ("sms", "email", "whatsapp"):
+        for sector in ("Pharmacy", "Agrovet", "Salon", "School", "Garage", "Shop"):
+            for step in (0, 1, 2, 3):
+                try:
+                    texts += [x for x in library.first_message(ch, sector, 0) if isinstance(x, str)] if step == 0 else [x for x in library.followup_message(ch, step) if isinstance(x, str)]
+                except Exception:
+                    pass
+    _closer_setup(); s = db.get_settings()
+    texts += [closer._system(s, c) for c in ("whatsapp", "sms", "email")]
+    assert not [x for x in texts if bad.search(x)], [bad.search(x).group(0) for x in texts if bad.search(x)]
+    assert any("calls their business small" in p for p in closer.check_reply("A small business like yours often loses money on expiry.", s))
+    assert closer.check_reply("A business like yours often loses money on expiry.", s) == []
+    assert "RESPECT" in closer._system(s) and "never call" in AI.CRAFT.lower()
+
+
+@test
+def whatsapp_failure_never_stalls_a_best_way_campaign_silently():
+    fresh(); configure(send_window_enabled=False, light_mode="off")
+    db.set_internal("whatsapp_linked", True)
+    with db.db() as c:
+        for i in range(2):
+            L.add_lead(c, {"name": f"A{i}", "town": "T", "phone": f"07220000{i:02d}"})
+        aid = C.create_campaign(c, "Auto", "auto", "Hi", "Hello {name}", {}, launch=True)
+        for i in range(2):
+            L.add_lead(c, {"name": f"B{i}", "town": "T", "phone": f"07330000{i:02d}"})
+        wid = C.create_campaign(c, "WA", "whatsapp", "", "Hi {name}", {}, launch=True)
+    C.wa_pause_campaigns("WhatsApp logged out.")
+    with db.db() as c:
+        st = {r["id"]: r for r in c.execute("SELECT id, status, last_error FROM campaigns")}
+        rep = C.sending_report(c)
+    assert st[wid]["status"] == "paused" and "logged out" in st[wid]["last_error"], dict(st[wid])
+    assert st[aid]["status"] == "running" and "logged out" in (st[aid]["last_error"] or ""), dict(st[aid])   # visible, not silent
+    assert C.wa_hold_active()
+    sn = C.Sender()                                   # no respawn while resting, and the pill says why
+    assert sn._whatsapp_tick(db.get_settings()) == 60.0 and "resting" in sn.status["detail"], sn.status
+    assert count("SELECT COUNT(*) FROM jobs WHERE kind='whatsapp'") == 0
+    assert any("resting" in r["text"] for r in rep), rep
+    with db.db() as c:
+        C.set_campaign_status(c, wid, "resume")        # resume = try again now
+    assert not C.wa_hold_active()
+    C.wa_hold("x"); import whatsapp as W; W.set_linked(True)   # linking again also ends the rest
+    assert not C.wa_hold_active()
+
+
+@test
+def slow_internet_rests_and_retries_instead_of_pausing_or_losing_messages():
+    fresh(); configure(send_window_enabled=False, light_mode="off", email_delay_sec=0)
+    with db.db() as c:
+        for i in range(3):
+            L.add_lead(c, {"name": f"N{i}", "town": "T", "email": f"n{i}@shop.test"})
+        cid = C.create_campaign(c, "Net", "email", "Hi", "Hello", {}, launch=True)
+    sn = C.Sender()
+    row = None
+    for k in range(7):                                  # more failures than the old limit of 5
+        with db.db() as c:
+            row = c.execute("SELECT * FROM messages WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+            c.execute("UPDATE messages SET attempts=attempts+1 WHERE id=?", (row["id"],))
+            row = c.execute("SELECT * FROM messages WHERE id=?", (row["id"],)).fetchone()
+        sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out. Check the internet.", "offline"))
+    with db.db() as c:
+        st = c.execute("SELECT status, last_error FROM campaigns WHERE id=?", (cid,)).fetchone()
+    assert st["status"] == "running" and "could not be reached" in st["last_error"], dict(st)
+    assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 3
+    sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out.", "offline"))   # the 8th: now you are told
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()["status"] == "paused"
+    # WhatsApp page that never loads: rests with a longer wait each time, pauses only after many
+    import whatsapp as W
+    fresh(); db.set_internal("wa_slow", 0)
+    with db.db() as c:
+        L.add_lead(c, {"name": "P", "town": "T", "phone": "0744000111"})
+        wid = C.create_campaign(c, "WA", "whatsapp", "", "Hi {name}", {}, launch=True)
+    W._slow_network("x"); h = C.wa_hold_active()
+    assert h and "slow or down" in h["reason"], h
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (wid,)).fetchone()["status"] == "running"
+    for _ in range(W.SLOW_GIVE_UP - 1):
+        W._slow_network("x")
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (wid,)).fetchone()["status"] == "paused"
+
+
+@test
+def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
+    fresh(); configure(send_window_enabled=False, light_mode="off", email_delay_sec=0)
+    with db.db() as c:
+        ids = [L.add_lead(c, {"name": f"B{i}", "town": "T", "email": f"b{i}@shop.test"})["id"] for i in range(30)]
+        cid = C.create_campaign(c, "Bnc", "email", "Hi", "Hello", {}, launch=True)
+        for i in ids[:25]:   # 25 already went out; 3 of them bounced back (12%)
+            c.execute("UPDATE messages SET status='sent', sent_at=? WHERE lead_id=? AND campaign_id=?", (now(), i, cid))
+        for i in ids[:3]:
+            L.mark_bounced(c, i, "bounced")
+    sn = C.Sender(); C.bounce_brake(sn)
+    with db.db() as c:
+        st = c.execute("SELECT status, last_error FROM campaigns WHERE id=?", (cid,)).fetchone()
+    assert st["status"] == "paused" and "bounced" in st["last_error"], dict(st)
+    with db.db() as c:
+        C.set_campaign_status(c, cid, "resume")        # you decide to go on: the brake leaves it alone
+    C.bounce_brake(sn)
+    with db.db() as c:
+        assert c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()["status"] == "running"
+    # a sleeping phone is waited for, not a reason to pause texts
+    err = messaging.SendError("x", "transient")
+    e = messaging._phone_unreachable("http://192.168.1.5:8080", OSError("down"))
+    assert e.kind == "offline" and "Couldn't reach" in str(e), e
+    # a connection that dies after the message was handed over is never retried by itself
+    import smtplib
+    class Dropping:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def login(self, *a): pass
+        def send_message(self, m): raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+    orig = messaging._smtp_open; messaging._smtp_open = lambda s: Dropping()
+    try:
+        messaging.send_email("a@shop.test", "hi", "body", dict(db.get_settings(), smtp_host="x", from_email="me@shop.test", smtp_pass="", smtp_security="none"))
+        raise AssertionError("expected an error")
+    except messaging.SendError as ex:
+        assert ex.kind == "permanent" and "may or may not" in str(ex), ex
+    finally:
+        messaging._smtp_open = orig
+
+
+@test
+def an_unreachable_mail_server_rests_once_and_loses_nothing():
+    fresh(); configure(smtp_port=9, email_delay_sec=0)   # nothing listens there: the same as a dead or blocked connection
+    with db.db() as c:
+        for i in range(6):
+            L.add_lead(c, {"name": f"Shop {i}", "town": "Meru", "sector": "Pharmacy", "email": f"off{i}@shop.test"})
+        cid = C.create_campaign(c, "Offline", "email", "Hi {name}", "Hello {name}", {"sectors": ["Pharmacy"]}, launch=True)
+    s = C.Sender(); s.start()
+    t0 = time.time()
+    while time.time() - t0 < 10 and not s.net.get("email"):
+        time.sleep(0.2)
+    time.sleep(1.5)   # still running: if it did not rest it would try (and fail) again in this time
+    s.stop()
+    assert s.net["email"][0] == 1 and s.net["email"][1] > time.time() + 60          # one try, then it rests
+    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "running"       # never paused for a bad connection
+    assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0        # nothing burned
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued' AND attempts=0") == 6
+    configure()
+
+
+@test
+def the_whatsapp_link_code_only_counts_as_logged_out_when_it_stays_up():
+    class Page:
+        def wait_for_timeout(self, ms): time.sleep(ms / 1000)
+
+    def driver(shows):   # shows(seconds since start) -> what the page holds then: "qr" or "ready"
+        d, t0 = whatsapp.WhatsAppWeb(), time.time()
+        d.page = Page()
+        d._any = lambda key: (key == "qr" and shows(time.time() - t0) == "qr") or (key == "chat_list" and shows(time.time() - t0) == "ready")
+        return d
+
+    old, whatsapp.QR_GRACE = whatsapp.QR_GRACE, 1
+    try:
+        assert driver(lambda s: "qr" if s < 0.3 else "ready").logged_out() is False        # flashed while loading, then the chats came
+        assert driver(lambda s: "qr").logged_out() is True                                  # never went away: really logged out
+        assert driver(lambda s: "qr" if s < 0.3 else "ready").wait_ready(5) == "ready"      # a flash is not "qr" either
+        assert driver(lambda s: "qr").wait_ready(5) == "qr"                                 # a steady code is
+    finally:
+        whatsapp.QR_GRACE = old
+
+
+@test
+def logged_out_again_within_a_day_of_linking_stops_whatsapp_for_a_day_as_a_probable_block():
+    def stamp(**kw): return (datetime.now() + timedelta(**kw)).isoformat(sep=" ", timespec="seconds")
+    for linked_ago, flagged in ((timedelta(hours=3), True), (timedelta(days=3), False)):
+        fresh(); configure(whatsapp_delay_sec=20); _wa_leads(1)
+        db.set_internal("whatsapp_linked", True); db.set_internal("whatsapp_linked_at", stamp(seconds=-linked_ago.total_seconds()))
+        with db.db() as c:
+            cid = C.create_campaign(c, "Blk", "whatsapp", "", "", {}, launch=True, style="ready")
+        assert _run_wa(FakeWA(ready=False))[0] == "failed" and not whatsapp.is_linked()
+        h = C.wa_hold_active()
+        assert count("SELECT status FROM campaigns WHERE id=?", cid) == "paused"
+        assert ("flagged" in h["reason"]) == flagged and (h["until"] > stamp(hours=23)) == flagged, h
+
+
+@test
+def resume_switches_the_bounce_brake_off_only_when_the_brake_paused_the_campaign():
+    for why, expected in (("Email login failed. The server refused the username or password.", False),
+                          ("3 of the last 25 emails bounced (12%). Remove or fix the bad addresses.", True)):
+        fresh(); configure()
+        with db.db() as c:
+            L.add_lead(c, {"name": "R", "town": "T", "email": "r@shop.test"})
+            cid = C.create_campaign(c, "Rsm", "email", "Hi", "Hello", {}, launch=True)
+            c.execute("UPDATE campaigns SET status='paused', last_error=? WHERE id=?", (why, cid))
+            C.set_campaign_status(c, cid, "resume")
+        assert bool(db.get_internal("bounce_ok_until")) == expected, why
+
+
+@test
+def backup_email_accounts_take_over_without_double_sending_or_losing_replies():
+    fresh(); configure(send_window_enabled=False)
+    base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", reply_to="", email_daily_cap=1,
+                smtp2_host="127.0.0.1", smtp2_from="back@shop.test", smtp2_cap=5, smtp2_security="starttls")
+    accts = messaging.smtp_accounts(base)
+    assert [a["_acct"] for a in accts] == [1, 2] and accts[1]["reply_to"] == "main@shop.test"   # replies come to the main inbox
+    assert messaging.total_email_cap(base) == 6
+    assert len(messaging.smtp_accounts(dict(base, smtp2_host=""))) == 1
+    calls = []
+    def fake(to, subject, body, a):
+        calls.append(a["_acct"])
+        if a["_acct"] == 1 and state["main"] == "down":
+            raise messaging.SendError("Couldn't reach the mail server: timed out.", "offline")
+        if a["_acct"] == 1 and state["main"] == "refuse":
+            raise messaging.SendError("Recipient refused: x", "permanent")
+        return f"<id{a['_acct']}@x>"
+    state = {"main": "down"}
+    orig = messaging.send_email; messaging.send_email = fake; messaging._cool.clear()
+    try:
+        assert messaging.send_email_any("a@x.test", "s", "b", base) == "<id2@x>" and calls == [1, 2]   # main down: backup sends
+        calls.clear(); assert messaging.send_email_any("b@x.test", "s", "b", base) == "<id2@x>" and calls == [2]   # main rests
+        messaging._cool.clear(); state["main"] = "refuse"; calls.clear()
+        try:
+            messaging.send_email_any("c@x.test", "s", "b", base); raise AssertionError("a refused address must not go to the backup")
+        except messaging.SendError as e:
+            assert e.kind == "permanent" and calls == [1]
+        messaging._cool.clear(); state["main"] = "ok"; calls.clear()
+        db.set_internal("smtp_used", None)
+        messaging.send_email_any("d@x.test", "s", "b", base)       # main's own limit (1) is used up: the next goes to the backup
+        messaging.send_email_any("e@x.test", "s", "b", base)
+        assert calls == [1, 2], calls
+    finally:
+        messaging.send_email = orig; messaging._cool.clear()
+    assert "smtp2_pass" in db.SECRET_KEYS
+
+
+@test
+def many_email_accounts_share_the_load_and_new_ones_warm_up_slowly():
+    fresh(); configure(send_window_enabled=False)
+    extra = {}
+    for n in range(2, 6):
+        extra.update({f"smtp{n}_host": "127.0.0.1", f"smtp{n}_from": f"a{n}@shop.test", f"smtp{n}_cap": 150})
+    base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", email_daily_cap=80, email_warmup=True, **extra)
+    db.set_internal("smtp_used", None); db.set_internal("smtp_first", None)
+    assert len(messaging.smtp_accounts(base)) == 5
+    assert messaging.total_email_cap(base) == 80 + 4 * 20          # new accounts: 20 a day each at first, the main one as set
+    assert messaging.total_email_cap(dict(base, email_warmup=False)) == 80 + 4 * 150
+    db.set_internal("smtp_first", {"2": time.strftime("%Y-%m-%d", time.localtime(time.time() - 10 * 86400))})
+    assert messaging.account_cap(dict(base, _acct=2)) == 80 and messaging.account_cap(dict(base, _acct=1)) == 80   # day 10: 80 a day
+    db.set_internal("smtp_first", {"2": time.strftime("%Y-%m-%d", time.localtime(time.time() - 30 * 86400))})
+    assert messaging.account_cap(dict(base, _acct=2)) == 150          # after three weeks: the limit you set
+    db.set_internal("smtp_first", None)
+    used = []
+    orig = messaging.send_email; messaging.send_email = lambda to, sub, body, a: (used.append(a["_acct"]), f"<{len(used)}@x>")[1]; messaging._cool.clear()
+    try:
+        for i in range(10):
+            messaging.send_email_any(f"x{i}@t.test", "s", "b", base)
+    finally:
+        messaging.send_email = orig
+    assert set(used) == {1, 2, 3, 4, 5} and used.count(1) <= 6, used   # spread in proportion to each account's own limit
+
+
+@test
+def email_network_fallback_and_health_panel():
+    fresh()
+    tried = []
+    orig = messaging._smtp_open_once
+    def fake(s, timeout=30):
+        tried.append((int(s["smtp_port"]), s["smtp_security"]))
+        if int(s["smtp_port"]) == 587:
+            raise OSError("timed out")                      # this network blocks 587 but not 465
+        return "session"
+    messaging._smtp_open_once = fake; db.set_internal("smtp_pair", None)
+    try:
+        st = dict(db.get_settings(), smtp_host="mail.example.test", smtp_port=587, smtp_security="starttls")
+        assert messaging._smtp_open(st) == "session" and tried == [(587, "starttls"), (465, "ssl")], tried
+        tried.clear(); assert messaging._smtp_open(st) == "session" and tried == [(465, "ssl")], tried   # remembered: no waiting on 587
+        fail_all = lambda s, timeout=30: (_ for _ in ()).throw(OSError("down"))
+        messaging._smtp_open_once = fail_all
+        try:
+            messaging._smtp_open(dict(st, smtp_host="other.example.test")); raise AssertionError("expected an error")
+        except OSError as e:
+            assert "down" in str(e)
+    finally:
+        messaging._smtp_open_once = orig; db.set_internal("smtp_pair", None)
+    base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", email_daily_cap=50)
+    messaging._last_err.clear(); messaging._cool.clear(); db.set_internal("smtp_used", None)
+    rows = messaging.email_health(base)
+    assert rows and rows[0]["from"] == "main@shop.test" and rows[0]["limit"] == 50 and rows[0]["sent_today"] == 0 and not rows[0]["last_error"]
+    o2 = messaging.send_email
+    messaging.send_email = lambda *a, **k: (_ for _ in ()).throw(messaging.SendError("Couldn't reach the mail server: x", "offline"))
+    try:
+        try: messaging.send_email_any("a@x.test", "s", "b", base)
+        except messaging.SendError: pass
+    finally:
+        messaging.send_email = o2
+    assert "reach" in messaging.email_health(base)[0]["last_error"]
+    messaging._last_err.clear()
+
+
+@test
+def when_every_email_account_is_unreachable_the_channel_rests_once_and_nothing_is_lost():
+    fresh(); messaging._cool.clear(); messaging._last_err.clear()
+    configure(smtp_port=9, email_delay_sec=0, smtp2_host="127.0.0.1", smtp2_port=9, smtp2_from="back@shop.test", smtp2_cap=5, email_warmup=False)
+    with db.db() as c:
+        for i in range(4):
+            L.add_lead(c, {"name": f"Shop {i}", "town": "Meru", "sector": "Pharmacy", "email": f"all{i}@shop.test"})
+        cid = C.create_campaign(c, "AllDown", "email", "Hi {name}", "Hello {name}", {"sectors": ["Pharmacy"]}, launch=True)
+    s = C.Sender(); s.start()
+    t0 = time.time()
+    while time.time() - t0 < 15 and not s.net.get("email"):
+        time.sleep(0.2)
+    time.sleep(1.5)
+    s.stop()
+    assert s.net["email"][0] == 1 and s.net["email"][1] > time.time() + 60            # both were tried, then the channel rests once
+    assert set(messaging._cool) == {1, 2}                                                 # each account is resting on its own too
+    assert count("SELECT status FROM campaigns WHERE id=?", cid) == "running"
+    assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0
+    assert count("SELECT COUNT(*) FROM messages WHERE status='queued' AND attempts=0") == 4
+    messaging._cool.clear(); messaging._last_err.clear(); configure(smtp2_host="", smtp2_from="")
+
+
+@test
+def grow_content_and_partners_work_and_never_touch_sending():
+    import grow
+    fresh(); configure()
+    before = count("SELECT COUNT(*) FROM messages"), count("SELECT COUNT(*) FROM campaigns")
+    oc, oa = ai.configured, ai.ask
+    try:
+        ai.configured = lambda s: []                         # no AI: plain templates, still useful
+        r = grow.draft_posts(db.get_settings(), "One pharmacy had KES 400,000 tied up in 12 slow-moving products.", ["linkedin", "whatsapp_status", "nope"])
+        assert [p["platform"] for p in r["posts"]] == ["linkedin", "whatsapp_status"] and not r["ai"]
+        assert all("400,000" in p["body"] for p in r["posts"]) and len(r["posts"][1]["body"]) <= 230
+        ai.configured = lambda s: ["x"]
+        ai.ask = lambda s, system, user, **k: "### linkedin\nSmall businesses lose money quietly.\n### facebook\nA small shop owner told me this.\n"
+        r = grow.draft_posts(db.get_settings(), "Slow stock ties up cash in many shops.", ["linkedin", "facebook", "tiktok"])
+        got = {p["platform"]: p["body"] for p in r["posts"]}
+        assert r["ai"] and got["linkedin"].startswith("Businesses") and "small" not in got["facebook"].lower(), got   # respectful wording
+        assert "HOOK" in got["tiktok"]                       # the platform the AI skipped is filled from a template
+        ai.ask = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+        assert grow.draft_posts(db.get_settings(), "Slow stock ties up cash in many shops.", ["facebook"])["posts"]   # AI down: still works
+        for bad in ("", "short"):
+            try: grow.draft_posts(db.get_settings(), bad, ["linkedin"]); raise AssertionError("too short")
+            except ValueError: pass
+    finally:
+        ai.configured, ai.ask = oc, oa
+    assert 1 <= len(grow.recent_posts()) <= 30
+    p = grow.add_partner({"name": "Pharmacy Society", "kind": "association", "email": "info@ps.test", "contact": "Jane Mwangi"})
+    assert p["status"] == "to_contact"
+    assert grow.update_partner(p["id"], {"status": "contacted", "next_step": "Call Friday"})["status"] == "contacted"
+    for bad in ({"status": "bogus"}, {"email": "not-an-email"}, {"name": ""}):
+        try: grow.update_partner(p["id"], bad); raise AssertionError(bad)
+        except ValueError: pass
+    pitch = grow.partner_pitch(db.get_settings(), p["id"]); assert "Pharmacy Society" in pitch["subject"] and pitch["to"] == "info@ps.test" and "Jane" in pitch["body"]
+    assert "small" not in pitch["body"].lower()
+    assert grow.list_partners()[0]["id"] == p["id"]
+    with AuthedClient(server.create_app(port=8766), base_url="http://127.0.0.1:8766") as cl:   # through the real screens' API too
+        assert cl.get("/api/grow/partners").json()["partners"][0]["name"] == "Pharmacy Society"
+        assert cl.post("/api/grow/partners", json={"name": "KNCCI", "kind": "chamber"}).status_code == 200
+        assert cl.put("/api/grow/partners/99999", json={"status": "agreed"}).status_code == 404
+        assert cl.post("/api/grow/posts", json={"finding": "x"}).status_code == 400
+        assert cl.get("/api/grow/posts").status_code == 200
+        pid = grow.list_partners()[0]["id"]; assert cl.delete(f"/api/grow/partners/{pid}").status_code == 200
+    # a partner is never a lead: nothing was queued or created for sending
+    assert (count("SELECT COUNT(*) FROM messages"), count("SELECT COUNT(*) FROM campaigns")) == before
+    assert count("SELECT COUNT(*) FROM leads WHERE name LIKE '%Pharmacy Society%' OR name='KNCCI'") == 0
+
+
+@test
+def free_report_flows_into_leads_the_assistant_content_and_today():
+    import grow
+    fresh(); configure(closer_mode="off")
+    db.save_settings({"free_report_url": "https://dericbi.test/free-report/"})
+    s = db.get_settings()
+    # 1. someone who writes from the free-check page becomes a lead even when conversation mode is off
+    raw = (b"From: Jane Wanjiru <jane@shop.test>\r\nTo: deric@dericbi.test\r\nSubject: My Business Health Check\r\nMessage-ID: <r1@x>\r\n\r\n"
+           b"Hello, I tried your free Business Health Check and would like you to look at my full records.\r\n")
+    res = messaging.process_inbound_email(raw, s)
+    assert res["matched"], res
+    with db.db() as c:
+        lead = c.execute("SELECT * FROM leads WHERE email='jane@shop.test'").fetchone()
+    assert lead and lead["source"] == "free report", dict(lead) if lead else None
+    # an unrelated stranger is still ignored while conversation mode is off
+    other = raw.replace(b"jane@shop.test", b"bob@shop.test").replace(b"My Business Health Check", b"Hello there")
+    assert not messaging.process_inbound_email(other, s)["matched"]
+    # 2. the assistant knows the link and is allowed to share it
+    assert "dericbi.test/free-report" in closer.kb_text(s)
+    assert not [p for p in closer.check_reply("Happy to look. You can also try the free check yourself: https://dericbi.test/free-report/", s, channel="email") if "link" in p]
+    assert [p for p in closer.check_reply("See https://evil.example/free", s, channel="email") if "link" in p]
+    # 3. content drafts and partner pitches carry it
+    oc = ai.configured; ai.configured = lambda s: []
+    try:
+        post = grow.draft_posts(s, "One shop had cash tied up in slow stock all year.", ["facebook", "whatsapp_status"])["posts"]
+    finally:
+        ai.configured = oc
+    assert "dericbi.test/free-report" in post[0]["body"] or "dericbi.test/free-report" in post[1]["body"], post
+    p = grow.add_partner({"name": "Chamber", "email": "c@ch.test"})
+    assert "dericbi.test/free-report" in grow.partner_pitch(s, p["id"])["body"]
+    # 4. a partner whose follow-up date has come shows on Today (not before, not once closed)
+    from datetime import date, timedelta
+    grow.update_partner(p["id"], {"next_step": "Call", "next_date": (date.today() - timedelta(days=1)).isoformat(), "status": "contacted"})
+    assert [x["name"] for x in grow.due_partners()] == ["Chamber"]
+    grow.update_partner(p["id"], {"next_date": (date.today() + timedelta(days=5)).isoformat()}); assert grow.due_partners() == []
+    grow.update_partner(p["id"], {"next_date": (date.today() - timedelta(days=1)).isoformat(), "status": "agreed"}); assert grow.due_partners() == []
+    with AuthedClient(server.create_app(port=8767), base_url="http://127.0.0.1:8767") as cl:
+        assert cl.put("/api/settings", json={"free_report_url": "ftp://x"}).status_code == 400
+        assert cl.put("/api/settings", json={"free_report_url": "https://ok.test/r/"}).status_code == 200
+        assert cl.get("/api/grow/due").status_code == 200
+
+
+@test
+def a_lead_left_on_the_free_report_page_arrives_as_a_lead_and_needs_the_secret():
+    fresh(); configure(closer_mode="off")
+    secret = "s3cret-token-value-1234"
+    db.save_settings({"free_report_token": secret})
+    def mail(token, consent="yes", phone="0712 345 678", email="", business="Jane Pharmacy", mid="<l1@x>"):
+        body = (f"Name: Jane Wanjiru\nBusiness: {business}\nPhone: {phone}\nEmail: {email}\nNote: Please check my stock\n"
+                f"Summary: Sales KES 760,445, 12 products\nConsent: {consent}\nToken: {token}\n")
+        return (f"From: Health Check leads <bot@other.test>\r\nTo: deric@dericbi.test\r\nSubject: Health Check lead: {business}\r\n"
+                f"Message-ID: {mid}\r\n\r\n{body}").encode()
+    s = db.get_settings()
+    assert not messaging.process_inbound_email(mail("wrong"), s)["matched"]                     # anyone can type that subject: no secret, no lead
+    assert not messaging.process_inbound_email(mail(secret, consent="no"), s)["matched"]       # no consent, no lead
+    assert not messaging.process_inbound_email(mail(secret, phone="", email=""), s)["matched"]
+    assert count("SELECT COUNT(*) FROM leads") == 0
+    r = messaging.process_inbound_email(mail(secret), s)
+    assert r["matched"], r
+    with db.db() as c:
+        lead = c.execute("SELECT * FROM leads").fetchone()
+        msgs = c.execute("SELECT * FROM messages WHERE lead_id=? AND direction='in'", (lead["id"],)).fetchall()
+    assert lead["source"] == "free report" and lead["name"] == "Jane Pharmacy" and lead["phone_norm"] == "+254712345678" and lead["is_mobile"], dict(lead)
+    assert "agreed to be contacted" in lead["notes"] and "Jane Wanjiru" in lead["notes"]
+    assert len(msgs) == 1 and "Please check my stock" in msgs[0]["body"] and msgs[0]["channel"] == "whatsapp"     # no email given: reached on WhatsApp
+    # the same email arriving twice (IMAP re-fetch) does not duplicate anything
+    messaging.process_inbound_email(mail(secret), s)
+    assert count("SELECT COUNT(*) FROM leads") == 1 and count("SELECT COUNT(*) FROM messages WHERE direction='in'") == 1
+    # with no secret set in the CRM, nothing is ever accepted
+    db.save_settings({"free_report_token": ""})
+    assert not messaging.process_inbound_email(mail("", mid="<l2@x>", business="Other Shop"), db.get_settings())["matched"]
+    with AuthedClient(server.create_app(port=8768), base_url="http://127.0.0.1:8768") as cl:
+        assert cl.put("/api/settings", json={"free_report_token": "short"}).status_code == 400
+        assert cl.put("/api/settings", json={"free_report_token": secret}).status_code == 200
+        st = cl.get("/api/settings").json(); assert "free_report_token" not in st or not st["free_report_token"]; assert st.get("free_report_token_set") is True
+
+
+@test
+def the_free_report_page_has_working_contact_details():
+    import re
+    folder = Path(__file__).resolve().parent.parent / "free-report"
+    page = (folder / "index.html").read_text(encoding="utf-8")
+    cfg = dict(re.findall(r"^\s*(whatsapp|email):\s*'([^']*)'", page, re.M))
+    assert re.fullmatch(r"254[17]\d{8}", cfg.get("whatsapp", "")), cfg       # Kenya, country code first, no plus, no leading 0
+    assert re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cfg.get("email", "")), cfg
+    assert "leadForm: true" in page and "/api/lead" in page                    # the form and the function it posts to are both there
+    assert (folder / "api" / "lead.js").is_file()
+
+
 if __name__ == "__main__":
     SMTP.stop()
     PHONE.shutdown()
     bad = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} passed")
     sys.exit(1 if bad else 0)
+

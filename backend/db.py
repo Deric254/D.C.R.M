@@ -195,8 +195,16 @@ PREVIOUS_DEFAULT_PITCH = (
     "to see what is selling, what is not, and where money is being lost, so they can decide with facts. I also have "
     "ready-made tools that I adapt to each business. You pay only when you are satisfied with my work."
 )
-DEFAULT_PITCH = (
+# The pitch of the version before this one ("micro and small businesses"): an unedited saved copy of it is replaced too.
+PREVIOUS_DEFAULT_PITCH_2 = (
     "I'm Deric Marangu, a Business Intelligence specialist, and I run DericBI. I help micro and small businesses turn their "
+    "existing data into better decisions, improved profitability and clear visibility into where money is being lost. I can "
+    "identify slow-moving stock tying up cash, their best-performing sales periods and profitable product combinations based "
+    "on actual buying patterns. I can provide a ready-to-use tracking system or a clear report showing what needs attention "
+    "and where the opportunities lie. You only pay when you see value."
+)
+DEFAULT_PITCH = (
+    "I'm Deric Marangu, a Business Intelligence specialist, and I run DericBI. I help hardworking businesses turn their "
     "existing data into better decisions, improved profitability and clear visibility into where money is being lost. I can "
     "identify slow-moving stock tying up cash, their best-performing sales periods and profitable product combinations based "
     "on actual buying patterns. I can provide a ready-to-use tracking system or a clear report showing what needs attention "
@@ -222,13 +230,14 @@ SETTING_DEFAULTS = {
     "sms_gateway_url": "", "sms_gateway_user": "", "sms_gateway_pass": "", "sms_sim": 0,
     # WhatsApp is sent from WhatsApp Web on this PC (linked once by scanning a code)
     # sending limits
+    "email_warmup": True,   # extra email accounts start with a few emails a day and rise over three weeks
     "email_daily_cap": 80, "sms_daily_cap": 150, "whatsapp_daily_cap": 40,
     "email_delay_sec": 25, "sms_delay_sec": 65, "whatsapp_delay_sec": 60,
     # WhatsApp runs in a hidden browser (no window), and reads replies from the chats every this many minutes (0 = never)
     "whatsapp_hide_window": True, "whatsapp_sync_minutes": 10,
     # the AI sales assistant (closer.py): off | suggest (you press send) | auto (low-risk turns only)
-    "closer_mode": "off", "closer_kb": "", "closer_booking_link": "", "closer_min_confidence": 80, "closer_max_auto": 3,
-    "closer_delay_sec": 60, "closer_disclose": "first", "closer_on_mode": "suggest", "closer_deal_desk": True,
+    "closer_mode": "off", "closer_kb": "", "closer_proof": "", "auto_find_emails": True, "closer_booking_link": "", "free_report_url": "", "free_report_token": "", "closer_min_confidence": 80, "closer_max_auto": 3,
+    "closer_delay_sec": 60, "closer_disclose": "ask", "closer_on_mode": "suggest", "closer_deal_desk": True,
     "closer_report_max": 2000, "closer_system_once": 20000, "closer_system_start": 1000, "closer_system_monthly": 200,
     "send_window_enabled": True, "send_window_start": "08:00", "send_window_end": "18:00",
     # "auto": on for a computer with 4 GB of memory or less, or two cores; "on" / "off" to force it
@@ -246,7 +255,10 @@ SETTING_DEFAULTS = {
     "ai_key_gemini": "", "ai_key_groq": "", "ai_key_nvidia": "", "ai_key_openrouter": "", "ai_key_mistral": "",
     "ai_custom_url": "", "ai_custom_model": "", "ai_key_custom": "",
 }
-SECRET_KEYS = {"smtp_pass", "imap_pass", "sms_gateway_pass", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
+for _n in range(2, 11):   # extra email accounts (up to 9): used when the main one fails, hits its limit, or cannot be reached
+    SETTING_DEFAULTS.update({f"smtp{_n}_host": "", f"smtp{_n}_port": 587, f"smtp{_n}_security": "starttls", f"smtp{_n}_user": "",
+                     f"smtp{_n}_pass": "", f"smtp{_n}_from": "", f"smtp{_n}_cap": 80})
+SECRET_KEYS = {"free_report_token", *(f"smtp{_n}_pass" for _n in range(2, 11)), "smtp_pass", "imap_pass", "sms_gateway_pass", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
                "ai_key_openrouter", "ai_key_mistral", "ai_key_custom"}
 
 
@@ -346,7 +358,7 @@ def init_db():
             if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         # Settings still on the old built-in defaults move to the current ones (anything the owner wrote is kept).
-        for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("ai_pitch", OLD_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH), ("sms_delay_sec", 4),
+        for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("ai_pitch", OLD_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH_2), ("sms_delay_sec", 4),
                          ("optout_suffix_sms", " Reply STOP to opt out.")):
             conn.execute("DELETE FROM settings WHERE key=? AND value=?", (key, json.dumps(old)))
         # Let the database learn how the data is spread, so it picks the fastest index for each query. Done once; after that

@@ -71,7 +71,18 @@
               <label class="field">App Password<input type="password" id="gm-pass" placeholder="${s.smtp_pass_set ? 'Saved. Type to replace' : 'abcd efgh ijkl mnop'}" autocomplete="off"></label></div>
             <div class="row"><button type="button" class="btn primary" id="gm-connect">Connect Gmail</button></div>
             <div id="mail-result"></div>
+            <div id="mail-health"></div>
             <div class="row"><input type="email" id="t-email" placeholder="Send a test email to…" style="max-width:280px" value=""><button type="button" class="btn" id="test-email">Send test email</button></div>
+            <details><summary class="small muted" style="cursor:pointer">More email accounts (spread the sending, and take over if one fails)</summary><div class="stack" style="gap:14px;margin-top:12px">
+              <p class="muted small">Add up to nine more email accounts (free Gmail, Yahoo, Outlook, Zoho…). Sending is spread across them so each one stays quiet and safe, and if one fails or reaches its limit another takes over. New accounts start with about 20 emails a day and rise over three weeks, which protects them from being marked as spam. Each sends from its own address; replies still come to your main address. Yahoo and others need an app password, not the normal one (Yahoo: smtp.mail.yahoo.com, port 587, STARTTLS). Keep each account's daily limit low at first.</p>
+              ${[2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => html`<div class="grid2">${field(s, 'smtp' + n + '_host', 'Account ' + n + ': mail server', { placeholder: 'smtp.mail.yahoo.com' })}${field(s, 'smtp' + n + '_port', 'Port', { type: 'number', min: 1 })}
+                ${select(s, 'smtp' + n + '_security', 'Connection', [['starttls', 'STARTTLS (port 587)'], ['ssl', 'SSL (port 465)'], ['none', 'None (only for testing)']])}
+                ${field(s, 'smtp' + n + '_from', 'Send from', { placeholder: 'you@yahoo.com' })}
+                ${field(s, 'smtp' + n + '_user', 'Username', { hint: 'Usually the full address. Left blank, Send from is used.' })}${field(s, 'smtp' + n + '_pass', 'App password', { secret: true })}
+                ${field(s, 'smtp' + n + '_cap', 'Emails per day (this account)', { type: 'number', min: 0 })}</div>`)}
+              ${check(s, 'email_warmup', 'Warm-up: new accounts start at about 20 emails a day and rise over three weeks (recommended)')}
+              <p class="muted small">After saving, press Send test email: it also checks the backups.</p>
+            </div></details>
             <details><summary class="small muted" style="cursor:pointer">Other email provider, or change the servers by hand</summary><div class="stack" style="gap:14px;margin-top:12px">
               <label class="field">Email provider (fills in the server, port and connection for sending and reading replies)
                 <select id="mail-preset"><option value="">Choose your provider…</option><option value="gmail">Gmail / Google Workspace</option><option value="outlook">Outlook / Microsoft 365</option><option value="zoho">Zoho Mail</option><option value="yahoo">Yahoo</option></select></label>
@@ -118,12 +129,13 @@
         <section class="panel" data-group="sending"><div class="panel-head"><h2>Limits and sending hours</h2></div>
           <div class="panel-body stack" style="gap:14px">
             ${select(s, 'light_mode', 'Light mode (for a slow computer)', [['auto', 'Automatic'], ['on', 'Always on'], ['off', 'Always off']], health.machine ? `This computer: ${health.machine.cores} processor core${health.machine.cores === 1 ? '' : 's'}${health.machine.ram_mb ? `, ${(health.machine.ram_mb / 1024).toFixed(1)} GB memory` : ''}. Light mode is ${health.machine.light_mode ? 'ON' : 'off'} now. When on, only one browser runs at a time: a lead search and WhatsApp take turns, because each browser needs about 0.7 GB.` : '')}
-            <div class="grid2">${field(s, 'email_daily_cap', 'Emails per day', { type: 'number', min: 0, hint: 'Gmail allows about 500. Start low while your address builds a reputation.' })}${field(s, 'sms_daily_cap', 'Texts per day', { type: 'number', min: 0 })}
+            <div class="grid2">${field(s, 'email_daily_cap', 'Emails per day', { type: 'number', min: 0, hint: 'For the main account. Gmail allows about 500. Start low while your address builds a reputation.' })}${field(s, 'sms_daily_cap', 'Texts per day', { type: 'number', min: 0 })}
               ${field(s, 'email_delay_sec', 'Seconds between emails', { type: 'number', min: 0, hint: 'A little random variation is added.' })}${field(s, 'sms_delay_sec', 'Seconds between texts', { type: 'number', min: 30, hint: 'At least 30: Android blocks apps that send faster.' })}</div>
             ${check(s, 'send_window_enabled', 'Only send during these hours')}
             <div class="grid2">${field(s, 'send_window_start', 'From', { type: 'time' })}${field(s, 'send_window_end', 'Until', { type: 'time' })}</div>
             ${select(s, 'reach_order', 'When you choose "Best way for each lead", try first', [['whatsapp,email,sms', 'WhatsApp, then email, then text'], ['email,whatsapp,sms', 'Email, then WhatsApp, then text'], ['whatsapp,sms,email', 'WhatsApp, then text, then email'], ['email,sms,whatsapp', 'Email, then text, then WhatsApp'], ['sms,whatsapp,email', 'Text, then WhatsApp, then email'], ['sms,email,whatsapp', 'Text, then email, then WhatsApp']])}
             ${field(s, 'followup_wait_days', 'Days before a follow-up can be sent', { type: 'number', min: 0, hint: 'A lead gets one message at a time. After this many days with no reply it can be followed up.' })}
+            ${check(s, 'auto_find_emails', 'Look for missing emails in the background (leads that have a website but no email, a few at a time, only when nothing else is running)')}
           </div></section>
 
         <section class="panel" data-group="sending"><div class="panel-head"><h2>Opting out</h2></div>
@@ -182,6 +194,16 @@
       const stamp = (iso) => (iso || '').replace('T', ' ').slice(0, 16);
       const nice = (n) => Number(n || 0).toLocaleString();
       const KIND = { auto: 'Automatic', manual: 'Made by you', 'before-restore': 'Safety copy before a restore', 'older backup': 'Older copy of the data file' };
+      const drawMailHealth = async () => {
+        const box = $('#mail-health'); if (!box) return;
+        const r = await api('/email/health');
+        if (!r.accounts.length) return render(box, html``);
+        render(box, html`<div class="small" style="border:1px solid var(--line);border-radius:8px;padding:8px 12px">
+          <b>Email accounts today</b>
+          ${r.accounts.map((a) => html`<div class="row" style="gap:8px;margin-top:4px"><span>${a.from}</span><span class="muted">${a.sent_today} of ${a.limit || 'no limit'}${a.warming_up ? ' (warming up)' : ''}</span>
+            ${a.resting_min ? html`<span class="chip">resting ${a.resting_min} min</span>` : ''}${a.last_error ? html`<span style="color:var(--bad)">${a.last_error}</span>` : ''}</div>`)}
+        </div>`);
+      };
       const drawBackups = async () => {
         const box = $('#bk-body'); if (!box) return;
         let bk;
@@ -257,7 +279,7 @@
         const b = e.target.closest('.subnav-item'); if (!b) return;
         tab = b.dataset.tab; applyTab(); const c = document.querySelector('.content'); if (c) c.scrollTop = 0;
       });
-      const draw = () => { render(el, form()); applyTab(); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); };
+      const draw = () => { render(el, form()); applyTab(); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); drawMailHealth().catch(() => {}); };
       draw();
 
       const save = async () => {
@@ -307,7 +329,7 @@
           } else if (id === 'test-email') {
             const to = $('#t-email').value.trim(); if (!to) return toast('Enter an address to send the test to', true);
             e.target.disabled = true; await save(); render($('#mail-result'), html`<p class="muted small">Testing…</p>`);
-            showResult('mail-result', await api('/settings/test-email', { method: 'POST', body: { to }, timeout: 120000 }));
+            showResult('mail-result', await api('/settings/test-email', { method: 'POST', body: { to }, timeout: 120000 })); drawMailHealth().catch(() => {});
           } else if (id === 'test-imap') {
             e.target.disabled = true; await save(); render($('#mail-result'), html`<p class="muted small">Testing…</p>`);
             showResult('mail-result', await api('/settings/test-imap', { method: 'POST', timeout: 120000 }));

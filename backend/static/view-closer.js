@@ -37,7 +37,7 @@
   App.views.closer = {
     title: 'Assistant',
     async render(el) {
-      render(el, html`<div class="stack"><div id="cconvo"></div><div id="cstat" class="muted small"></div>
+      render(el, html`<div class="stack"><div id="cconvo"></div><div id="cready" class="stack" style="gap:6px"></div><div id="cstat" class="muted small"></div>
         <div class="tabs" id="ctabs">${TABS.map(([k, l]) => html`<button class="tab ${k === tab ? 'active' : ''}" data-tab="${k}">${l}</button>`)}</div>
         <div id="cbody" class="stack" style="gap:12px"></div></div>`);
       const body = $('#cbody');
@@ -59,6 +59,21 @@
         if (s.mode === 'auto' && !s.pack.ok) bits.push(html`<span style="color:var(--bad)">Automatic sending is paused until the Test pack passes ${s.pack.stale ? 'again (your offer changed)' : ''}.</span>`);
         if (s.breaker) bits.push(html`<span style="color:var(--bad)">Automatic sending is paused for a few minutes after repeated AI errors.</span>`);
         if (s.loop_error) bits.push(html`<span style="color:var(--bad)">Assistant error: ${s.loop_error}</span>`);
+        // plain checklist: exactly what is needed for it to reply, and what is missing right now
+        const anyChan = s.channels.whatsapp || s.channels.email || s.channels.sms;
+        const checks = [
+          [on, 'Conversation mode is ON', 'Switch it on above. When it is off the assistant never replies.'],
+          [s.ai_ready, 'An AI key is saved', 'Settings > AI writing help: paste a free key and press Test the keys.'],
+          [anyChan, 'A channel is connected', 'Settings > Email, text and WhatsApp: connect WhatsApp first.'],
+          [s.on_mode === 'auto', s.on_mode === 'auto' ? 'It sends the safe ones by itself' : 'It only suggests: you press Send. It never sends alone', 'Change "When on, it" above to "Sends the safe ones" when you trust the drafts.'],
+          [s.on_mode !== 'auto' || s.pack.ok, 'The Test pack has passed on your current offer', 'Open the Test pack tab and run it. Automatic sending stays paused until it passes.'],
+        ];
+        const bad = checks.filter((c) => !c[0]);
+        const held = st.held_back || [];
+        render($('#cready'), html`${bad.length ? html`<div class="notice" style="margin:0"><b>Why it may not be replying</b>
+          <ul class="small" style="margin:6px 0 0;padding-left:18px;display:grid;gap:3px">${bad.map((c) => html`<li><b>${c[1]}.</b> ${c[2]}</li>`)}</ul></div>` : ''}
+          ${on && s.quiet_now && s.on_mode === 'auto' ? html`<div class="small muted">It is night time (21:30 to 07:00): nothing is sent by itself until morning.</div>` : ''}
+          ${held.length ? html`<div class="small muted">Held back for you: ${held.map(([w, n]) => `${n} × ${w}`).join(' · ')}</div>` : ''}`);
         render($('#cstat'), html`${bits.map((b) => html`<div>${b}</div>`)}${st.pending} waiting for you · ${st.auto_sent} sent by itself · ${st.approved + st.edited} sent by you${st.edit_rate !== null ? ` (you changed ${st.edit_rate}%)` : ''} · ${st.kept_talking} kept talking · ${st.meetings} meeting${st.meetings === 1 ? '' : 's'}`);
         return s;
       }
@@ -125,8 +140,10 @@
           <section class="panel"><div class="panel-head"><h2>What else it may say</h2></div><div class="panel-body stack" style="gap:10px">
             <p class="muted small">It may only state facts written here, in the deal desk and in your offer (Settings > AI writing help). Say what is delivered, how long it takes and what you do not do.</p>
             <label class="field">Knowledge base: services, delivery, what you do not do<textarea name="closer_kb" rows="6" placeholder="Delivered on WhatsApp and Excel in 5 working days. We do not do payroll or tax.">${s.closer_kb}</textarea></label>
+            <label class="field">Proof and credentials it may state (only what is true)<textarea name="closer_proof" rows="4" placeholder="Examples: I have worked with pharmacies and shops in Meru and Embu. I have analysed health facility data professionally. You see a sample on your own records before you decide.">${s.closer_proof || ''}</textarea>
+              <span class="hint">This is how it builds confidence. It never invents clients, results or credentials, so anything not written here or in your offer is left out.</span></label>
             ${f('closer_booking_link', 'Booking link (optional, e.g. your calendar)')}
-            <label class="field">Say it is an AI<select name="closer_disclose"><option value="first" ${s.closer_disclose === 'first' ? 'selected' : ''}>In its first reply, and always when asked (recommended)</option><option value="ask" ${s.closer_disclose === 'ask' ? 'selected' : ''}>Only when someone asks</option></select></label></div></section>
+            <label class="field">Say it is an AI<select name="closer_disclose"><option value="ask" ${s.closer_disclose !== 'first' ? 'selected' : ''}>Only when someone asks (it never claims to be human)</option><option value="first" ${s.closer_disclose === 'first' ? 'selected' : ''}>Say it in its first reply, and always when asked</option></select></label></div></section>
           <section class="panel"><div class="panel-head"><h2>Limits (Auto)</h2></div><div class="panel-body stack" style="gap:10px"><div class="grid2">
             ${f('closer_min_confidence', 'Confidence needed to send by itself (50 to 100)', 'type="number" min="50" max="100"')}${f('closer_max_auto', 'Automatic replies in a row before it hands over to you', 'type="number" min="1" max="10"')}
             ${f('closer_delay_sec', 'Pause before an automatic reply (seconds)', 'type="number" min="20" max="900"')}</div>

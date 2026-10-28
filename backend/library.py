@@ -69,7 +69,8 @@ SMS = {
 # really loses; nothing here depends on {sector} or {town}, which can be blank.
 WHATSAPP = {
     g: (f"Hi {{name}}, {{first}} here. I came across {{name}} online and was impressed by what you're doing. "
-        f"I'm a Business Intelligence specialist and I help small businesses see where money is being lost, for example {PAIN[g]}, "
+        f"I'm a Business Intelligence specialist, and I work with businesses like {{name}}, the ones that keep their community running. "
+        f"I help them see where money is being lost, for example {PAIN[g]}, "
         "plus their best sales periods and the products customers buy together. "
         "Would you like to see what your own records could reveal? Just reply. If not, no response is needed. "
         "You only pay when you see value. More: {website}")
@@ -79,10 +80,11 @@ WHATSAPP = {
 EMAIL = {
     g: (f"{{name}}: a quick idea about {PAIN[g]}",
         "Hi {name},\n\nI came across {name} online and was impressed by what you're doing.\n\n"
-        "I'm {first}, a Business Intelligence specialist. I help small businesses turn their data into better decisions and show "
-        f"where money is being lost. For a business like yours, that can mean seeing {PAIN[g]}, your best sales periods, and the "
+        "I'm {first}, a Business Intelligence specialist. I work with businesses like {name} that keep their community running, "
+        "and help them turn data into better decisions and show "
+        f"where money is being lost. That means seeing {PAIN[g]}, your best sales periods, and the "
         "products customers buy together.\n\n"
-        "I can provide a ready-to-use tracking system or a short report on what needs attention first.\n\n"
+        "I can provide a ready-to-use tracking system or a report on what needs attention.\n\n"
         "Would you like to see what your records could reveal? Just reply. If not, no response is needed. "
         "You only pay when you see value.\n\n{first}\n\nWebsite: {website} | WhatsApp: {whatsapp}")
     for g in PAIN

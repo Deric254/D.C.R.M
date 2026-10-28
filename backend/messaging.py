@@ -1,7 +1,8 @@
 """Sending (SMTP email, SMS through your own Android phone) and receiving (IMAP replies).
 
 SendError.kind tells the caller what to do:
-  transient  network/server hiccup  -> retry later
+  offline    the internet, the mail server or the phone can't be reached -> put the message back, rest, retry by itself
+  transient  the server answered with a temporary error  -> retry later
   permanent  this recipient/message can't be delivered -> mark failed
   pause      account-level problem (bad login, no SMS balance, not configured)
              -> pause the campaign so the queue isn't burned
@@ -28,6 +29,7 @@ import library
 from util import normalize_email
 
 SMS_LIMIT = 160   # one text; anything longer is split and billed as several
+SMTP_TIMEOUT = 60   # seconds per step (connect, secure, log in, send): a slow line needs more than the default patience
 
 
 class SendError(Exception):
@@ -170,16 +172,49 @@ def _login_help(host: str, detail: str, what: str = "mail") -> str:
 
 
 def _smtp_open(s: dict):
-    """A connected, secured SMTP session (not yet logged in)."""
+    """A connected, secured SMTP session (not yet logged in). Many networks block port 587 or 465 but not the other: when the
+    connection itself fails, the other standard pair is tried (nothing has been sent yet, so this is safe) and the one that
+    worked is tried first next time."""
+    port, sec = int(s.get("smtp_port") or 587), s.get("smtp_security", "starttls")
+    other = {(587, "starttls"): (465, "ssl"), (465, "ssl"): (587, "starttls")}.get((port, sec))
+    host = clean_text(s.get("smtp_host"))
+    memo = db.get_internal("smtp_pair")
+    memo = memo if isinstance(memo, dict) else {}
+    first, second = (port, sec), other
+    if other and memo.get(host) == list(other):   # this network worked with the other pair last time: start there
+        first, second = other, (port, sec)
+    try:
+        smtp = _smtp_open_once(dict(s, smtp_port=first[0], smtp_security=first[1]))
+        err = None
+    except Exception as e:
+        smtp, err = None, e
+    if smtp is None:
+        if not second or isinstance(err, UnicodeError):
+            raise err
+        try:
+            smtp = _smtp_open_once(dict(s, smtp_port=second[0], smtp_security=second[1]), timeout=15)
+        except Exception:
+            raise err   # report the first problem: it is the one the person set up
+        first = second
+    if other and memo.get(host) != list(first):
+        try:
+            memo[host] = list(first)
+            db.set_internal("smtp_pair", memo)
+        except Exception:
+            pass
+    return smtp
+
+
+def _smtp_open_once(s: dict, timeout: int = SMTP_TIMEOUT):
     host, port = clean_text(s.get("smtp_host")), int(s.get("smtp_port") or 587)
     security = s.get("smtp_security", "starttls")
     ctx = ssl.create_default_context()
     # local_hostname is fixed so Python never has to look up this PC's own name, which can be slow on a hotspot
     # and fails outright when the computer's name has a character that is not plain English.
     if security == "ssl":
-        smtp = smtplib.SMTP_SSL(host, port, timeout=30, context=ctx, local_hostname="localhost")
+        smtp = smtplib.SMTP_SSL(host, port, timeout=timeout, context=ctx, local_hostname="localhost")
     else:
-        smtp = smtplib.SMTP(host, port, timeout=30, local_hostname="localhost")
+        smtp = smtplib.SMTP(host, port, timeout=timeout, local_hostname="localhost")
     try:
         smtp.ehlo()
         if security == "starttls":
@@ -216,16 +251,153 @@ def send_email(to: str, subject: str, body: str, s: dict) -> str:
         msg["Reply-To"] = reply_to
     msg["List-Unsubscribe"] = f"<mailto:{reply_to}?subject=unsubscribe>"
     msg.set_content(body)
+    handing_over = False
     try:
         smtp = _smtp_open(s)
         with smtp:
             _smtp_login(smtp, s)
+            handing_over = True
             smtp.send_message(msg)
     except SendError:
         raise
     except Exception as e:
+        if handing_over and (isinstance(e, smtplib.SMTPServerDisconnected) or (isinstance(e, OSError) and not isinstance(e, smtplib.SMTPException))):
+            # The connection died AFTER the message was handed over: the server may have taken it. Sending it again could
+            # mean the person gets it twice, so it is never retried by itself.
+            raise SendError(f"The connection dropped while sending ({type(e).__name__}). This email may or may not have been "
+                            "delivered: check your Sent folder before sending it again.", "permanent")
         raise _explain_smtp(e, s)
     return mid
+
+
+# ------------------------------------------------------------ backup email accounts
+_cool: dict = {}      # account number -> time before which it is not tried again (it just failed)
+_last_err: dict = {}  # account number -> what went wrong the last time (cleared by the next success)
+
+
+def email_health(s: dict) -> list:
+    """One row per email account for the Settings screen: how much it sent today, its limit, and whether it is resting and why."""
+    out = []
+    for a in smtp_accounts(s):
+        n = a["_acct"]
+        rest = max(0, int(_cool.get(n, 0) - time.time()))
+        out.append({"n": n, "from": a["from_email"], "host": a["smtp_host"], "sent_today": _used_today(n), "limit": account_cap(a),
+                    "warming_up": bool(warmup_limit(n, a)), "resting_min": (rest // 60 + 1) if rest else 0, "last_error": _last_err.get(n, "")})
+    return out
+
+
+def smtp_accounts(s: dict) -> list:
+    """The email accounts to send from, main one first. A backup that is not filled in is left out. Each carries its own login
+    and From address; replies still go to the main address, which is the inbox the app reads."""
+    main = clean_text(s.get("from_email"))
+    out = []
+    if clean_text(s.get("smtp_host")) and main:
+        out.append(dict(s, _acct=1))
+    for n in range(2, 11):
+        host, frm = clean_text(s.get(f"smtp{n}_host")), clean_text(s.get(f"smtp{n}_from"))
+        if host and frm:
+            a = dict(s)
+            a.update(smtp_host=host, smtp_port=int(s.get(f"smtp{n}_port") or 587), smtp_security=s.get(f"smtp{n}_security") or "starttls",
+                     smtp_user=s.get(f"smtp{n}_user") or "", smtp_pass=s.get(f"smtp{n}_pass") or "", from_email=frm,
+                     reply_to=clean_text(s.get("reply_to")) or main or frm, _acct=n)
+            out.append(a)
+    return out
+
+
+WARMUP = ((3, 20), (7, 40), (14, 80), (21, 150))   # (days since the account first sent, emails per day allowed until then)
+
+
+def _first_day(n: int) -> str:
+    f = db.get_internal("smtp_first")
+    return (f or {}).get(str(n), "") if isinstance(f, dict) else ""
+
+
+def warmup_limit(n: int, s: dict) -> int:
+    """A new account that suddenly sends hundreds of emails is marked as spam. Extra accounts therefore start small and grow for
+    three weeks (the main account is left exactly as you set it). 0 = no ramp."""
+    if n == 1 or not s.get("email_warmup", True):
+        return 0
+    first = _first_day(n)
+    if not first:
+        return WARMUP[0][1]
+    try:
+        age = (time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d")) - time.mktime(time.strptime(first, "%Y-%m-%d"))) / 86400
+    except ValueError:
+        return 0
+    for days, lim in WARMUP:
+        if age < days:
+            return lim
+    return 0
+
+
+def account_cap(a: dict) -> int:
+    n = a.get("_acct", 1)
+    cap = int(a.get("email_daily_cap") or 0) if n == 1 else int(a.get(f"smtp{n}_cap") or 0)
+    ramp = warmup_limit(n, a)
+    return min(cap, ramp) if cap and ramp else (ramp or cap)
+
+
+def total_email_cap(s: dict) -> int:
+    accts = smtp_accounts(s)
+    return sum(account_cap(a) for a in accts) if len(accts) > 1 else int(s.get("email_daily_cap") or 0)
+
+
+def _used_today(n: int) -> int:
+    u = db.get_internal("smtp_used")
+    return int(u["n"].get(str(n), 0)) if isinstance(u, dict) and u.get("day") == time.strftime("%Y-%m-%d") else 0
+
+
+def _count_use(n: int):
+    u = db.get_internal("smtp_used")
+    if not isinstance(u, dict) or u.get("day") != time.strftime("%Y-%m-%d"):
+        u = {"day": time.strftime("%Y-%m-%d"), "n": {}}
+    u["n"][str(n)] = int(u["n"].get(str(n), 0)) + 1
+    db.set_internal("smtp_used", u)
+    f = db.get_internal("smtp_first")
+    f = f if isinstance(f, dict) else {}
+    if str(n) not in f:   # the warm-up clock starts the day the account first sends
+        f[str(n)] = time.strftime("%Y-%m-%d")
+        db.set_internal("smtp_first", f)
+
+
+def send_email_any(to: str, subject: str, body: str, s: dict) -> str:
+    """send_email, with backup accounts: if the main account fails (login, its sending limit, cannot be reached) or has reached
+    its own daily limit, the next account is used. Nothing is retried after the message was handed over (that could mean twice)."""
+    accts = smtp_accounts(s)
+    if len(accts) <= 1:
+        try:
+            mid = send_email(to, subject, body, s)
+        except SendError as e:
+            _last_err[1] = str(e)[:300]
+            raise
+        _last_err.pop(1, None)
+        try:
+            _count_use(1)
+        except Exception:
+            pass
+        return mid
+    now_t = time.time()
+    order = [a for a in accts if _cool.get(a["_acct"], 0) <= now_t and (not account_cap(a) or _used_today(a["_acct"]) < account_cap(a))]
+    # spread the load: the account that has used the smallest share of its own limit goes first (each stays quiet and safe)
+    order.sort(key=lambda a: (_used_today(a["_acct"]) / account_cap(a)) if account_cap(a) else 0.5)
+    last = None
+    for a in order or accts:
+        try:
+            mid = send_email(to, subject, body, a)
+        except SendError as e:
+            if e.kind not in ("pause", "transient", "offline"):
+                raise   # refused recipient, unconfirmed delivery: not the account's fault, never try another
+            _cool[a["_acct"]] = time.time() + (300 if e.kind == "offline" else 1800)
+            _last_err[a["_acct"]] = str(e)[:300]
+            last = e
+            continue
+        _last_err.pop(a["_acct"], None)
+        try:
+            _count_use(a["_acct"])
+        except Exception:
+            pass
+        return mid
+    raise last or SendError("No email account is ready.", "pause")
 
 
 def _explain_smtp(e: Exception, s: dict) -> SendError:
@@ -250,8 +422,10 @@ def _explain_smtp(e: Exception, s: dict) -> SendError:
     if isinstance(e, UnicodeError):
         return SendError("A mail setting has a character the mail server can't accept (usually a hidden one in the "
                          "password). Type the password again by hand and save.", "pause")
-    if isinstance(e, (smtplib.SMTPException, OSError, ssl.SSLError)):
-        return SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "transient")
+    if isinstance(e, (smtplib.SMTPServerDisconnected, OSError, ssl.SSLError)):
+        return SendError(f"Couldn't reach the mail server: {e}. {_smtp_hint(s)}", "offline")
+    if isinstance(e, smtplib.SMTPException):
+        return SendError(f"Mail server error: {e}. {_smtp_hint(s)}", "transient")
     return SendError(f"Unexpected email error: {type(e).__name__}: {e}", "transient")
 
 
@@ -377,10 +551,10 @@ def _gateway_auth(s: dict):
 
 
 def _phone_unreachable(base: str, e) -> SendError:
-    return SendError(f"Couldn't reach your phone at {base} ({type(e).__name__}). Check that the phone is on the same Wi-Fi or "
+    return SendError(f"Couldn't reach the phone at {base} ({type(e).__name__}). Check that the phone is on the same Wi-Fi or "
                      "hotspot as this PC, that the SMS Gateway app is open with its Local server switched on, and that the "
-                     "address matches the one the app shows (it can change when the phone reconnects). The campaign is paused: fix it, "
-                     "then press Resume.", "pause")
+                     "address matches the one the app shows (it can change when the phone reconnects). Texts wait and are tried again by "
+                     "themselves; nothing is lost.", "offline")
 
 
 def _sms_state(j) -> str:
@@ -605,6 +779,38 @@ def _plain_text(msg) -> str:
     return text
 
 
+def _report_lead(body: str, subject: str, mid, s: dict) -> dict:
+    """A lead left by the free-report page: the page's small web function emails you the details, signed with a secret that only the
+    page and this app know. Without a matching secret the email is ignored (anyone can write 'Health Check lead' in a subject)."""
+    import hmac
+    token = str(s.get("free_report_token") or "").strip()
+    fields = {}
+    for line in body.splitlines():
+        k, sep, v = line.partition(":")
+        if sep and k.strip().lower() in ("name", "phone", "email", "business", "note", "summary", "token", "consent"):
+            fields.setdefault(k.strip().lower(), v.strip())
+    if not token or not hmac.compare_digest(fields.get("token", "").encode(), token.encode()):
+        return {"matched": False}
+    if fields.get("consent", "").lower() != "yes":
+        return {"matched": False}
+    addr = normalize_email(fields.get("email")) or None
+    phone = (fields.get("phone") or "").strip()
+    name = (fields.get("business") or fields.get("name") or "").strip()[:120]
+    if not name or not (addr or phone):
+        return {"matched": False}
+    note = ("Used your free Business Health Check and asked you to look at their records. They agreed to be contacted."
+            + (f" Contact person: {fields['name']}." if fields.get("business") and fields.get("name") else ""))
+    said = fields.get("note", "")[:600]
+    summary = fields.get("summary", "")[:300]
+    text = "I tried your free Business Health Check and would like you to look at my full records." + (f" {said}" if said else "") + (f" (Their report: {summary})" if summary else "")
+    with db.db() as conn:
+        res = leadsmod.add_lead(conn, {"name": name, "email": addr, "phone": phone or None, "notes": note + (f" They wrote: {said}" if said else "")}, "free report")
+        lead_id = res["id"]
+        ch = "email" if addr else "whatsapp"
+        r = leadsmod.record_reply(conn, lead_id, ch, text, "My Business Health Check", mid)
+    return {"matched": True, "lead_id": lead_id, "grade": r.get("grade"), "duplicate": r.get("duplicate", False)}
+
+
 def process_inbound_email(raw: bytes, s: dict = None) -> dict:
     s = s or db.get_settings()
     msg = email.message_from_bytes(raw, policy=email.policy.default)
@@ -613,6 +819,9 @@ def process_inbound_email(raw: bytes, s: dict = None) -> dict:
     mid = (str(msg.get("Message-ID", "")) or "").strip() or None
     refs = re.findall(r"<[^>]+>", f"{msg.get('In-Reply-To', '')} {msg.get('References', '')}")
     body = _plain_text(msg)
+
+    if subject.lower().startswith("health check lead:"):
+        return _report_lead(body, subject, mid, s)
 
     if from_addr and from_addr == normalize_email(s.get("from_email")):
         return {"matched": False}
@@ -654,11 +863,15 @@ def process_inbound_email(raw: bytes, s: dict = None) -> dict:
                          or msg.get("List-Unsubscribe") or str(msg.get("Auto-Submitted", "no")).lower() != "no"
                          or str(msg.get("Precedence", "")).lower() in ("bulk", "list", "junk")
                          or grading.classify(body)["grade"] in ("auto", "bounce"))
-            if not from_addr or automated or (s.get("closer_mode") or "off") == "off":
+            # someone who used the free Business Health Check page and wrote to you from it always becomes a lead, with or without conversation mode
+            from_report = "business health check" in subject.lower()
+            if not from_addr or automated or ((s.get("closer_mode") or "off") == "off" and not from_report):
                 return {"matched": False}
             display = email.utils.parseaddr(str(msg.get("From", "")))[0].strip().strip('"')
             name = display if display and "@" not in display else from_addr.split("@")[0].replace(".", " ").replace("_", " ").title()
-            res0 = leadsmod.add_lead(conn, {"name": name, "email": from_addr, "notes": f"Wrote to us first by email: {subject[:120]}"}, "inbound email")
+            res0 = leadsmod.add_lead(conn, {"name": name, "email": from_addr, "notes": (
+                "Used your free Business Health Check and asked you to look at their records." if from_report
+                else f"Wrote to us first by email: {subject[:120]}")}, "free report" if from_report else "inbound email")
             lead_id = res0["id"]
         res = leadsmod.record_reply(conn, lead_id, "email", body.strip(), subject, mid)
         return {"matched": True, "lead_id": lead_id, "grade": res.get("grade"), "duplicate": res.get("duplicate", False)}

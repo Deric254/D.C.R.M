@@ -6,6 +6,7 @@
     title: 'Today',
     async render(el) {
       const d = await api('/today');
+      const gp = await api('/grow/due').catch(() => ({ partners: [] }));   // partners whose next step has come due
       const total = d.replies.length + d.due.length + d.quiet.length;
       const row = (l, why) => {
         const wa = l.is_mobile, mail = l.email && !l.email_bounced;
@@ -22,6 +23,9 @@
         <p class="muted">${total ? `${total} lead${total === 1 ? '' : 's'} need you. Press a button and the message is already written for that person: answer, follow-up or first hello. Check it, then send.` : 'You are all caught up. Find more leads or start a campaign.'}</p>
         ${section('They replied', 'Replies you have not dealt with appear here, hottest first.', d.replies, (l) => `replied ${when(l.last_reply_at)}`)}
         ${section('Follow-ups due', 'Set a follow-up date on a lead and it shows here on the day.', d.due, (l) => `follow-up date ${l.next_followup}`)}
+        ${gp.partners.length ? html`<section class="panel"><div class="panel-head"><h2>Partners to follow up</h2><span class="muted small right">${gp.partners.length}</span></div>
+          <div class="list">${gp.partners.map((p) => html`<div class="item" style="gap:10px"><div class="grow"><b>${p.name}</b> <span class="chip">${p.kind}</span>
+            <div class="muted small">${p.next_step || 'Follow up'} · due ${p.next_date}</div></div><a class="btn small" href="#/grow">Open</a></div>`)}</div></section>` : ''}
         ${section(`No reply after ${d.wait_days} days`, 'Leads you messaged that stay quiet show up here.', d.quiet,
           (l) => `${l.unanswered} message${l.unanswered === 1 ? '' : 's'} sent, last ${when(l.last_contacted_at)}, no answer`)}
       </div>`);

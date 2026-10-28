@@ -17,18 +17,22 @@ import random
 import re
 import sys
 import time
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 import campaigns as C
-import closer
 import config
 import db
 import jobs
 from scraper import BROWSER_CHANNELS, StopRequested
-from util import now, parent_alive, today_start
+from util import now, parent_alive
 
 BASE = os.environ.get("DERICBI_WA_URL", "https://web.whatsapp.com").rstrip("/")
 CONFIRM_SECONDS = 40   # how long to wait for WhatsApp to show a message as sent
+LOAD_SECONDS = 180     # how long WhatsApp Web may take to open its chats on a slow line before the worker gives up
+QR_GRACE = 15          # the link code must stay on screen this long, with no chats, before it counts as logged out
+LOGOUT_SOON_HOURS = 24   # logged out again this soon after linking: WhatsApp most likely flagged the number
+BLOCK_REST_MIN = 24 * 60
 SETTLE_MS = 1500       # let the chat's earlier messages appear before looking at them
 HEADLESS_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                "Chrome/131.0.0.0 Safari/537.36")   # a hidden browser must not announce itself as "HeadlessChrome"
@@ -55,6 +59,26 @@ SEL = {
 }
 
 
+class SlowNetwork(RuntimeError):
+    """WhatsApp Web did not load or answer in time: the internet is slow or down. Not a reason to pause a campaign."""
+
+
+SLOW_BACKOFF = (5, 10, 20, 30)   # minutes WhatsApp rests after each slow-internet failure in a row
+SLOW_GIVE_UP = 6                 # this many in a row: pause so you are told, instead of trying for ever
+
+
+def _slow_network(reason: str):
+    """Rest and try again by itself (a little longer each time). Only a long run of failures pauses the campaigns."""
+    n = int(db.get_internal("wa_slow") or 0) + 1
+    db.set_internal("wa_slow", n)
+    if n >= SLOW_GIVE_UP:
+        db.set_internal("wa_slow", 0)
+        C.wa_pause_campaigns("WhatsApp could not load %d times in a row (slow or no internet). Check the connection, then resume." % n)
+        return
+    mins = SLOW_BACKOFF[min(n - 1, len(SLOW_BACKOFF) - 1)]
+    C.wa_hold(f"The internet is slow or down, so WhatsApp did not load (try {n}). Trying again in {mins} min.", mins)
+
+
 class LoggedOut(Exception):
     """WhatsApp Web is showing the link code: this PC is no longer linked."""
 
@@ -70,6 +94,7 @@ def is_linked() -> bool:
 def set_linked(on: bool):
     db.set_internal("whatsapp_linked", bool(on))
     if on:
+        C.wa_clear_hold()   # linked again: sending may go on at once
         db.set_internal("whatsapp_linked_at", now())
 
 
@@ -152,6 +177,18 @@ class WhatsAppWeb:
             return "qr"
         return "loading"
 
+    def logged_out(self) -> bool:
+        """True only when the link code is STILL showing after QR_GRACE seconds and no chats have appeared. While it loads over a
+        slow line WhatsApp Web can flash the code or reload for a moment even though the saved login is perfectly good."""
+        end = time.time() + QR_GRACE
+        while time.time() < end:
+            if self.should_stop():
+                raise StopRequested()
+            if self._any("chat_list") or not self._any("qr"):
+                return False
+            self.page.wait_for_timeout(1000)
+        return not self._any("chat_list") and bool(self._any("qr"))
+
     def wait_ready(self, seconds: int = 90) -> str:
         end = time.time() + seconds
         state = "loading"
@@ -159,7 +196,9 @@ class WhatsAppWeb:
             if self.should_stop():
                 raise StopRequested()
             state = self.state()
-            if state != "loading":
+            if state == "qr" and not self.logged_out():
+                state = "loading"   # the code only flashed up while the page was loading
+            elif state != "loading":
                 return state
             self.page.wait_for_timeout(1000)
         return state
@@ -193,7 +232,7 @@ class WhatsAppWeb:
         while time.time() < end:
             if self.should_stop():
                 raise StopRequested()
-            if self._any("qr"):
+            if self._any("qr") and self.logged_out():
                 raise LoggedOut()
             if page.locator(SEL["invalid"]).count():
                 ok = self._any("dialog_ok")
@@ -289,7 +328,7 @@ class WhatsAppWeb:
             while time.time() < end and not self._any("chat_list"):
                 if self.should_stop():
                     raise StopRequested()
-                if self._any("qr"):
+                if self._any("qr") and self.logged_out():
                     raise LoggedOut()
                 page.wait_for_timeout(500)
             page.wait_for_timeout(SETTLE_MS)
@@ -316,7 +355,7 @@ class WhatsAppWeb:
         while time.time() < end:
             if self.should_stop():
                 raise StopRequested()
-            if self._any("qr"):
+            if self._any("qr") and self.logged_out():
                 raise LoggedOut()
             if page.locator(SEL["invalid"]).count():
                 ok = self._any("dialog_ok")
@@ -386,18 +425,19 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
     driver = (driver_factory or (lambda: WhatsAppWeb(log=log, headless=hidden)))()
     driver.should_stop = stopping
     jobs.update(job_id, status="running", started_at=now(), progress="Opening WhatsApp…")
-    final, sent, failures, idle = "done", 0, 0, 0
+    final, sent, failures, idle, timeouts = "done", 0, 0, 0, 0
     talk_until, talk_rounds = time.time() + CONVO_STAY, 0
     watch_left = watch_rounds   # None: watch until conversation mode is switched off (tests give a number)
     try:
         driver.open()
-        state = driver.wait_ready(90)
+        state = driver.wait_ready(LOAD_SECONDS)
         if state == "qr":
             raise LoggedOut()
         if state != "ready":
-            raise RuntimeError("WhatsApp Web did not finish loading (check the internet connection)."
+            raise SlowNetwork("WhatsApp Web did not finish loading (check the internet connection)."
                                + (" If this keeps happening, switch off 'Hide the WhatsApp window' in Settings > WhatsApp." if hidden else ""))
         log("WhatsApp is open and linked.")
+        db.set_internal("wa_slow", 0)
         while not stopping():
             s = db.get_settings()
             if not C.Sender.in_window(s):
@@ -458,6 +498,8 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
                 C.wa_result(mid, "retry", f"{type(e).__name__}: {str(e)[:120]}")
                 log(f"  ! {msg['name']}: {type(e).__name__}: {str(e)[:100]}")
                 failures += 1
+                if "timeout" in (type(e).__name__ + str(e)).lower():
+                    timeouts += 1
             else:
                 C.wa_result(mid, outcome)
                 if outcome == "sent":
@@ -472,7 +514,12 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
                     log(f"  - {msg['name']} has written back since our last message: follow-up not sent")
                 else:
                     log(f"  - {msg['name']} is not on WhatsApp (skipped)")
-                failures = 0
+                failures = timeouts = 0
+            if failures >= 3 and timeouts >= 3:   # all timeouts: the internet, not WhatsApp. Rest, do not pause.
+                _slow_network("timeouts")
+                log("Stopped: 3 messages in a row timed out (slow internet). WhatsApp rests and tries again by itself.")
+                final = "failed"
+                break
             if failures >= 3:
                 C.wa_pause_campaigns("WhatsApp stopped after 3 failed messages in a row. Check WhatsApp Web, then resume.")
                 log("Stopped: 3 messages in a row failed. WhatsApp campaigns are paused.")
@@ -484,12 +531,24 @@ def run_worker(job_id: int, driver_factory=None, sleep=None, watch_rounds=None) 
         if final == "done" and not stopping() and hasattr(driver, "read_chat") and C.Sender.in_window(db.get_settings()):
             sync_replies(driver, log, stopping, sleep)
     except LoggedOut:
+        soon = (datetime.now() - timedelta(hours=LOGOUT_SOON_HOURS)).isoformat(sep=" ", timespec="seconds")
+        flagged = str(db.get_internal("whatsapp_linked_at") or "") >= soon
         set_linked(False)
-        C.wa_pause_campaigns("WhatsApp was logged out. Link it again in Settings > WhatsApp, then resume.")
-        log("WhatsApp is showing the link code: this PC is no longer linked. WhatsApp campaigns are paused.")
+        if flagged:   # logged out again within a day of linking: resting and retrying would only make a restriction worse
+            C.wa_pause_campaigns("WhatsApp logged this PC out again within a day of linking it. That usually means WhatsApp flagged "
+                                 "the number for automated or bulk messages. WhatsApp sending is stopped for a day: check your phone "
+                                 "for a WhatsApp notice, send far fewer messages, and only to people who know you.", BLOCK_REST_MIN)
+            log("Logged out again soon after linking: WhatsApp probably flagged this number. WhatsApp is stopped for a day.")
+        else:
+            C.wa_pause_campaigns("WhatsApp was logged out. Link it again in Settings > WhatsApp, then resume.")
+            log("WhatsApp is showing the link code: this PC is no longer linked. WhatsApp campaigns are paused.")
         final = "failed"
     except StopRequested:
         final = "stopped"
+    except SlowNetwork as e:
+        log(f"WhatsApp is not loading ({str(e)[:120]}). It rests and tries again by itself.")
+        final = "failed"
+        _slow_network(str(e))
     except Exception as e:
         log(f"WhatsApp worker crashed: {type(e).__name__}: {str(e)[:200]}")
         final = "failed"
