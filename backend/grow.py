@@ -54,13 +54,17 @@ def respectful(text: str) -> str:
 
 
 # ------------------------------------------------------------------ content
-def _link(s: dict) -> str:
-    return (s.get("free_report_url") or "").strip()
+def _link(s: dict, src: str = "") -> str:
+    """The free-report link, tagged with where it is shared (?src=...) so a lead shows which channel brought it."""
+    u = (s.get("free_report_url") or "").strip()
+    if u and src and "src=" not in u:
+        u += ("&" if "?" in u else "?") + "src=" + src
+    return u
 
 
 def _template(platform: str, finding: str, s: dict) -> str:
     me = (s.get("sender_name") or "DericBI").strip()
-    link = _link(s)
+    link = _link(s, platform)
     ask = (f"Try the free check on your own sales sheet: {link}" if link else "Send me your sales sheet and I will show you what stands out, free.")
     f = finding.strip().rstrip(".")
     if platform == "whatsapp_status":
@@ -91,7 +95,7 @@ def draft_posts(s: dict, finding: str, platforms: list, audience: str = "") -> d
             text = ai.ask(s, _system(s, "public social media posts"), (
                 f"Finding from my work (anonymised): {finding}\nAudience: {audience.strip() or 'business owners in Kenya'}.\n"
                 f"My offer in one line: {(s.get('ai_pitch') or '').strip()[:400]}\n{RULES}\n"
-                + (f"End every draft with this exact link, on its own line, so people can try the free check: {_link(s)}\n" if _link(s) else "") +
+                + (f"End every draft with this exact link, on its own line, so people can try the free check: {_link(s, 'post')}\n" if _link(s) else "") +
                 "Write one draft for each platform below. Start each with its '### name' line exactly as given, then the draft.\n" + spec),
                 max_tokens=1400, temperature=0.8)
             for chunk in re.split(r"(?m)^###\s*", text):
@@ -206,13 +210,13 @@ def partner_pitch(s: dict, pid: int) -> dict:
             f"what sits too long, which months bring the most, and where money slips away.\n\n"
             f"I would like to offer {p['name']} members a free session or a short report on their own numbers, at no cost to you or to them. "
             f"Would it help to share this with your members, or would a short talk suit you better?"
-            + (f" They can also try it themselves here: {_link(s)}" if _link(s) else "") + f"\n\nWarm regards,\n{me}")
+            + (f" They can also try it themselves here: {_link(s, 'partner')}" if _link(s) else "") + f"\n\nWarm regards,\n{me}")
     if ai.configured(s):
         try:
             text = ai.ask(s, _system(s, "a short partnership email"), (
                 f"Write a short email (at most 110 words) to {p['contact'] or 'the person in charge'} at {p['name']} ({p['kind']}). "
                 f"Offer their members a free session or short report on their own sales and stock records. My offer: {(s.get('ai_pitch') or '')[:400]}\n"
-                f"Their notes: {p['note'][:300] or 'none'}\n{RULES}\nFirst line 'Subject: ...' (at most 7 words), blank line, then the body. Sign off as {me}." + (f" Include this link once: {_link(s)}" if _link(s) else "")),
+                f"Their notes: {p['note'][:300] or 'none'}\n{RULES}\nFirst line 'Subject: ...' (at most 7 words), blank line, then the body. Sign off as {me}." + (f" Include this link once: {_link(s, 'partner')}" if _link(s) else "")),
                 max_tokens=500, temperature=0.7)
             subj, rest = ai._split_subject(text)
             if subj and rest.strip():

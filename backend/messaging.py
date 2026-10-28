@@ -787,7 +787,7 @@ def _report_lead(body: str, subject: str, mid, s: dict) -> dict:
     fields = {}
     for line in body.splitlines():
         k, sep, v = line.partition(":")
-        if sep and k.strip().lower() in ("name", "phone", "email", "business", "note", "summary", "token", "consent"):
+        if sep and k.strip().lower() in ("name", "phone", "email", "business", "note", "summary", "source", "token", "consent"):
             fields.setdefault(k.strip().lower(), v.strip())
     if not token or not hmac.compare_digest(fields.get("token", "").encode(), token.encode()):
         return {"matched": False}
@@ -795,11 +795,13 @@ def _report_lead(body: str, subject: str, mid, s: dict) -> dict:
         return {"matched": False}
     addr = normalize_email(fields.get("email")) or None
     phone = (fields.get("phone") or "").strip()
+    came = re.sub(r"[^a-z0-9_-]", "", fields.get("source", "").lower())[:30]   # which link brought them: popup, chatbot, partner...
     name = (fields.get("business") or fields.get("name") or "").strip()[:120]
     if not name or not (addr or phone):
         return {"matched": False}
     note = ("Used your free Business Health Check and asked you to look at their records. They agreed to be contacted."
-            + (f" Contact person: {fields['name']}." if fields.get("business") and fields.get("name") else ""))
+            + (f" Contact person: {fields['name']}." if fields.get("business") and fields.get("name") else "")
+            + (f" Came from: {came}." if came else ""))
     said = fields.get("note", "")[:600]
     summary = fields.get("summary", "")[:300]
     text = "I tried your free Business Health Check and would like you to look at my full records." + (f" {said}" if said else "") + (f" (Their report: {summary})" if summary else "")

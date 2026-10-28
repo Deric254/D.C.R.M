@@ -4813,6 +4813,44 @@ def a_lead_left_on_the_free_report_page_arrives_as_a_lead_and_needs_the_secret()
 
 
 @test
+def free_report_leads_remember_which_link_brought_them():
+    import grow
+    fresh(); configure(closer_mode="off")
+    secret = "s3cret-token-value-1234"
+    db.save_settings({"free_report_token": secret, "free_report_url": "https://dericbi.test/free-report/"})
+    def mail(source_line, mid):
+        body = ("Name: Jane Wanjiru\nBusiness: Jane Pharmacy\nPhone: 0712 345 678\nEmail: \nNote: Please check my stock\n"
+                "Summary: Suggested: Excel Cleanup. Sales KES 760,445\n" + source_line + "Consent: yes\nToken: " + secret + "\n")
+        return ("From: Health Check leads <bot@other.test>\r\nTo: deric@dericbi.test\r\nSubject: Health Check lead: Jane Pharmacy\r\n"
+                "Message-ID: " + mid + "\r\n\r\n" + body).encode()
+    s = db.get_settings()
+    # an older page (or older function) sends no Source line: the lead is still accepted
+    assert messaging.process_inbound_email(mail("", "<s0@x>"), s)["matched"]
+    with db.db() as c:
+        lead = c.execute("SELECT * FROM leads").fetchone()
+    assert "Came from" not in lead["notes"] and "agreed to be contacted" in lead["notes"], lead["notes"]
+    # a Source line is kept in the notes, cleaned so nothing odd can be stored
+    fresh(); configure(closer_mode="off"); db.save_settings({"free_report_token": secret})
+    assert messaging.process_inbound_email(mail("Source: Pop-Up<script>\n", "<s1@x>"), db.get_settings())["matched"]
+    with db.db() as c:
+        lead = c.execute("SELECT * FROM leads").fetchone()
+    assert lead["source"] == "free report" and "Came from: pop-upscript." in lead["notes"] and "<" not in lead["notes"], lead["notes"]
+    # the link in post drafts and partner pitches is tagged with where it is shared
+    db.save_settings({"free_report_url": "https://dericbi.test/free-report/"}); s = db.get_settings()
+    oc = ai.configured; ai.configured = lambda s: []
+    try:
+        post = grow.draft_posts(s, "One shop had cash tied up in slow stock all year.", ["whatsapp_status"])["posts"][0]["body"]
+    finally:
+        ai.configured = oc
+    assert "dericbi.test/free-report/?src=whatsapp_status" in post, post
+    p = grow.add_partner({"name": "Chamber", "email": "c@ch.test"})
+    assert "dericbi.test/free-report/?src=partner" in grow.partner_pitch(s, p["id"])["body"]
+    assert grow._link({"free_report_url": "https://a.test/r/?x=1"}, "post") == "https://a.test/r/?x=1&src=post"
+    assert grow._link({"free_report_url": "https://a.test/r/?src=mine"}, "post") == "https://a.test/r/?src=mine"
+    assert grow._link({"free_report_url": ""}, "post") == ""
+
+
+@test
 def the_free_report_page_has_working_contact_details():
     import re
     folder = Path(__file__).resolve().parent.parent / "free-report"

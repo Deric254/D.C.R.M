@@ -53,6 +53,7 @@ footer{margin-top:28px;color:var(--mute);font-size:.85rem}
 <body>
 <div class="wrap">
 <header>
+  <p class="small" style="margin:0 0 8px"><a href="../home.html" style="color:var(--brand);font-weight:600;text-decoration:none">&larr; dericBI</a></p>
   <h1>Free Business Health Check</h1>
   <p class="lead">Upload your sales sheet and see what stands out: what sells best, what sits too long, your strongest months, and what customers buy together. Free, and your file never leaves your device.</p>
 </header>
@@ -105,8 +106,8 @@ footer{margin-top:28px;color:var(--mute);font-size:.85rem}
 const CONFIG = {
   name: 'DericBI',
   leadForm: true,        // shows the 'leave your details' form (needs the api/lead.js function from this folder); set false to hide it
-  whatsapp: '254103044761',   // your WhatsApp number with country code and no plus or spaces, e.g. '2547XXXXXXXX'
-  email: 'dericmarangu@gmail.com',   // e.g. 'you@yourdomain.com'
+  whatsapp: '254791360805',          // your WhatsApp number with country code and no plus or spaces, e.g. '2547XXXXXXXX'
+  email: 'dericmarangu@gmail.com',             // e.g. 'you@yourdomain.com'
   currency: 'KES'
 };
 /* ========================================================= */
@@ -126,6 +127,7 @@ const GUESS = {
   stock: /stock|balance|on ?hand|closing|remaining|inventory/i
 };
 let SUMMARY = '', SHOWN_AT = 0;
+const SRC = (new URLSearchParams(location.search).get('src') || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 30);   // where the visitor came from, e.g. ?src=popup
 let TABLE = null;        // { headers: [], rows: [[...]] }
 
 /* ---------- reading files ---------- */
@@ -155,7 +157,7 @@ function toTable(rows) {
 async function readFile(file) {
   const name = file.name.toLowerCase();
   if (/\.xlsx?$/.test(name)) {
-    if (!window.XLSX) throw new Error('Excel files need an internet connection to open here. Save your sheet as CSV (File > Save as > CSV) and upload that instead.');
+    if (!window.XLSX) throw new Error('This Excel file could not be opened here. Save your sheet as CSV (File > Save as > CSV) and upload that instead.');
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
     const ws = wb.Sheets[wb.SheetNames[0]];
     return toTable(XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' }));
@@ -230,7 +232,7 @@ function analyse(map) {
   }
   const list = [...prods.values()].sort((a, b) => b.amount - a.amount);
   const dates = rows.map((r) => r.date).filter(Boolean).sort((a, b) => a - b);
-  const out = { rows, total, list, first: dates[0] || null, last: dates[dates.length - 1] || null, finds: [] };
+  const out = { rows, total, list, first: dates[0] || null, last: dates[dates.length - 1] || null, finds: [], skipped: TABLE.rows.length - rows.length, hasDate: map.date >= 0, undated: map.date >= 0 ? rows.filter((r) => !r.date).length : 0 };
 
   // concentration
   let acc = 0, n80 = 0; for (const p of list) { acc += p.amount; n80++; if (acc >= total * 0.8) break; }
@@ -290,6 +292,19 @@ function analyse(map) {
 const MN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const monthName = (k) => { const [y, m] = k.split('-').map(Number); return MN[m - 1] + ' ' + y; };
 
+/* ---------- suggested next step: chosen only from what this file showed ---------- */
+function recommend(a) {
+  const n = a.rows.length;
+  const messy = a.skipped / (a.skipped + n) >= 0.1 || (a.hasDate && a.undated / n >= 0.1);
+  const stock = (a.tied && a.tied.count) || (a.slow && a.slow.length);
+  const trends = a.fullMonths && a.fullMonths.length >= 3;
+  if (messy && (stock || trends)) return { name: 'Complete Package', why: 'Part of this file is incomplete or untidy, and the numbers in it are worth tracking month by month. Cleaning the data first and then putting it on a dashboard gets you both.' };
+  if (messy) return { name: 'Excel Cleanup', why: 'A good share of the rows in this file are blank, have no usable amount, or have dates that could not be read. Tidying the sheet makes every figure above more trustworthy.' };
+  if (stock || trends) return { name: 'PowerBI Dashboards', why: 'Your file already shows slow stock or clear month-to-month patterns. A dashboard would keep these in front of you every month without rebuilding the sheet.' };
+  if (!a.hasDate) return { name: 'Data Setup Consultation (free)', why: 'Your file has no dates, so the timing and slow-stock checks were skipped. A short free consultation can show you what to record so next month\'s report says much more.' };
+  return { name: 'Data Setup Consultation (free)', why: 'Your file looks tidy. A short free consultation can show where the next gains are likely to be.' };
+}
+
 /* ---------- report ---------- */
 function bars(items, max, valueText) {
   return `<table>${items.map(([label, v, extra]) => `<tr><td style="width:28%">${esc(label)}</td><td style="width:38%"><div class="bar"><i style="width:${Math.max(1, v / max * 100)}%"></i></div></td><td class="n">${valueText(v)}${extra || ''}</td></tr>`).join('')}</table>`;
@@ -300,6 +315,8 @@ function render(a) {
     <p class="muted small" style="margin:0 0 12px">${a.first ? `Sales from ${a.first.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })} to ${a.last.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'No dates found in this file, so the timing reports are skipped'}</p>
     <div class="stats"><div class="stat"><span class="muted small">Total sales</span><b>${money(a.total)}</b></div><div class="stat"><span class="muted small">Products sold</span><b>${fmt(a.list.length)}</b></div>${a.tied && a.tied.count ? `<div class="stat"><span class="muted small">Cash tied up (estimate)</span><b>${money(a.tied.value)}</b></div>` : ''}</div></section>`;
   h += `<section class="card"><h2>What stands out</h2>${a.finds.length ? `<ul class="find">${a.finds.map((f) => `<li>${f}</li>`).join('')}</ul>` : '<p class="muted">Add a date column, a receipt number or stock on hand to unlock more findings.</p>'}</section>`;
+  const rec = recommend(a);
+  h += `<section class="card"><h2>A sensible next step</h2><p style="margin:6px 0 8px"><b>${esc(rec.name)}</b></p><p class="muted small" style="margin:0 0 10px">${esc(rec.why)}</p><a class="btn ghost no-print" href="../services.html">See my options</a></section>`;
   h += `<section class="card"><h2>Your best sellers</h2><p class="muted small" style="margin:0 0 8px">Top ${top.length} by sales amount</p>${bars(top.map((p) => [p.name, p.amount, ` <span class="muted small">${(p.amount / a.total * 100).toFixed(1)}%</span>`]), top[0].amount, money)}</section>`;
   if (a.slow && a.slow.length) h += `<section class="card"><h2>Used to sell, now quiet</h2><p class="muted small" style="margin:0 0 8px">No sale for 30 days or more at the end of your file</p><table><tr><th>Product</th><th class="n">Past sales</th><th class="n">Quiet for</th></tr>${a.slow.map((p) => `<tr><td>${esc(p.name)}</td><td class="n">${money(p.amount)}</td><td class="n">${p.quiet} days</td></tr>`).join('')}</table></section>`;
   if (a.fullMonths && a.months.length > 1) {
@@ -310,7 +327,7 @@ function render(a) {
   if (a.pairs && a.pairs.length) h += `<section class="card"><h2>What customers buy together</h2><p class="muted small" style="margin:0 0 8px">From ${fmt(a.bills)} receipts</p><table><tr><th>Pair</th><th class="n">Times together</th></tr>${a.pairs.map((p) => `<tr><td>${esc(p.a)} + ${esc(p.b)}</td><td class="n">${p.c}</td></tr>`).join('')}</table></section>`;
   else if (a.bills !== undefined) h += `<section class="card"><h2>What customers buy together</h2><p class="muted">Not enough shared receipts to show a pattern yet.</p></section>`;
   $('#report').innerHTML = h; $('#report').classList.remove('hidden'); $('#cta').classList.remove('hidden');
-  SUMMARY = `Sales ${money(a.total)}, ${a.list.length} products` + (a.tied && a.tied.count ? `, about ${money(a.tied.value)} tied up in slow stock` : '') + `; best seller ${a.list[0].name}.`;
+  SUMMARY = `Suggested: ${rec.name}. Sales ${money(a.total)}, ${a.list.length} products` + (a.tied && a.tied.count ? `, about ${money(a.tied.value)} tied up in slow stock` : '') + `; best seller ${a.list[0].name}.`;
   if (CONFIG.leadForm) { $('#leadcard').classList.remove('hidden'); SHOWN_AT = Date.now(); }
   $('#report').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -366,7 +383,7 @@ $('#leadform').addEventListener('submit', async (e) => {
   try {
     const r = await fetch('/api/lead', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
       name: v('name'), business: v('business'), phone: v('phone'), email: v('email'), note: v('note'), consent: true,
-      website: v('website'), elapsed: Date.now() - SHOWN_AT, summary: SUMMARY }) });
+      website: v('website'), elapsed: Date.now() - SHOWN_AT, summary: SUMMARY, source: SRC }) });
     const j = await r.json().catch(() => ({}));
     if (r.ok && j.ok) { say('Thank you. I will be in touch soon.', true); f.reset(); }
     else say(j.error || 'We could not send that just now. Please use the WhatsApp or email button above.');
@@ -381,6 +398,6 @@ $('#leadform').addEventListener('submit', async (e) => {
   if (CONFIG.email) { const m = $('#mail'); m.href = 'mailto:' + CONFIG.email + '?subject=' + encodeURIComponent('My Business Health Check') + '&body=' + msg; m.classList.remove('hidden'); }
 })();
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" async onerror="window.XLSX=undefined"></script>
+<script src="vendor/xlsx.full.min.js" async onerror="window.XLSX=undefined"></script>
 </body>
 </html>

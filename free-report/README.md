@@ -38,3 +38,13 @@ matches, only if the visitor ticked the consent box, and ignores everything else
 - The sample button uses invented data and says so.
 - Everything shown is an estimate from the visitor's file. The page says this and promises no results.
 - Protection against abuse: a hidden trap field, a minimum time on the form, and a limit of 5 submissions per 10 minutes per visitor.
+
+## Optional safety net: never lose a lead (added)
+In Vercel, open your project > Storage and connect a free Upstash Redis (or Vercel KV) store. Vercel adds its variables to the project by itself.
+Then every lead is saved before the email is sent. If the email fails, the visitor still sees "Thank you" and the lead waits safely;
+it is sent automatically on the next submission, or on demand by opening `/api/lead-retry` with the header `Authorization: Bearer <your LEAD_TOKEN>`
+(a free cron service can call it hourly). Saved leads are deleted after 90 days. Without a store, everything works exactly as before.
+Copy both `api/lead.js` and `api/lead-retry.js` to the `api` folder at your site root.
+
+## Suggested next step (added)
+The report page now suggests the service that fits what the file showed, and adds it to the lead summary so you can open your reply with it.
