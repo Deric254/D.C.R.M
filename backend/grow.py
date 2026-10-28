@@ -54,20 +54,26 @@ def respectful(text: str) -> str:
 
 
 # ------------------------------------------------------------------ content
+def _link(s: dict) -> str:
+    return (s.get("free_report_url") or "").strip()
+
+
 def _template(platform: str, finding: str, s: dict) -> str:
     me = (s.get("sender_name") or "DericBI").strip()
+    link = _link(s)
+    ask = (f"Try the free check on your own sales sheet: {link}" if link else "Send me your sales sheet and I will show you what stands out, free.")
     f = finding.strip().rstrip(".")
     if platform == "whatsapp_status":
-        return f"{f}. Send me your sales sheet and I will show you what stands out, free. — {me}"[:230]
+        return f"{f}. {ask} — {me}"[:230] if len(f"{f}. {ask} — {me}") <= 230 else f"{f}. {ask}"[:230]
     if platform == "tiktok":
         return (f"HOOK: Here is something I keep finding in business records.\nFINDING: {f}.\n"
-                f"MEANING: It is usually in the numbers already, just not visible.\nASK: Send me your sales sheet and I will show you what stands out, free. — {me}")
+                f"MEANING: It is usually in the numbers already, just not visible.\nASK: {ask} — {me}")
     if platform == "linkedin":
         return (f"{f}.\n\nIt is rarely visible day to day, because the money is spread across many small decisions: what is ordered, what sits, "
                 f"what sells together.\n\nThe records most businesses already keep can show it. It takes one sales sheet and a careful look.\n\n"
-                f"If you would like to see what stands out in yours, send it to me and I will walk you through it, free.\n\nWhat would you most like to know about your own numbers?")
+                f"{ask if link else 'If you would like to see what stands out in yours, send it to me and I will walk you through it, free.'}\n\nWhat would you most like to know about your own numbers?")
     return (f"{f}.\n\nMost owners already have the answer in their records. They just have not had it laid out clearly.\n\n"
-            f"Send me your sales sheet and I will show you what stands out, free. No pressure.\n\nWhat would you want to know first?")
+            f"{ask} No pressure.\n\nWhat would you want to know first?")
 
 
 def draft_posts(s: dict, finding: str, platforms: list, audience: str = "") -> dict:
@@ -85,6 +91,7 @@ def draft_posts(s: dict, finding: str, platforms: list, audience: str = "") -> d
             text = ai.ask(s, _system(s, "public social media posts"), (
                 f"Finding from my work (anonymised): {finding}\nAudience: {audience.strip() or 'business owners in Kenya'}.\n"
                 f"My offer in one line: {(s.get('ai_pitch') or '').strip()[:400]}\n{RULES}\n"
+                + (f"End every draft with this exact link, on its own line, so people can try the free check: {_link(s)}\n" if _link(s) else "") +
                 "Write one draft for each platform below. Start each with its '### name' line exactly as given, then the draft.\n" + spec),
                 max_tokens=1400, temperature=0.8)
             for chunk in re.split(r"(?m)^###\s*", text):
@@ -175,6 +182,16 @@ def delete_partner(pid: int):
         conn.execute("DELETE FROM grow_partners WHERE id=?", (pid,))
 
 
+def due_partners() -> list:
+    """Partners whose next-step date has come and who are still open. The Today screen shows them with the leads that need you."""
+    today = now()[:10]
+    with db.db() as conn:
+        ensure(conn)
+        return [dict(r) for r in conn.execute(
+            "SELECT id, name, kind, status, next_step, next_date FROM grow_partners WHERE next_date != '' AND next_date <= ? "
+            "AND status IN ('to_contact','contacted','replied') ORDER BY next_date", (today,))]
+
+
 def partner_pitch(s: dict, pid: int) -> dict:
     """A short note to a partner offering their members a free session. You send it yourself (it opens in your own mail app)."""
     with db.db() as conn:
@@ -188,13 +205,14 @@ def partner_pitch(s: dict, pid: int) -> dict:
     body = (f"Hello {who},\n\nI run DericBI, and I help business owners see what their own sales and stock records are already saying: "
             f"what sits too long, which months bring the most, and where money slips away.\n\n"
             f"I would like to offer {p['name']} members a free session or a short report on their own numbers, at no cost to you or to them. "
-            f"Would it help to share this with your members, or would a short talk suit you better?\n\nWarm regards,\n{me}")
+            f"Would it help to share this with your members, or would a short talk suit you better?"
+            + (f" They can also try it themselves here: {_link(s)}" if _link(s) else "") + f"\n\nWarm regards,\n{me}")
     if ai.configured(s):
         try:
             text = ai.ask(s, _system(s, "a short partnership email"), (
                 f"Write a short email (at most 110 words) to {p['contact'] or 'the person in charge'} at {p['name']} ({p['kind']}). "
                 f"Offer their members a free session or short report on their own sales and stock records. My offer: {(s.get('ai_pitch') or '')[:400]}\n"
-                f"Their notes: {p['note'][:300] or 'none'}\n{RULES}\nFirst line 'Subject: ...' (at most 7 words), blank line, then the body. Sign off as {me}."),
+                f"Their notes: {p['note'][:300] or 'none'}\n{RULES}\nFirst line 'Subject: ...' (at most 7 words), blank line, then the body. Sign off as {me}." + (f" Include this link once: {_link(s)}" if _link(s) else "")),
                 max_tokens=500, temperature=0.7)
             subj, rest = ai._split_subject(text)
             if subj and rest.strip():

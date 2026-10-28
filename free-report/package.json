@@ -1,0 +1,5 @@
+{
+  "name": "free-report-lead-function",
+  "private": true,
+  "dependencies": { "nodemailer": "^6.9.14" }
+}

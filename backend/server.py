@@ -748,6 +748,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
             raise ValueError("Keep your proof and credentials under 3,000 characters")
         if len(clean.get("closer_kb", "")) > 6000:
             raise ValueError("The knowledge base is too long (6000 characters at most)")
+        if clean.get("free_report_token") and not 16 <= len(clean["free_report_token"]) <= 100:
+            raise ValueError("The lead-capture secret should be 16 to 100 characters. Use the Generate button.")
+        if clean.get("free_report_url") and not clean["free_report_url"].startswith(("http://", "https://")):
+            raise ValueError("The free-report link must start with https://")
         if clean.get("closer_booking_link") and not clean["closer_booking_link"].startswith(("http://", "https://")):
             raise ValueError("The booking link must start with https://")
         if "sms_sim" in clean and clean["sms_sim"] > 3:
@@ -853,6 +857,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
     def grow_partner_delete(pid: int):
         grow.delete_partner(pid)
         return {"ok": True}
+
+    @app.get("/api/grow/due")
+    def grow_due():
+        return {"partners": grow.due_partners()}
 
     @app.post("/api/grow/partners/{pid}/pitch")
     def grow_partner_pitch(pid: int):

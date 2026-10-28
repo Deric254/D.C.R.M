@@ -775,6 +775,38 @@ def _plain_text(msg) -> str:
     return text
 
 
+def _report_lead(body: str, subject: str, mid, s: dict) -> dict:
+    """A lead left by the free-report page: the page's small web function emails you the details, signed with a secret that only the
+    page and this app know. Without a matching secret the email is ignored (anyone can write 'Health Check lead' in a subject)."""
+    import hmac
+    token = str(s.get("free_report_token") or "").strip()
+    fields = {}
+    for line in body.splitlines():
+        k, sep, v = line.partition(":")
+        if sep and k.strip().lower() in ("name", "phone", "email", "business", "note", "summary", "token", "consent"):
+            fields.setdefault(k.strip().lower(), v.strip())
+    if not token or not hmac.compare_digest(fields.get("token", "").encode(), token.encode()):
+        return {"matched": False}
+    if fields.get("consent", "").lower() != "yes":
+        return {"matched": False}
+    addr = normalize_email(fields.get("email")) or None
+    phone = (fields.get("phone") or "").strip()
+    name = (fields.get("business") or fields.get("name") or "").strip()[:120]
+    if not name or not (addr or phone):
+        return {"matched": False}
+    note = ("Used your free Business Health Check and asked you to look at their records. They agreed to be contacted."
+            + (f" Contact person: {fields['name']}." if fields.get("business") and fields.get("name") else ""))
+    said = fields.get("note", "")[:600]
+    summary = fields.get("summary", "")[:300]
+    text = "I tried your free Business Health Check and would like you to look at my full records." + (f" {said}" if said else "") + (f" (Their report: {summary})" if summary else "")
+    with db.db() as conn:
+        res = leadsmod.add_lead(conn, {"name": name, "email": addr, "phone": phone or None, "notes": note + (f" They wrote: {said}" if said else "")}, "free report")
+        lead_id = res["id"]
+        ch = "email" if addr else "whatsapp"
+        r = leadsmod.record_reply(conn, lead_id, ch, text, "My Business Health Check", mid)
+    return {"matched": True, "lead_id": lead_id, "grade": r.get("grade"), "duplicate": r.get("duplicate", False)}
+
+
 def process_inbound_email(raw: bytes, s: dict = None) -> dict:
     s = s or db.get_settings()
     msg = email.message_from_bytes(raw, policy=email.policy.default)
@@ -783,6 +815,9 @@ def process_inbound_email(raw: bytes, s: dict = None) -> dict:
     mid = (str(msg.get("Message-ID", "")) or "").strip() or None
     refs = re.findall(r"<[^>]+>", f"{msg.get('In-Reply-To', '')} {msg.get('References', '')}")
     body = _plain_text(msg)
+
+    if subject.lower().startswith("health check lead:"):
+        return _report_lead(body, subject, mid, s)
 
     if from_addr and from_addr == normalize_email(s.get("from_email")):
         return {"matched": False}
@@ -824,11 +859,15 @@ def process_inbound_email(raw: bytes, s: dict = None) -> dict:
                          or msg.get("List-Unsubscribe") or str(msg.get("Auto-Submitted", "no")).lower() != "no"
                          or str(msg.get("Precedence", "")).lower() in ("bulk", "list", "junk")
                          or grading.classify(body)["grade"] in ("auto", "bounce"))
-            if not from_addr or automated or (s.get("closer_mode") or "off") == "off":
+            # someone who used the free Business Health Check page and wrote to you from it always becomes a lead, with or without conversation mode
+            from_report = "business health check" in subject.lower()
+            if not from_addr or automated or ((s.get("closer_mode") or "off") == "off" and not from_report):
                 return {"matched": False}
             display = email.utils.parseaddr(str(msg.get("From", "")))[0].strip().strip('"')
             name = display if display and "@" not in display else from_addr.split("@")[0].replace(".", " ").replace("_", " ").title()
-            res0 = leadsmod.add_lead(conn, {"name": name, "email": from_addr, "notes": f"Wrote to us first by email: {subject[:120]}"}, "inbound email")
+            res0 = leadsmod.add_lead(conn, {"name": name, "email": from_addr, "notes": (
+                "Used your free Business Health Check and asked you to look at their records." if from_report
+                else f"Wrote to us first by email: {subject[:120]}")}, "free report" if from_report else "inbound email")
             lead_id = res0["id"]
         res = leadsmod.record_reply(conn, lead_id, "email", body.strip(), subject, mid)
         return {"matched": True, "lead_id": lead_id, "grade": res.get("grade"), "duplicate": res.get("duplicate", False)}

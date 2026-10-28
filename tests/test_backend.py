@@ -4645,6 +4645,83 @@ def grow_content_and_partners_work_and_never_touch_sending():
     assert count("SELECT COUNT(*) FROM leads WHERE name LIKE '%Pharmacy Society%' OR name='KNCCI'") == 0
 
 
+@test
+def free_report_flows_into_leads_the_assistant_content_and_today():
+    import grow
+    fresh(); configure(closer_mode="off")
+    db.save_settings({"free_report_url": "https://dericbi.test/free-report/"})
+    s = db.get_settings()
+    # 1. someone who writes from the free-check page becomes a lead even when conversation mode is off
+    raw = (b"From: Jane Wanjiru <jane@shop.test>\r\nTo: deric@dericbi.test\r\nSubject: My Business Health Check\r\nMessage-ID: <r1@x>\r\n\r\n"
+           b"Hello, I tried your free Business Health Check and would like you to look at my full records.\r\n")
+    res = messaging.process_inbound_email(raw, s)
+    assert res["matched"], res
+    with db.db() as c:
+        lead = c.execute("SELECT * FROM leads WHERE email='jane@shop.test'").fetchone()
+    assert lead and lead["source"] == "free report", dict(lead) if lead else None
+    # an unrelated stranger is still ignored while conversation mode is off
+    other = raw.replace(b"jane@shop.test", b"bob@shop.test").replace(b"My Business Health Check", b"Hello there")
+    assert not messaging.process_inbound_email(other, s)["matched"]
+    # 2. the assistant knows the link and is allowed to share it
+    assert "dericbi.test/free-report" in closer.kb_text(s)
+    assert not [p for p in closer.check_reply("Happy to look. You can also try the free check yourself: https://dericbi.test/free-report/", s, channel="email") if "link" in p]
+    assert [p for p in closer.check_reply("See https://evil.example/free", s, channel="email") if "link" in p]
+    # 3. content drafts and partner pitches carry it
+    oc = ai.configured; ai.configured = lambda s: []
+    try:
+        post = grow.draft_posts(s, "One shop had cash tied up in slow stock all year.", ["facebook", "whatsapp_status"])["posts"]
+    finally:
+        ai.configured = oc
+    assert "dericbi.test/free-report" in post[0]["body"] or "dericbi.test/free-report" in post[1]["body"], post
+    p = grow.add_partner({"name": "Chamber", "email": "c@ch.test"})
+    assert "dericbi.test/free-report" in grow.partner_pitch(s, p["id"])["body"]
+    # 4. a partner whose follow-up date has come shows on Today (not before, not once closed)
+    from datetime import date, timedelta
+    grow.update_partner(p["id"], {"next_step": "Call", "next_date": (date.today() - timedelta(days=1)).isoformat(), "status": "contacted"})
+    assert [x["name"] for x in grow.due_partners()] == ["Chamber"]
+    grow.update_partner(p["id"], {"next_date": (date.today() + timedelta(days=5)).isoformat()}); assert grow.due_partners() == []
+    grow.update_partner(p["id"], {"next_date": (date.today() - timedelta(days=1)).isoformat(), "status": "agreed"}); assert grow.due_partners() == []
+    with AuthedClient(server.create_app(port=8767), base_url="http://127.0.0.1:8767") as cl:
+        assert cl.put("/api/settings", json={"free_report_url": "ftp://x"}).status_code == 400
+        assert cl.put("/api/settings", json={"free_report_url": "https://ok.test/r/"}).status_code == 200
+        assert cl.get("/api/grow/due").status_code == 200
+
+
+@test
+def a_lead_left_on_the_free_report_page_arrives_as_a_lead_and_needs_the_secret():
+    fresh(); configure(closer_mode="off")
+    secret = "s3cret-token-value-1234"
+    db.save_settings({"free_report_token": secret})
+    def mail(token, consent="yes", phone="0712 345 678", email="", business="Jane Pharmacy", mid="<l1@x>"):
+        body = (f"Name: Jane Wanjiru\nBusiness: {business}\nPhone: {phone}\nEmail: {email}\nNote: Please check my stock\n"
+                f"Summary: Sales KES 760,445, 12 products\nConsent: {consent}\nToken: {token}\n")
+        return (f"From: Health Check leads <bot@other.test>\r\nTo: deric@dericbi.test\r\nSubject: Health Check lead: {business}\r\n"
+                f"Message-ID: {mid}\r\n\r\n{body}").encode()
+    s = db.get_settings()
+    assert not messaging.process_inbound_email(mail("wrong"), s)["matched"]                     # anyone can type that subject: no secret, no lead
+    assert not messaging.process_inbound_email(mail(secret, consent="no"), s)["matched"]       # no consent, no lead
+    assert not messaging.process_inbound_email(mail(secret, phone="", email=""), s)["matched"]
+    assert count("SELECT COUNT(*) FROM leads") == 0
+    r = messaging.process_inbound_email(mail(secret), s)
+    assert r["matched"], r
+    with db.db() as c:
+        lead = c.execute("SELECT * FROM leads").fetchone()
+        msgs = c.execute("SELECT * FROM messages WHERE lead_id=? AND direction='in'", (lead["id"],)).fetchall()
+    assert lead["source"] == "free report" and lead["name"] == "Jane Pharmacy" and lead["phone_norm"] == "+254712345678" and lead["is_mobile"], dict(lead)
+    assert "agreed to be contacted" in lead["notes"] and "Jane Wanjiru" in lead["notes"]
+    assert len(msgs) == 1 and "Please check my stock" in msgs[0]["body"] and msgs[0]["channel"] == "whatsapp"     # no email given: reached on WhatsApp
+    # the same email arriving twice (IMAP re-fetch) does not duplicate anything
+    messaging.process_inbound_email(mail(secret), s)
+    assert count("SELECT COUNT(*) FROM leads") == 1 and count("SELECT COUNT(*) FROM messages WHERE direction='in'") == 1
+    # with no secret set in the CRM, nothing is ever accepted
+    db.save_settings({"free_report_token": ""})
+    assert not messaging.process_inbound_email(mail("", mid="<l2@x>", business="Other Shop"), db.get_settings())["matched"]
+    with AuthedClient(server.create_app(port=8768), base_url="http://127.0.0.1:8768") as cl:
+        assert cl.put("/api/settings", json={"free_report_token": "short"}).status_code == 400
+        assert cl.put("/api/settings", json={"free_report_token": secret}).status_code == 200
+        st = cl.get("/api/settings").json(); assert "free_report_token" not in st or not st["free_report_token"]; assert st.get("free_report_token_set") is True
+
+
 if __name__ == "__main__":
     SMTP.stop()
     PHONE.shutdown()

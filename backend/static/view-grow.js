@@ -25,7 +25,17 @@
 
       async function drawContent() {
         const box = $('#body');
+        const cur = await api('/settings').catch(() => ({}));
         render(box, html`
+          <section class="panel"><div class="panel-head"><h2>Your free-report link</h2><span class="chip right ${cur.free_report_url ? 'ok' : ''}">${cur.free_report_url ? 'Used everywhere' : 'Not set'}</span></div><div class="panel-body stack" style="gap:10px">
+            <p class="muted small">The address of your free Business Health Check page. Once saved, it is added to your post drafts and partner pitches, and your assistant can offer it in conversations. Someone who writes to you from that page becomes a lead automatically.</p>
+            <div class="row"><input id="rlink" type="url" placeholder="https://dericbi.vercel.app/free-report/" value="${cur.free_report_url || ''}" style="flex:1;min-width:240px"><button class="btn" id="rsave">Save link</button></div>
+            <details><summary class="small muted" style="cursor:pointer">Lead capture (${cur.free_report_token_set ? 'on' : 'off'}): let people who use the page leave their details</summary><div class="stack" style="gap:10px;margin-top:10px">
+              <p class="muted small">The page can send you the details a visitor chooses to leave. They reach you as an email that this app reads and turns into a lead. A secret that only the page and this app know keeps strangers out: press Generate, copy it, and put the same value in Vercel as <b>LEAD_TOKEN</b> (the steps are in the README of the free-report folder).</p>
+              <div class="row"><input id="rtoken" type="text" autocomplete="off" placeholder="${cur.free_report_token_set ? 'Saved. Generate a new one to replace' : 'Press Generate'}" style="flex:1;min-width:240px">
+                <button class="btn" id="rgen" type="button">Generate</button><button class="btn" id="rtsave" type="button">Save secret</button><button class="btn small" id="rtcopy" type="button">Copy</button></div>
+            </div></details>
+          </div></section>
           <section class="panel"><div class="panel-head"><h2>Turn one finding into posts</h2></div><div class="panel-body stack" style="gap:12px">
             <p class="muted small">Write one thing you found in a business's records, without naming the business, for example "one pharmacy had KES 400,000 tied up in 12 slow-moving products". Never name a client without their permission. The drafts use only what you write, so check each one before posting.</p>
             <label class="field">The finding<textarea id="finding" rows="3" maxlength="800" placeholder="What did you find?"></textarea></label>
@@ -64,6 +74,7 @@
                 <span class="right row"><select data-status="${p.id}" style="width:auto">${statuses.map((s) => html`<option value="${s}" ${s === p.status ? 'selected' : ''}>${STATUS[s]}</option>`)}</select>
                   <button class="btn small" data-pitch="${p.id}">Write pitch</button><button class="btn small" data-delp="${p.id}">Delete</button></span></div>
               <div class="grid2"><input data-step="${p.id}" placeholder="Next step" value="${p.next_step}"><input data-note="${p.id}" placeholder="Notes" value="${p.note}"></div>
+              <label class="small muted row" style="gap:8px">Follow up on <input type="date" data-date="${p.id}" value="${p.next_date}" style="width:auto"> <span>It then shows on your Today screen.</span></label>
               ${pitchFor && pitchFor.id === p.id ? html`<div class="notice" style="margin:0"><b>${pitchFor.subject}</b><div class="small" style="white-space:pre-wrap;margin:8px 0">${pitchFor.body}</div>
                 <div class="row"><a class="btn small primary" href="mailto:${pitchFor.to || ''}?subject=${encodeURIComponent(pitchFor.subject)}&body=${encodeURIComponent(pitchFor.body)}">Open in my email</a>
                   <button class="btn small" id="pcopy">Copy</button><span class="muted small">You send it yourself, from your own email.</span></div></div>` : ''}</div>`)
@@ -87,6 +98,10 @@
             } finally { b.disabled = false; if (!$('#draft-note').textContent.startsWith('Written')) $('#draft-note').textContent = ''; }
             return;
           }
+          if (e.target.closest('#rsave')) { await api('/settings', { method: 'PUT', body: { free_report_url: $('#rlink').value.trim() } }); toast('Link saved'); return drawContent(); }
+          if (e.target.closest('#rgen')) { const a = new Uint8Array(16); crypto.getRandomValues(a); $('#rtoken').value = [...a].map((x) => x.toString(16).padStart(2, '0')).join(''); return; }
+          if (e.target.closest('#rtcopy')) return copy($('#rtoken').value);
+          if (e.target.closest('#rtsave')) { const v = $('#rtoken').value.trim(); if (!v) return toast('Press Generate first'); await api('/settings', { method: 'PUT', body: { free_report_token: v } }); toast('Secret saved. Put the same value in Vercel as LEAD_TOKEN.'); return drawContent(); }
           const c = e.target.closest('[data-text-of]'); if (c) return copy($('#' + c.dataset.textOf).value);
           const ct = e.target.closest('[data-copytext]'); if (ct) return copy($('#old-' + ct.dataset.copytext).textContent);
           const dp = e.target.closest('[data-delpost]'); if (dp) { await api('/grow/posts/' + dp.dataset.delpost, { method: 'DELETE' }); return drawOlder(); }
@@ -107,6 +122,8 @@
           if (s) { await api('/grow/partners/' + s.dataset.status, { method: 'PUT', body: { status: s.value } }); toast('Saved'); return drawPartners(); }
           const st = e.target.closest('[data-step]');
           if (st) { await api('/grow/partners/' + st.dataset.step, { method: 'PUT', body: { next_step: st.value } }); return toast('Saved'); }
+          const dt = e.target.closest('[data-date]');
+          if (dt) { await api('/grow/partners/' + dt.dataset.date, { method: 'PUT', body: { next_date: dt.value } }); return toast('Saved'); }
           const n = e.target.closest('[data-note]');
           if (n) { await api('/grow/partners/' + n.dataset.note, { method: 'PUT', body: { note: n.value } }); return toast('Saved'); }
         } catch (err) { fail(err); }

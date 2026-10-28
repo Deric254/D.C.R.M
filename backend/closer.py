@@ -140,8 +140,11 @@ def deal_desk(s: dict) -> str:
 def kb_text(s: dict) -> str:
     """Everything the assistant may state as fact about the offer: your pitch, your knowledge base and the deal desk."""
     proof = (s.get("closer_proof") or "").strip()
+    link = (s.get("free_report_url") or "").strip()
+    free = (f"FREE BUSINESS HEALTH CHECK (a real, free page you may offer when it helps; it runs in their own browser and their file is "
+            f"never uploaded): {link}") if link else ""
     return "\n".join(x for x in ((s.get("ai_pitch") or "").strip(), (s.get("closer_kb") or "").strip(),
-                                  ("PROOF YOU MAY STATE (true, from the owner):\n" + proof) if proof else "", deal_desk(s)) if x)
+                                  ("PROOF YOU MAY STATE (true, from the owner):\n" + proof) if proof else "", free, deal_desk(s)) if x)
 
 
 _QUOTE_START = re.compile(r"^(on .{5,120} wrote:|-{2,}\s*(original message|forwarded message)\s*-{2,}|from: .+@.+|sent from my .+)$", re.I)
@@ -189,7 +192,7 @@ def check_reply(reply: str, s: dict, lead: dict = None, extra_allowed: str = "",
         problems.append(f"too long for {channel} ({len(text)} characters; the most is {limit})")
     kbt = kb_text(s)
     kb = _norm(kbt + " " + extra_allowed)
-    allowed_links = " ".join(_norm(s.get(k)) for k in ("contact_website", "closer_booking_link", "contact_email"))
+    allowed_links = " ".join(_norm(s.get(k)) for k in ("contact_website", "closer_booking_link", "free_report_url", "contact_email"))
     for u in _URL.findall(text):
         u0 = _norm(u[0] if isinstance(u, tuple) else u)
         host = re.sub(r"^https?://(www\.)?", "", u0).rstrip("/.,)")

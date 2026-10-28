@@ -148,6 +148,15 @@ try:
         page.wait_for_selector("[data-pitch]")
         page.click("[data-pitch]")
         page.wait_for_selector("a[href^='mailto:hello@chamber.test']")
+        page.fill("[data-date]", "2026-01-02"); page.keyboard.press("Tab"); page.wait_for_timeout(500)
+        page.click('#nav a[data-view="today"]')
+        page.wait_for_function("document.body.innerText.includes('Partners to follow up')")
+        shot("3c-today-partner")
+        page.click('#nav a[data-view="grow"]'); page.click('[data-tab="content"]'); page.wait_for_selector("#rlink")
+        page.fill("#rlink", "https://dericbi.test/free-report/"); page.click("#rsave")
+        page.wait_for_function("document.body.innerText.includes('Used everywhere')")
+        page.click("summary:has-text('Lead capture')"); page.click("#rgen"); assert len(page.input_value("#rtoken")) == 32
+        page.click("#rtsave"); page.wait_for_function("document.body.innerText.includes('Lead capture (on)')")
         shot("3b-grow")
 
         # ---- replies
