@@ -4433,13 +4433,21 @@ def slow_internet_rests_and_retries_instead_of_pausing_or_losing_messages():
             row = c.execute("SELECT * FROM messages WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
             c.execute("UPDATE messages SET attempts=attempts+1 WHERE id=?", (row["id"],))
             row = c.execute("SELECT * FROM messages WHERE id=?", (row["id"],)).fetchone()
+<<<<<<< HEAD
         sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out. Check the internet.", "offline"))
+=======
+        sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out. Check the internet.", "transient"))
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
     with db.db() as c:
         st = c.execute("SELECT status, last_error FROM campaigns WHERE id=?", (cid,)).fetchone()
     assert st["status"] == "running" and "could not be reached" in st["last_error"], dict(st)
     assert count("SELECT COUNT(*) FROM messages WHERE status='failed'") == 0
     assert count("SELECT COUNT(*) FROM messages WHERE status='queued'") == 3
+<<<<<<< HEAD
     sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out.", "offline"))   # the 8th: now you are told
+=======
+    sn._on_error(row, C.SendError("Couldn't reach the mail server: timed out.", "transient"))   # the 8th: now you are told
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
     with db.db() as c:
         assert c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()["status"] == "paused"
     # WhatsApp page that never loads: rests with a longer wait each time, pauses only after many
@@ -4480,7 +4488,11 @@ def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
     # a sleeping phone is waited for, not a reason to pause texts
     err = messaging.SendError("x", "transient")
     e = messaging._phone_unreachable("http://192.168.1.5:8080", OSError("down"))
+<<<<<<< HEAD
     assert e.kind == "offline" and "Couldn't reach" in str(e), e
+=======
+    assert e.kind == "transient" and "Couldn't reach" in str(e), e
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
     # a connection that dies after the message was handed over is never retried by itself
     import smtplib
     class Dropping:
@@ -4499,6 +4511,7 @@ def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
 
 
 @test
+<<<<<<< HEAD
 def an_unreachable_mail_server_rests_once_and_loses_nothing():
     fresh(); configure(smtp_port=9, email_delay_sec=0)   # nothing listens there: the same as a dead or blocked connection
     with db.db() as c:
@@ -4567,6 +4580,8 @@ def resume_switches_the_bounce_brake_off_only_when_the_brake_paused_the_campaign
 
 
 @test
+=======
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
 def backup_email_accounts_take_over_without_double_sending_or_losing_replies():
     fresh(); configure(send_window_enabled=False)
     base = dict(db.get_settings(), smtp_host="127.0.0.1", from_email="main@shop.test", reply_to="", email_daily_cap=1,
@@ -4579,7 +4594,11 @@ def backup_email_accounts_take_over_without_double_sending_or_losing_replies():
     def fake(to, subject, body, a):
         calls.append(a["_acct"])
         if a["_acct"] == 1 and state["main"] == "down":
+<<<<<<< HEAD
             raise messaging.SendError("Couldn't reach the mail server: timed out.", "offline")
+=======
+            raise messaging.SendError("Couldn't reach the mail server: timed out.", "transient")
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
         if a["_acct"] == 1 and state["main"] == "refuse":
             raise messaging.SendError("Recipient refused: x", "permanent")
         return f"<id{a['_acct']}@x>"
@@ -4657,7 +4676,11 @@ def email_network_fallback_and_health_panel():
     rows = messaging.email_health(base)
     assert rows and rows[0]["from"] == "main@shop.test" and rows[0]["limit"] == 50 and rows[0]["sent_today"] == 0 and not rows[0]["last_error"]
     o2 = messaging.send_email
+<<<<<<< HEAD
     messaging.send_email = lambda *a, **k: (_ for _ in ()).throw(messaging.SendError("Couldn't reach the mail server: x", "offline"))
+=======
+    messaging.send_email = lambda *a, **k: (_ for _ in ()).throw(messaging.SendError("Couldn't reach the mail server: x", "transient"))
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
     try:
         try: messaging.send_email_any("a@x.test", "s", "b", base)
         except messaging.SendError: pass
@@ -4668,6 +4691,7 @@ def email_network_fallback_and_health_panel():
 
 
 @test
+<<<<<<< HEAD
 def when_every_email_account_is_unreachable_the_channel_rests_once_and_nothing_is_lost():
     fresh(); messaging._cool.clear(); messaging._last_err.clear()
     configure(smtp_port=9, email_delay_sec=0, smtp2_host="127.0.0.1", smtp2_port=9, smtp2_from="back@shop.test", smtp2_cap=5, email_warmup=False)
@@ -4690,6 +4714,8 @@ def when_every_email_account_is_unreachable_the_channel_rests_once_and_nothing_i
 
 
 @test
+=======
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
 def grow_content_and_partners_work_and_never_touch_sending():
     import grow
     fresh(); configure()
@@ -4812,6 +4838,7 @@ def a_lead_left_on_the_free_report_page_arrives_as_a_lead_and_needs_the_secret()
         st = cl.get("/api/settings").json(); assert "free_report_token" not in st or not st["free_report_token"]; assert st.get("free_report_token_set") is True
 
 
+<<<<<<< HEAD
 @test
 def the_free_report_page_has_working_contact_details():
     import re
@@ -4824,6 +4851,8 @@ def the_free_report_page_has_working_contact_details():
     assert (folder / "api" / "lead.js").is_file()
 
 
+=======
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
 if __name__ == "__main__":
     SMTP.stop()
     PHONE.shutdown()

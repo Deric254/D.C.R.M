@@ -205,7 +205,11 @@ def _smtp_open(s: dict):
     return smtp
 
 
+<<<<<<< HEAD
 def _smtp_open_once(s: dict, timeout: int = SMTP_TIMEOUT):
+=======
+def _smtp_open_once(s: dict, timeout: int = 30):
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
     host, port = clean_text(s.get("smtp_host")), int(s.get("smtp_port") or 587)
     security = s.get("smtp_security", "starttls")
     ctx = ssl.create_default_context()
@@ -385,9 +389,15 @@ def send_email_any(to: str, subject: str, body: str, s: dict) -> str:
         try:
             mid = send_email(to, subject, body, a)
         except SendError as e:
+<<<<<<< HEAD
             if e.kind not in ("pause", "transient", "offline"):
                 raise   # refused recipient, unconfirmed delivery: not the account's fault, never try another
             _cool[a["_acct"]] = time.time() + (300 if e.kind == "offline" else 1800)
+=======
+            if e.kind not in ("pause", "transient"):
+                raise   # refused recipient, unconfirmed delivery: not the account's fault, never try another
+            _cool[a["_acct"]] = time.time() + (300 if "reach" in str(e) else 1800)
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
             _last_err[a["_acct"]] = str(e)[:300]
             last = e
             continue
@@ -554,7 +564,11 @@ def _phone_unreachable(base: str, e) -> SendError:
     return SendError(f"Couldn't reach the phone at {base} ({type(e).__name__}). Check that the phone is on the same Wi-Fi or "
                      "hotspot as this PC, that the SMS Gateway app is open with its Local server switched on, and that the "
                      "address matches the one the app shows (it can change when the phone reconnects). Texts wait and are tried again by "
+<<<<<<< HEAD
                      "themselves; nothing is lost.", "offline")
+=======
+                     "themselves; nothing is lost.", "transient")
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
 
 
 def _sms_state(j) -> str:

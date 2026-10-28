@@ -455,10 +455,17 @@ def set_campaign_status(conn, cid: int, action: str):
     elif action == "resume" and c["status"] == "paused":
         conn.execute("UPDATE campaigns SET status='running', last_error='' WHERE id=?", (cid,))
         if c["channel"] in ("whatsapp", "auto"):
+<<<<<<< HEAD
             wa_clear_hold(conn)   # you decided to go on: WhatsApp tries again now
         if "emails bounced" in (c["last_error"] or ""):   # it was the bounce brake that paused it: I know, go on (for a day)
             conn.execute("INSERT INTO settings(key, value) VALUES('bounce_ok_until', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (json.dumps((datetime.now() + timedelta(days=1)).isoformat(sep=" ", timespec="seconds")),))
+=======
+            wa_clear_hold(conn)
+        if c["channel"] in ("email", "auto"):   # resuming after a bounce stop means: I know, go on (for a day)
+            conn.execute("INSERT INTO settings(key, value) VALUES('bounce_ok_until', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (json.dumps((datetime.now() + timedelta(days=1)).isoformat(sep=" ", timespec="seconds")),))   # you decided to go on: WhatsApp tries again now
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
     elif action == "cancel" and c["status"] in ("running", "paused", "draft", "scheduled"):
         conn.execute("UPDATE messages SET status='skipped', error='Campaign cancelled' "
                      "WHERE campaign_id=? AND status='queued'", (cid,))
@@ -1041,14 +1048,22 @@ def wa_clear_hold(conn=None):
             db.set_internal("wa_hold", None)
 
 
+<<<<<<< HEAD
 def wa_pause_campaigns(reason: str, minutes: int = WA_HOLD_MIN):
+=======
+def wa_pause_campaigns(reason: str):
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
     """Stop every running WhatsApp campaign (WhatsApp logged out, or sending keeps failing) so nothing is burned. A 'best way'
     campaign has other ways to go on, so it is not paused: its WhatsApp part rests (WhatsApp is put on hold) and the reason shows."""
     with db.db() as conn:
         conn.execute("UPDATE campaigns SET status='paused', last_error=? WHERE channel='whatsapp' AND status='running'", (reason,))
         conn.execute("UPDATE campaigns SET last_error=? WHERE channel='auto' AND status='running' AND id IN "
                      "(SELECT campaign_id FROM messages WHERE channel='whatsapp' AND status='queued')", (reason,))
+<<<<<<< HEAD
     wa_hold(reason, minutes)
+=======
+    wa_hold(reason)
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
 
 
 # ------------------------------------------- WhatsApp replies (read from the chats by the worker's own session)
@@ -1742,7 +1757,11 @@ class Sender(threading.Thread):
                     self.next_ok[ch] = time.time() + 120   # try this way again in two minutes; the others carry on
                 self._set("paused", str(e))
                 return
+<<<<<<< HEAD
             if e.kind == "offline":
+=======
+            if e.kind == "transient" and "Couldn't reach" in str(e):
+>>>>>>> 56df06ffd536294e50c40b634fa5177855dcc558
                 # Slow or no internet: the message is fine and is not "failed". Put it back, rest longer each time, and only
                 # after many tries in a row pause the campaign so that you are told.
                 n = (self.net.get(ch) or [0, 0.0])[0] + 1
