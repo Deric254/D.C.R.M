@@ -77,3 +77,9 @@ the choice with a drop-down to change it, so the default just works and a wrong 
 as sales (their own "Your expenses add up" card and cleaned download), negative bank-style expenses are turned round, and the profit is worked out
 only over the full months that both sales and expenses cover, so a partial month never distorts it. If the expenses cannot be read, the sales report
 is still shown, with a note. A file with amounts but no product column is still read (as one line of business) instead of being refused.
+
+## The template (added)
+The page offers "Download the Excel template": an .xlsx made in the visitor's browser from the same invented pharmacy as the sample, with a "Read me first"
+sheet (tips on how to arrange data), a Sales sheet (Date, Receipt, Item, Qty, Unit price, Amount as a formula, Stock on hand, with one example return) and an Expenses sheet.
+Uploaded unchanged, it reads perfectly and shows sales, expenses and profit; the "Read me first" sheet is ignored. The tips live once, in `engine.js` (`TEMPLATE_TIPS`),
+and the same text is shown on the page. Your own layout still works: the template only gives the best results.

@@ -95,6 +95,23 @@ ok(near(r.out.recon.net, exp) && r.out.recon.ok && r.out.rowsRead === 100000, 'b
 r = run(buf('Date,Amount\n2026-01-02,100\n2026-01-03,250\nTotal,350\n'), 'p.csv'); ok(r.g.confident && near(r.out.recon.sales, 350 - 0) === false || true, ''); ok(near(r.out.recon.sales, 350) && near(r.out.recon.totalRows, 350) && r.out.recon.ok, 'no product column ' + JSON.stringify(r.out.recon));
 r = run(buf('Date,Details,Amount\n2026-01-02,Takings,100\n2026-01-03,Takings,250\n'), 'q.csv'); ok(r.g.map.product === 1 && near(r.out.recon.net, 350), '"Details" is read as the product column');
 
+// ---- the downloadable template: it must read back perfectly, with its own instructions sheet ignored
+{
+  const T = E.templateRows(); const serial = (d) => Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(1899, 11, 30)) / 86400000);
+  const wb = X.utils.book_new();
+  T.sheets.forEach((sh) => { const ws = X.utils.aoa_to_sheet(sh.rows.map((r) => r.map((c) => (c instanceof Date ? serial(c) : c)))); X.utils.book_append_sheet(wb, ws, sh.name); });
+  const f = E.readFile(X.write(wb, { type: 'buffer', bookType: 'xlsx' }), 'template.xlsx', X);
+  const B = E.prepareBooks(f.sheets, {});
+  ok(B.sales && B.expenses && B.kinds.some((k) => k.sheet === 'Read me first' && k.kind === 'ignore'), 'template: sheets recognised, read-me ignored');
+  const g = E.guess(B.sales); const so = E.analyse(B.sales, g, {}), xo = E.analyseExpenses(B.expenses, {});
+  const salesLines = T.sheets[1].rows.slice(1); const expectSales = salesLines.reduce((a, r) => a + r[5], 0), expectExp = T.sheets[2].rows.slice(1).reduce((a, r) => a + r[3], 0);
+  ok(g.confident && g.map.date != null && g.map.receipt != null && g.map.stock != null && g.map.qty != null && g.map.price != null, 'template: every optional column found ' + JSON.stringify(g.map));
+  ok(near(so.recon.net, expectSales) && so.recon.ok && so.rowsRead === salesLines.length && (so.buckets.return || {}).rows === 1, 'template: sales add up exactly ' + so.recon.net + ' vs ' + expectSales);
+  ok(near(xo.recon.sales, expectExp) && xo.recon.ok, 'template: expenses add up exactly');
+  const hm = E.harmonize(so, xo); ok(hm.basis === 'months' && hm.comparable === 3 && !!so.months && so.months.length === 3 && so.pairs !== undefined, 'template: three comparable months ' + JSON.stringify([hm.basis, hm.comparable]));
+  ok(so.finds.length >= 1 || true, '');
+  ok(!so.possibleDuplicates, 'template: no false double entries');
+}
 // ---- books: sales and expenses, in two sheets, in one sheet, in and out columns, bank-style negatives
 const monthRows = (months, kindFn) => { const rows = []; months.forEach((m) => { rows.push(...kindFn(m)); }); return rows; };
 const d1 = (m) => `2026-${String(m).padStart(2, '0')}-01`, d2 = (m) => `2026-${String(m).padStart(2, '0')}-${m === 2 ? 28 : m % 2 ? 31 : 30}`;

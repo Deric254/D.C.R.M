@@ -192,11 +192,19 @@ document.addEventListener('click', (e) => {
         <label class="fr-btn" for="frFile" style="margin:0"><i class="fas fa-file-upload" aria-hidden="true"></i>&nbsp; Choose a file</label>
         <input id="frFile" type="file" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods" class="fr-hide">
         <button class="fr-btn fr-alt" id="frSample" type="button">Try it with sample data</button>
+        <button class="fr-btn fr-alt" id="frTpl" type="button"><i class="fas fa-file-excel" aria-hidden="true"></i>&nbsp; Download the Excel template</button>
       </div>
     </div>
     <p class="fr-mute fr-sm" style="margin:12px 0 0"><i class="fas fa-lock" aria-hidden="true"></i>&nbsp; Your sales file is read inside your own browser and is never uploaded. I only receive your details if you choose to leave them at the end.</p>
     <p class="fr-mute fr-sm" style="margin:8px 0 0">Works with title lines, blank rows, totals, returns, KES amounts, repeated headings, monthly sheets and Swahili headings. Best results: a <b>product</b> and an <b>amount</b> (or quantity and price). A <b>date</b>, a <b>receipt number</b> and <b>stock on hand</b> unlock more.</p>
     <p class="fr-warn fr-hide" id="frErr" role="alert"></p>
+  </section>
+
+  <section class="fr-box fr-noprint" id="frTips">
+    <h2>Get the best results</h2>
+    <p class="fr-mute fr-sm" style="margin:2px 0 8px">Your own file works as it is. If you want the most from it, fill in our template (an invented pharmacy, so you can see how each column is used) or follow these tips.</p>
+    <div class="fr-row" style="margin-bottom:6px"><button class="fr-btn" id="frTpl2" type="button"><i class="fas fa-file-excel" aria-hidden="true"></i>&nbsp; Download the Excel template</button><button class="fr-btn fr-alt" id="frTplCsv" type="button">Sales sheet only (CSV)</button></div>
+    <details class="fr-more"><summary>How to arrange your data</summary><ol id="frTipList" class="fr-find fr-sm"></ol></details>
   </section>
 
   <section class="fr-box fr-hide fr-noprint" id="frHow" aria-live="polite"></section>
@@ -346,7 +354,7 @@ function toggleNewsletter() {
 <script defer src="../assets/js/chatbot.js?v=bf03de00"></script>
 <script defer src="../assets/js/social_links.js?v=6f1c5397"></script>
 <script defer src="../assets/js/email-link.js?v=bcd71479"></script>
-<script src="engine.js?v=3"></script>
+<script src="engine.js?v=4"></script>
 <script>
 (function () {
 'use strict';
@@ -587,6 +595,33 @@ function download(data, name) {
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
   } catch (e) { fail('We could not prepare the download on this device.'); }
 }
+
+/* ---------- the template ---------- */
+function serial(d) { return Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(1899, 11, 30)) / 86400000); }
+function saveBlob(blob, name) { var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
+function csvOf(rows) { return '\ufeff' + rows.map(function (r) { return r.map(function (c) { var v = c instanceof Date ? c.getFullYear() + '-' + String(c.getMonth() + 1).padStart(2, '0') + '-' + String(c.getDate()).padStart(2, '0') : String(c == null ? '' : c); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\r\n'); }
+async function downloadTemplate(csvOnly) {
+  try {
+    var T = E.templateRows(), X = csvOnly ? null : await loadXlsx();
+    if (!X) { saveBlob(new Blob([csvOf(T.sheets[1].rows)], { type: 'text/csv;charset=utf-8' }), 'dericBI-sales-template.csv'); if (!csvOnly) fail('The Excel maker could not load here, so you got the sales sheet as a CSV. Open it in Excel and add your own rows.'); return; }
+    var wb = X.utils.book_new(), widths = { 'Read me first': [26, 110], Sales: [12, 10, 24, 6, 11, 11, 14], Expenses: [12, 16, 22, 11] };
+    T.sheets.forEach(function (sh) {
+      var ws = X.utils.aoa_to_sheet(sh.rows.map(function (r) { return r.map(function (c) { return c instanceof Date ? serial(c) : c; }); }));
+      var range = X.utils.decode_range(ws['!ref']);
+      for (var R = 1; R <= range.e.r; R++) {
+        if (sh.name !== 'Read me first') { var d = ws[X.utils.encode_cell({ r: R, c: 0 })]; if (d) d.z = 'yyyy-mm-dd'; }
+        if (sh.name === 'Sales') { var c = ws[X.utils.encode_cell({ r: R, c: 5 })]; if (c) c.f = 'D' + (R + 1) + '*E' + (R + 1); }
+      }
+      ws['!cols'] = (widths[sh.name] || []).map(function (w) { return { wch: w }; });
+      X.utils.book_append_sheet(wb, ws, sh.name);
+    });
+    saveBlob(new Blob([X.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'dericBI-health-check-template.xlsx');
+  } catch (e) { fail('We could not prepare the template on this device. Please message me and I will send it.'); }
+}
+$('#frTipList').innerHTML = E.TEMPLATE_TIPS.map(function (t) { return '<li><b>' + esc(t[0]) + '.</b> ' + esc(t[1]) + '</li>'; }).join('');
+$('#frTpl').addEventListener('click', function () { downloadTemplate(false); });
+$('#frTpl2').addEventListener('click', function () { downloadTemplate(false); });
+$('#frTplCsv').addEventListener('click', function () { downloadTemplate(true); });
 
 /* ---------- wiring ---------- */
 $('#frFile').addEventListener('change', function (e) { if (e.target.files[0]) load(e.target.files[0]); e.target.value = ''; });

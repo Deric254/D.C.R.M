@@ -559,7 +559,10 @@
   function prepareBooks(sheets, kinds) {
     kinds = kinds || {};
     const parts = [], notes = [], seen = [];
+    const NOT_DATA = /^(read ?me|how to|instructions?|notes?|guide|help|tips?|about)\b/i;
     for (const sh of sheets) {
+      const anyNumber = sh.rows.some((r) => r.some((c) => typeof c === 'number' || (c instanceof Date ? false : looksNumeric(c))));
+      if (kinds[sh.name] == null && (NOT_DATA.test(sh.name.trim()) || !anyNumber)) { seen.push({ sheet: sh.name, kind: 'ignore', auto: true }); if (!NOT_DATA.test(sh.name.trim())) notes.push(`Sheet "${sh.name}" has no numbers in it, so it was skipped.`); continue; }
       let t = null; try { t = findTable(sh.rows); } catch (e) { notes.push(`Sheet "${sh.name}" had no table in it and was skipped.`); continue; }
       const kind = kinds[sh.name] || null;
       const mixed = kind ? null : splitMixed(sh);
@@ -644,5 +647,39 @@
     return h;
   }
 
-  return { classifySheet, splitMixed, prepareBooks, analyseExpenses, harmonize, readFile, decodeBytes, parseCSV, findTable, guess, analyse, buildTable, datesFromSheetNames, cleanedCSV, num, toDate, dateOrder, normName, periodOf, monthName, fmtN, TOTAL_ROW };
+  /* ------------------------------------------------------------------ the template people can download and fill in */
+  const TEMPLATE_TIPS = [
+    ['One row per line sold', 'One item on one receipt is one row. Keep the headings in row 1, one table per sheet.'],
+    ['Keep it plain', 'No merged cells, no blank rows in the middle, no total or subtotal rows. (We cope with them if they are there, but plain gives the cleanest result.)'],
+    ['Dates', 'A real date, for example 2026-04-02 or 02/04/2026. Cover whole months, from the 1st to the last day.'],
+    ['Item names', 'Spell each product the same way every time. Different spellings are counted together, but one spelling is safest.'],
+    ['Amounts', 'Numbers only, no "KES" typed in. Amount = Qty x Unit price (the template does this for you). A return or refund is a negative amount.'],
+    ['Receipt number', 'The same number on every item of one bill. It shows what customers buy together.'],
+    ['Stock on hand', 'Optional: the quantity left after that sale. It shows slow stock and how much cash is tied up in it.'],
+    ['Expenses', 'Their own sheet: Date, Category (Rent, Salaries, Electricity, Transport...) and Amount. One row per payment, for the same months as your sales, so profit is fair.'],
+    ['Your own layout is fine too', 'This template just gives the best results. Any sales file still works, and the report shows exactly how it was read.']
+  ];
+
+  /** The example workbook (an invented pharmacy): a Read me sheet, Sales and Expenses. Plain rows, so the page can write an .xlsx or a .csv from them. */
+  function templateRows() {
+    const items = [['Paracetamol 500mg', 20], ['Amoxicillin 500mg', 45], ['Cough syrup', 180], ['Vitamin C', 120], ['ORS sachets', 30], ['Pain gel', 250], ['Bandages', 90], ['Antacid', 60], ['Hand sanitiser', 150], ['Baby lotion', 320]];
+    const stock = items.map((_, i) => 60 + i * 8);
+    const days = [2, 9, 16, 23, 29], months = [3, 4, 5];   // April, May, June (0-based)
+    const sales = [['Date', 'Receipt', 'Item', 'Qty', 'Unit price', 'Amount', 'Stock on hand']];
+    let rec = 1000, k = 0;
+    months.forEach((m) => days.forEach((d) => {
+      [[0, 1], [2]].forEach((_, ri) => {
+        rec++; const picks = ri === 0 ? [k % 10, (k + 3) % 10] : [(k + 5) % 10]; k++;
+        picks.forEach((it, j) => { const q = 5 * (1 + ((k + j) % 3)); stock[it] = Math.max(5, stock[it] - q); sales.push([new Date(2026, m, d), 'R' + rec, items[it][0], q, items[it][1], q * items[it][1], stock[it]]); });
+      });
+    }));
+    sales.push([new Date(2026, 4, 12), 'R' + (++rec), 'Cough syrup', -5, 180, -900, stock[2]]);   // a return, as an example
+    const exp = [['Date', 'Category', 'Description', 'Amount']];
+    months.forEach((m) => { exp.push([new Date(2026, m, 1), 'Rent', 'Shop rent', 3500], [new Date(2026, m, 28), 'Salaries', 'Staff pay', 4500], [new Date(2026, m, 28), 'Electricity', 'Power bill', 500 + m * 20], [new Date(2026, m, 28), 'Transport', 'Deliveries', 650 + m * 10], [new Date(2026, m, 15), 'Licences', 'Permits', 250]); });
+    exp.sort((a, b) => (a === exp[0] ? -1 : b === exp[0] ? 1 : a[0] - b[0]));
+    const read = [['dericBI Business Health Check: template'], ['These are EXAMPLE rows from an invented pharmacy. Delete them and type or paste your own, then upload the file to the Health Check.'], [''], ['Tip', 'What to do']].concat(TEMPLATE_TIPS);
+    return { sheets: [{ name: 'Read me first', rows: read }, { name: 'Sales', rows: sales }, { name: 'Expenses', rows: exp }] };
+  }
+
+  return { TEMPLATE_TIPS, templateRows, classifySheet, splitMixed, prepareBooks, analyseExpenses, harmonize, readFile, decodeBytes, parseCSV, findTable, guess, analyse, buildTable, datesFromSheetNames, cleanedCSV, num, toDate, dateOrder, normName, periodOf, monthName, fmtN, TOTAL_ROW };
 });
