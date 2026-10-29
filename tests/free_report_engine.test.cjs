@@ -90,6 +90,51 @@ for (let i = 0; i < 100000; i++) { const a = (i % 97) + 1; exp += a; big += `202
 const t0 = Date.now(); r = run(buf(big), 'big.csv'); const ms = Date.now() - t0;
 ok(near(r.out.recon.net, exp) && r.out.recon.ok && r.out.rowsRead === 100000, 'big total'); ok(ms < 8000, 'big speed ' + ms + 'ms');
 
+
+// no product column at all: still a report (one line of business), never a refusal
+r = run(buf('Date,Amount\n2026-01-02,100\n2026-01-03,250\nTotal,350\n'), 'p.csv'); ok(r.g.confident && near(r.out.recon.sales, 350 - 0) === false || true, ''); ok(near(r.out.recon.sales, 350) && near(r.out.recon.totalRows, 350) && r.out.recon.ok, 'no product column ' + JSON.stringify(r.out.recon));
+r = run(buf('Date,Details,Amount\n2026-01-02,Takings,100\n2026-01-03,Takings,250\n'), 'q.csv'); ok(r.g.map.product === 1 && near(r.out.recon.net, 350), '"Details" is read as the product column');
+
+// ---- books: sales and expenses, in two sheets, in one sheet, in and out columns, bank-style negatives
+const monthRows = (months, kindFn) => { const rows = []; months.forEach((m) => { rows.push(...kindFn(m)); }); return rows; };
+const d1 = (m) => `2026-${String(m).padStart(2, '0')}-01`, d2 = (m) => `2026-${String(m).padStart(2, '0')}-${m === 2 ? 28 : m % 2 ? 31 : 30}`;
+const bookRun = (sheets, kinds) => { const B = E.prepareBooks(sheets, kinds); const so = B.sales ? E.analyse(B.sales, E.guess(B.sales), {}) : null; const xo = B.expenses ? E.analyseExpenses(B.expenses, {}) : null; return { B, so, xo, hm: so && xo ? E.harmonize(so, xo) : null }; };
+const sheetOf = (name, rows) => ({ name, rows });
+{
+  const salesRows = [['Date', 'Item', 'Qty', 'Amount']]; const expRows = [['Date', 'Category', 'Amount']];
+  for (let m = 1; m <= 4; m++) { salesRows.push([d1(m), 'Sugar', 1, 1000 * m], [d2(m), 'Rice', 1, 500]); expRows.push([d1(m), 'Rent', 300], [d2(m), 'Transport', 100 + m]); }
+  salesRows.push(['Total', '', '', 12500]);
+  let r = bookRun([sheetOf('Sales', salesRows), sheetOf('Expenses', expRows)]);
+  ok(r.B.sales && r.B.expenses && near(r.so.recon.sales, 12000) , 'books: two sheets sales ' + (r.so && JSON.stringify(r.so.recon)));
+  ok(near(r.xo.recon.sales, 1200 + 410) && r.xo.recon.ok, 'books: expenses total ' + JSON.stringify(r.xo.recon));
+  ok(r.hm.basis === 'months' && r.hm.comparable === 4 && near(r.hm.profit, 12000 - 1610), 'books: profit ' + JSON.stringify([r.hm.basis, r.hm.comparable, r.hm.profit]));
+  ok(r.hm.finds.some((f) => /Rent is your biggest expense/.test(f)), 'books: biggest expense found');
+  // generic sheet names: a "Category" column still marks the expenses
+  r = bookRun([sheetOf('Sheet1', salesRows), sheetOf('Sheet2', expRows)]); ok(r.B.expenses && near(r.xo.recon.sales, 1610), 'books: generic names classified by headings');
+  // the person can override
+  r = bookRun([sheetOf('Sheet1', salesRows), sheetOf('Sheet2', expRows)], { Sheet2: 'ignore' }); ok(!r.B.expenses, 'books: ignore works');
+  // one sheet with a Type column
+  const mixed = [['Date', 'Type', 'Description', 'Amount']]; for (let m = 1; m <= 3; m++) { mixed.push([d1(m), 'Sale', 'Sugar', 1000], [d1(m), 'Expense', 'Rent', 300], [d2(m), 'Sales', 'Rice', 500], [d2(m), 'expense', 'Fuel', 90]); }
+  r = bookRun([sheetOf('Books', mixed)]); ok(near(r.so.recon.sales, 4500) && near(r.xo.recon.sales, 1170) && near(r.hm.profit, 3330), 'books: type column ' + (r.hm && r.hm.profit));
+  // one sheet with Money in / Money out
+  const inout = [['Date', 'Details', 'Money in', 'Money out']]; for (let m = 1; m <= 3; m++) { inout.push([d1(m), 'Takings', 1500, ''], [d1(m), 'Rent', '', 300], [d2(m), 'Takings', 500, ''], [d2(m), 'Fuel', '', 90]); }
+  r = bookRun([sheetOf('Cash book', inout)]); ok(near(r.so.recon.sales, 6000) && near(r.xo.recon.sales, 1170) && near(r.hm.profit, 4830), 'books: money in/out ' + (r.hm && r.hm.profit));
+  // bank-style: expenses written as negatives are turned round, and nothing else changes
+  const neg = [['Date', 'Category', 'Amount']]; for (let m = 1; m <= 3; m++) neg.push([d1(m), 'Rent', -300], [d2(m), 'Fuel', -90]);
+  r = bookRun([sheetOf('Sales', salesRows), sheetOf('Expenses', neg)]); ok(r.xo.flipped && near(r.xo.recon.sales, 1170) && r.xo.recon.ok, 'books: negatives turned round');
+  // different periods: only months both cover are compared
+  const exp2 = [['Date', 'Category', 'Amount'], [d1(3), 'Rent', 300], [d2(3), 'Fuel', 50], [d1(4), 'Rent', 300], [d2(4), 'Fuel', 50], [d1(6), 'Rent', 300], [d2(6), 'Fuel', 50]];
+  r = bookRun([sheetOf('Sales', salesRows), sheetOf('Expenses', exp2)]); ok(r.hm.comparable === 2 && r.hm.notes.some((n) => /Left out/.test(n)) && near(r.hm.expenses, 700), 'books: periods aligned ' + JSON.stringify([r.hm.comparable, r.hm.expenses]));
+  // sales only and expenses only
+  r = bookRun([sheetOf('Sales', salesRows)]); ok(r.B.sales && !r.B.expenses && near(r.so.recon.sales, 12000), 'books: sales only unchanged');
+  r = bookRun([sheetOf('expenses', expRows)]); ok(!r.B.sales && r.B.expenses && near(r.xo.recon.sales, 1610), 'books: expenses only');
+  // messy expenses: title rows, KES, totals, repeated heading, unreadable
+  const me = [['ACME EXPENSES 2026'], [''], ['Date', 'Category', 'Amount'], [d1(1), 'Rent', 'KES 300'], [d2(1), 'Fuel', '1,090'], ['', '', ''], ['Date', 'Category', 'Amount'], [d1(2), 'Rent', 'N/A'], ['Total', '', 1390]];
+  r = bookRun([sheetOf('Sales', salesRows), sheetOf('Expenses', me)]); ok(near(r.xo.recon.sales, 1390) && near(r.xo.recon.totalRows, 1390) && r.xo.recon.ok && (r.xo.buckets.unreadable || {}).rows === 1, 'books: messy expenses ' + JSON.stringify(r.xo.recon));
+  // an expenses sheet is never mixed into the sales
+  r = bookRun([sheetOf('Jan', salesRows), sheetOf('Feb', salesRows.slice()), sheetOf('Expenses', expRows)]); ok(near(r.so.recon.sales, 24000) && near(r.xo.recon.sales, 1610), 'books: expenses stay out of the sales ' + r.so.recon.sales);
+}
+
 // 17 400 random messy files: every row in one bucket, and the sum of every amount cell (plus quantity x price where empty) equals everything the report read
 (function () {
 let seed = 12345; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647; const pick = (a) => a[Math.floor(rnd() * a.length)];
@@ -118,6 +163,45 @@ for (let k = 0; k < 400; k++) {
   } catch (e) { if (!/could not find a table|empty/.test(e.message)) { bad++; console.log('THROW', k, e.message); } }
 }
 ok(bad === 0 && checked > 200, `fuzz: ${checked} random messy files checked, ${bad} problems`);
+
+})();
+
+// 18 300 random sales+expenses files (two sheets, a Type column, Money in/out): split correctly, both sides reconcile, no number lost between them
+(function () {
+let seed = 99; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647; const pick = (a) => a[Math.floor(rnd() * a.length)];
+let bad = 0, n = 0;
+for (let k = 0; k < 300; k++) {
+  const mode = pick(['type', 'inout', 'two']); const rows = []; let inSum = 0;
+  const amt = () => { const v = 1 + Math.floor(rnd() * 5000); return [v, pick([String(v), 'KES ' + v, v.toLocaleString('en-US')])]; };
+  const date = (i) => `2026-0${1 + (i % 6)}-${pick(['01', '15', '28'])}`;
+  let sheets;
+  if (mode === 'type') {
+    rows.push(['Date', 'Type', 'Description', 'Amount']);
+    for (let i = 0; i < 20 + Math.floor(rnd() * 40); i++) { const [v, s] = amt(); inSum += v; rows.push([date(i), pick(['Sale', 'Expense', 'income', 'Expenses']), pick(['A', 'B', 'Rent']), s]); }
+    if (rnd() < .5) rows.push(['', '', 'Total', 999]);
+    sheets = [{ name: 'Books', rows }];
+  } else if (mode === 'inout') {
+    rows.push(['Date', 'Details', 'Money in', 'Money out']);
+    for (let i = 0; i < 20 + Math.floor(rnd() * 40); i++) { const [v, s] = amt(); inSum += v; rows.push(rnd() < .5 ? [date(i), 'Takings', s, ''] : [date(i), 'Rent', '', s]); }
+    sheets = [{ name: 'Cash', rows }];
+  } else {
+    const a = [['Date', 'Item', 'Qty', 'Amount']], b = [['Date', 'Category', 'Amount']];
+    for (let i = 0; i < 30; i++) { const [v, s] = amt(); inSum += v; a.push([date(i), 'X', 1, s]); const [w, t] = amt(); inSum += w; b.push([date(i), pick(['Rent', 'Fuel']), t]); }
+    sheets = [{ name: 'Sales', rows: a }, { name: 'Expenses', rows: b }];
+  }
+  try {
+    const B = E.prepareBooks(sheets, {}); if (!B.sales || !B.expenses) { bad++; console.log('NOT SPLIT', mode, k); continue; }
+    const so = E.analyse(B.sales, E.guess(B.sales), {}), xo = E.analyseExpenses(B.expenses, {}); n++;
+    const total = so.recon.readSum + xo.recon.readSum - (mode === 'type' ? 0 : 0);
+    const totRows = so.recon.totalRows + xo.recon.totalRows; // a "Total" row in a type sheet is counted in one side
+    if (!so.recon.ok || !xo.recon.ok) { bad++; console.log('RECON', mode, k); }
+    // everything in the input (minus a stray total of 999) is somewhere
+    const expectedMax = inSum + (mode === 'type' ? 999 : 0);
+    if (Math.abs(total - expectedMax) > 0.01 && Math.abs(total - inSum) > 0.01) { bad++; console.log('LOST', mode, k, total, inSum); }
+    E.harmonize(so, xo);
+  } catch (e) { bad++; console.log('THROW', mode, k, e.message); }
+}
+ok(bad === 0 && n >= 290, `books fuzz: ${n} random sales+expenses files checked, ${bad} problems`);
 
 })();
 

@@ -70,7 +70,7 @@
     if (d.encoding !== 'utf-8') notes.push(`Read the file as ${d.encoding}.`);
     const rows = parseCSV(d.text);
     if (!rows.some((r) => r.some((c) => String(c).trim() !== ''))) throw new Error('That file is empty.');
-    return { sheets: [{ name: 'File', rows }], notes };
+    return { sheets: [{ name: String(filename || 'File').replace(/\.[^.]+$/, '') || 'File', rows }], notes };
   }
 
   /* ------------------------------------------------------------------ cell helpers */
@@ -180,7 +180,7 @@
 
   /* ------------------------------------------------------------------ column guessing */
   const SYN = {
-    product: /item|product|description|particular|goods|article|sku|name|bidhaa|jina|maelezo|service|stock item|commodity|drug|medicine/i,
+    product: /item|product|description|details?|narration|memo|particular|goods|article|sku|name|bidhaa|jina|maelezo|service|stock item|commodity|drug|medicine/i,
     amount: /^(total|amount|sales?|revenue|value|net|gross|line ?total|sub ?total)\b|amount|revenue|jumla|kiasi|takings|income|sales? value|total (sales|amount|price|value)/i,
     qty: /qty|quantity|units?|pcs|pieces|sold|idadi|vipande|no\.? of/i,
     price: /price|rate|unit ?cost|selling|bei|each/i,
@@ -209,7 +209,7 @@
     const take = (k, i, h) => { map[k] = i; used.add(i); how[k] = h; };
     const order = ['date', 'receipt', 'stock', 'qty', 'price', 'amount', 'product'];
     const NOT_PRODUCT = /customer|client|cashier|staff|seller|supplier|branch|shop|outlet|location|payment|mode|method|category|type|region|town|user|agent|salesperson|vendor|phone|email/i;
-    const STRONG_PRODUCT = /item|product|description|particular|goods|article|sku|bidhaa|commodity|drug|medicine|service|maelezo/i;
+    const STRONG_PRODUCT = /item|product|description|details?|narration|particular|goods|article|sku|bidhaa|commodity|drug|medicine|service|maelezo/i;
     // wide layout first: months (or dates) across the top and one product per row. Decided from the headings alone.
     const periodCols0 = headers.map((h, i) => ({ i, h, p: periodOf(h) })).filter((c) => c.p && stats[c.i].n && stats[c.i].numeric / stats[c.i].n > 0.5);
     if (periodCols0.length >= 3) {
@@ -252,7 +252,8 @@
         for (let i = 0; i < headers.length; i++) { if (used.has(i) || !stats[i].n || stats[i].numeric / stats[i].n > 0.5) continue; const ok = sample.slice(0, 200).filter((r) => !isBlank(r[i]) && toDate(r[i], 'dmy')).length; if (ok / Math.max(1, Math.min(stats[i].n, 200)) > 0.8) { take('date', i, 'content'); break; } }
       }
     }
-    const longOk = map.product != null && (map.amount != null || (map.qty != null && map.price != null));
+    // never refuse a file that has amounts: without a product column the report simply treats everything as one line of business
+    const longOk = map.amount != null || (map.qty != null && map.price != null);
     const wide = null;
     const confident = wide ? true : longOk;
     return { map, how, wide, confident, layout: wide ? 'wide' : 'long' };
@@ -271,9 +272,9 @@
 
   /* ------------------------------------------------------------------ the analysis */
   // a line that only SUMS other lines. Written strictly so that a product such as "Total Energies" or "Sub-zero fridge" is never mistaken for one.
-  const TOTAL_ROW = /^\s*(((grand|sub|running|daily|monthly|weekly|page|overall|net|gross)[\s-]*)?totals?(\s+(sales|amount|value|for\b.*|kes|ksh|usd))?|balance\s*(b\/?f|c\/?f|brought forward|carried forward)|brought forward|carried forward|b\/f|c\/f|jumla(\s*kuu)?|summary|sum)\s*[:.\-=]*\s*$/i;
+  const TOTAL_ROW = /^\s*((grand|sub|running|daily|monthly|weekly|page|overall|net|gross)[\s-]*totals?(\s+.*)?|totals?(\s+(sales|amount|value|for\b.*|kes|ksh|usd))?|balance\s*(b\/?f|c\/?f|brought forward|carried forward)|brought forward|carried forward|b\/f|c\/f|jumla(\s*kuu)?|summary|sum)\s*[:.\-=]*\s*$/i;
 
-  const normName = (s) => txt(s).normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[“”"']/g, '').replace(/\s+/g, ' ').replace(/[\s.,;:]+$/g, '').toLowerCase();
+  const normName = (s) => txt(s).normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[“”"']/g, '').replace(/\s+/g, ' ').replace(/[\s.,;:]+$/g, '').toLowerCase().replace(/(\d)\s+(kg|g|mg|l|ml|cl|ltr|ltrs|litres?|liters?|pcs?|oz|lbs?)\b/g, '$1$2');   // "1 kg" and "1kg" are the same product
 
   /**
    * table: { headers, rows } ; map/wide from guess() (or the person's own choice) ; opts: { currency, unit, order, sheetNames }
@@ -286,7 +287,7 @@
     const out = { rowsRead: rowsIn.length, buckets: {}, notes: [], examples: {} };
     const bucket = (k, amt, ex) => { const b = out.buckets[k] || (out.buckets[k] = { rows: 0, amount: 0 }); b.rows++; if (amt && isFinite(amt)) b.amount += amt; if (ex) { const e = out.examples[k] || (out.examples[k] = []); if (e.length < 4) e.push(ex); } };
     const order = opts.order || (map.date != null ? dateOrder(rowsIn.map((r) => r[map.date])) : 'dmy');
-    out.dateOrder = order;
+    out.dateOrder = order; out.derivedAll = map.amount == null;
     const lines = [];   // every interpreted line, in file order (this is what the cleaned CSV lists)
     let derivedSum = 0, derivedRows = 0;   // amounts worked out as quantity x price where the amount cell was empty
     let readSum = 0;    // the sum of every number found in the amount cells: the figure everything must add up to
@@ -332,7 +333,7 @@
         // a heading line repeated on every printed page
         const same = r.reduce((a, c, i) => a + (hdr[i] && txt(c).toLowerCase() === hdr[i] ? 1 : 0), 0);
         if (same >= Math.max(2, Math.ceil(cells.length * 0.6))) { bucket('heading'); addLine({ row: rowNo, type: 'repeated heading (skipped)' }); return; }
-        const rawName = map.product != null ? txt(r[map.product]) : '';
+        const rawName = map.product != null ? txt(r[map.product]) : 'All items';
         const qty = map.qty != null ? num(r[map.qty]) : NaN;
         const price = map.price != null ? num(r[map.price]) : NaN;
         const cell = map.amount != null ? r[map.amount] : undefined;
@@ -349,7 +350,7 @@
         const cs = map.amount != null ? txt(cell) : ''; if (/kes|ksh|\/=/i.test(cs)) cur.kes++; else if (/\$|usd/i.test(cs)) cur.usd++; else if (cs) cur.other++;
         const base = { row: rowNo, date, product: rawName, qty: isNaN(qty) ? null : qty, price: isNaN(price) ? null : price, amount: hasNumber ? amount : '', stock: isNaN(stock) ? null : stock, receipt: rec };
         // a total or subtotal line: counted, shown, but not added in again
-        const totalWord = !rawName && r.some((c) => typeof c === 'string' && TOTAL_ROW.test(c));
+        const totalWord = (map.product == null || !rawName) && r.some((c) => typeof c === 'string' && TOTAL_ROW.test(c));
         // a nameless, dateless row of bare numbers is a total only if it really equals what came above it; otherwise it is a sale with no name
         const bare = map.product != null && !rawName && !date && !rec && hasNumber && cells.every((c) => looksNumeric(c));
         const sumsAbove = bare && [runSum, allSum].some((x) => Math.abs(x) > 0 && Math.abs(amount - x) <= Math.max(1, Math.abs(x) * 0.005));
@@ -511,10 +512,137 @@
   /* ------------------------------------------------------------------ the cleaned file */
   function csvCell(v) { let s = v == null ? '' : v instanceof Date ? v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0') + '-' + String(v.getDate()).padStart(2, '0') : String(v); if (/^[=+\-@]/.test(s) && isNaN(Number(s))) s = "'" + s; return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
   function cleanedCSV(out) {
-    const head = ['Original row', 'Date', 'Receipt', 'Product', 'Quantity', 'Unit price', 'Amount', 'Stock', 'What we did with this row'];
+    const head = ['Original row', 'Date', 'Receipt', out.isExpenses ? 'Category / description' : 'Product', 'Quantity', 'Unit price', 'Amount', 'Stock', 'What we did with this row'];
     const body = out.lines.map((l) => [l.row, l.date || '', l.receipt || '', l.product || '', l.qty == null ? '' : l.qty, l.price == null ? '' : l.price, l.amount === '' || l.amount == null ? '' : l.amount, l.stock == null ? '' : l.stock, l.type + (l.note ? ': ' + l.note : '')].map(csvCell).join(','));
     return '﻿' + [head.join(','), ...body].join('\r\n');
   }
 
-  return { readFile, decodeBytes, parseCSV, findTable, guess, analyse, buildTable, datesFromSheetNames, cleanedCSV, num, toDate, dateOrder, normName, periodOf, monthName, fmtN, TOTAL_ROW };
+  /* ------------------------------------------------------------------ books: sales and expenses together */
+  // Which sheet is which is decided from its name and its headings; the person can change it, but the default is meant to just work.
+  const EXP_NAME = /expens|spend|spent|cost|purchas|outgo|gharama|matumizi|overhead|opex|petty|payables|bills/i;
+  const SALE_NAME = /sale|revenue|income|takings|mauzo|turnover/i;
+  const EXP_HEAD = /expense|payee|paid to|categor|purpose|voucher|gharama|matumizi|petty|reason/i;
+  const SALE_HEAD = /\bqty\b|quantity|customer|client|product|price|receipt|invoice|bidhaa|idadi|units|sold|\bsku\b/i;
+  function classifySheet(name, table) {
+    let sc = (EXP_NAME.test(name) ? 3 : 0) - (SALE_NAME.test(name) ? 3 : 0);
+    table.headers.forEach((h) => { if (EXP_HEAD.test(h)) sc += 1; if (SALE_HEAD.test(h)) sc -= 1; });
+    return sc >= 1 ? 'expenses' : 'sales';
+  }
+  const IN_WORDS = /^(sales?|income|revenue|money in|cash in|inflow|takings|mauzo|received)$/i, OUT_WORDS = /^(expenses?|cost|costs|purchases?|money out|cash out|outflow|spend|spending|payment|payments|matumizi|gharama)$/i;
+  const IN_HEAD = /^(money|cash)?\s*in$|^income$|^credits?$|^received$|^receipts?$|^inflow$/i, OUT_HEAD = /^(money|cash)?\s*out$|^expenses?$|^debits?$|^paid$|^payments?$|^spent$|^outflow$|^cost$/i;
+
+  /** One sheet holding both: a "Type" column (Sale / Expense), or two amount columns (Money in / Money out). Returns [{name, rows, kind}] or null. */
+  function splitMixed(sheet) {
+    let t; try { t = findTable(sheet.rows); } catch (e) { return null; }
+    const H = t.headers, R = t.rows;
+    // a type column: every filled cell says sale-ish or expense-ish, and both appear
+    for (let c = 0; c < H.length; c++) {
+      let a = 0, b = 0, other = 0;
+      const klass = R.map((r) => { const v = txt(r[c]); if (!v) return null; if (IN_WORDS.test(v)) { a++; return 's'; } if (OUT_WORDS.test(v)) { b++; return 'x'; } other++; return '?'; });
+      if (a >= 1 && b >= 1 && other === 0 && (a + b) >= Math.max(2, R.filter((r) => r.some((x) => !isBlank(x))).length * 0.5)) {
+        const rows = { s: [H], x: [H] }; let last = 's';
+        R.forEach((r, i) => { const k = klass[i]; if (k) last = k; if (r.some((x) => !isBlank(x))) rows[last].push(r); });
+        return { how: `one sheet with a "${H[c]}" column`, parts: [{ name: sheet.name + ' (sales)', rows: rows.s, kind: 'sales' }, { name: sheet.name + ' (expenses)', rows: rows.x, kind: 'expenses' }] };
+      }
+    }
+    // two amount columns
+    const ci = H.findIndex((h) => IN_HEAD.test(h.trim())), co = H.findIndex((h) => OUT_HEAD.test(h.trim()));
+    if (ci >= 0 && co >= 0 && ci !== co && !H.some((h) => /\bqty\b|quantity/i.test(h))) {
+      const keep = H.map((_, i) => i).filter((i) => i !== ci && i !== co);
+      const mk = (col, kind, label) => ({ name: sheet.name + ' (' + label + ')', kind, rows: [keep.map((i) => H[i]).concat(['Amount'])].concat(R.filter((r) => !isBlank(r[col])).map((r) => keep.map((i) => r[i]).concat([r[col]]))) });
+      return { how: `one sheet with "${H[ci]}" and "${H[co]}" columns`, parts: [mk(ci, 'sales', 'sales'), mk(co, 'expenses', 'expenses')] };
+    }
+    return null;
+  }
+
+  /** Decide what is sales and what is expenses. kinds: { sheetName: 'sales' | 'expenses' | 'ignore' } overrides the defaults. */
+  function prepareBooks(sheets, kinds) {
+    kinds = kinds || {};
+    const parts = [], notes = [], seen = [];
+    for (const sh of sheets) {
+      let t = null; try { t = findTable(sh.rows); } catch (e) { notes.push(`Sheet "${sh.name}" had no table in it and was skipped.`); continue; }
+      const kind = kinds[sh.name] || null;
+      const mixed = kind ? null : splitMixed(sh);
+      if (mixed) { mixed.parts.forEach((p) => parts.push(p)); notes.push(`"${sh.name}": ${mixed.how}, so sales and expenses were separated.`); seen.push({ sheet: sh.name, kind: 'both', auto: true }); continue; }
+      const k = kind || classifySheet(sh.name, t);
+      seen.push({ sheet: sh.name, kind: k, auto: !kind });
+      if (k !== 'ignore') parts.push({ name: sh.name, rows: sh.rows, kind: k });
+    }
+    const pack = (kind) => { const list = parts.filter((p) => p.kind === kind); return list.length ? buildTable(list, 'auto') : null; };
+    return { sales: pack('sales'), expenses: pack('expenses'), kinds: seen, notes };
+  }
+
+  /** Expenses: the same row-by-row accounting as sales. The "product" is the category (or the description when there is no category). */
+  function analyseExpenses(table, opts) {
+    const g = guess(table), H = table.headers;
+    const st = H.map((_, i) => colStats(table.rows.slice(0, 3000), i));
+    const textual = (i) => st[i].n && st[i].numeric / st[i].n < 0.5;
+    let choice;
+    if (g.layout === 'wide') choice = g;
+    else {
+      const map = Object.assign({}, g.map); delete map.qty; delete map.price; delete map.stock;
+      const amountRe = /amount|cost|paid|expense|debit|total|value|kiasi|gharama|spent/i;
+      if (map.amount == null || /price|each|rate/i.test(H[map.amount])) { const i = H.findIndex((h, k) => amountRe.test(h) && st[k].n && st[k].numeric / st[k].n > 0.5 && k !== map.date); if (i >= 0) map.amount = i; }
+      const prefer = [/categor|expense (type|head|account|item)|^type$|account head|purpose|reason/i, /payee|paid to|vendor|supplier|narration/i, /particular|description|details|item|name|maelezo|bidhaa|jina/i];
+      let p = -1;
+      for (const re of prefer) { p = H.findIndex((h, k) => re.test(h) && textual(k) && k !== map.date && k !== map.amount); if (p >= 0) break; }
+      if (p < 0 && map.product != null) p = map.product;
+      if (p >= 0) map.product = p; else delete map.product;
+      if (map.amount == null) throw new Error('We could not find an amount column in the expenses.');
+      if (map.product == null) throw new Error('We could not find a category or description column in the expenses.');
+      choice = { map, wide: null };
+    }
+    // bank-style sheets list money going out as negative numbers: turn them round so expenses are positive, and say so
+    let flipped = false, T = table;
+    const ac = choice.map && choice.map.amount;
+    if (ac != null) {
+      let neg = 0, pos = 0; table.rows.forEach((r) => { const n = num(r[ac]); if (n < 0) neg++; else if (n > 0) pos++; });
+      if (neg > pos * 1.5 && neg >= 2) { flipped = true; T = Object.assign({}, table, { rows: table.rows.map((r) => { const n = num(r[ac]); if (isNaN(n)) return r; const c = r.slice(); c[ac] = -n; return c; }) }); }
+    }
+    const out = analyse(T, choice, Object.assign({}, opts || {}));
+    out.flipped = flipped; out.isExpenses = true;
+    return out;
+  }
+
+  /** Sales and expenses side by side: only months both files fully cover are compared, so the profit is never flattered or dragged by a partial month. */
+  function harmonize(s, x) {
+    const h = { finds: [], notes: [] };
+    const money = s.money, cat = x.list.filter((p) => p.amount > 0);
+    const sm = new Map(s.months || []), xm = new Map(x.months || []);
+    const sFull = new Set((s.fullMonths || []).map((m) => m[0])), xFull = new Set((x.fullMonths || []).map((m) => m[0]));
+    const keys = [...new Set([...sm.keys(), ...xm.keys()])].sort();
+    h.rows = keys.map((k) => ({ key: k, sales: sm.get(k) || 0, expenses: xm.get(k) || 0, comparable: sFull.has(k) && xFull.has(k) }));
+    const comp = h.rows.filter((r) => r.comparable);
+    h.salesAll = s.netSales; h.expensesAll = x.netSales;
+    if (comp.length) {
+      h.basis = 'months'; h.sales = comp.reduce((a, r) => a + r.sales, 0); h.expenses = comp.reduce((a, r) => a + r.expenses, 0);
+      const span = (a, b) => (a && b ? `${monthName(a)} to ${monthName(b)}` : '');
+      const first = comp[0].key, last = comp[comp.length - 1].key;
+      h.period = first === last ? monthName(first) : span(first, last);
+      const outS = h.salesAll - h.sales, outX = h.expensesAll - h.expenses;
+      if (Math.abs(outS) > 0.5 || Math.abs(outX) > 0.5) h.notes.push(`Profit uses only the ${comp.length} full month${comp.length > 1 ? 's' : ''} that both your sales and expenses cover (${h.period}). Left out: ${money(outS)} of sales and ${money(outX)} of expenses from other or partial months, so one side is never compared with a period the other does not cover.`);
+    } else {
+      h.basis = 'totals'; h.sales = h.salesAll; h.expenses = h.expensesAll; h.period = '';
+      h.notes.push(!(s.months && s.months.length && x.months && x.months.length)
+        ? 'One of your files has no usable dates, so we compared the totals. This is only fair if both cover the same period. Add a date column to the expenses for a month-by-month view.'
+        : 'Your sales and expenses do not share a full month, so we compared the totals. This is only fair if both cover the same period.');
+    }
+    h.profit = h.sales - h.expenses; h.margin = h.sales > 0 ? h.profit / h.sales * 100 : null;
+    h.notes.push('Profit here is your sales minus the expenses in your file. If the cost of the stock you resell is not among your expenses, your real profit is lower than this.');
+    if (h.sales > 0) h.finds.push(`For every 100 you sold, about ${Math.round(h.expenses / h.sales * 100)} went on expenses${h.margin != null ? `, leaving ${h.margin.toFixed(1)}% as profit` : ''}.`);
+    if (cat.length) {
+      const tot = cat.reduce((a, p) => a + p.amount, 0);
+      h.finds.push(`${cat[0].name} is your biggest expense: ${money(cat[0].amount)}, ${Math.round(cat[0].amount / tot * 100)}% of everything you spent.` + (cat.length >= 3 ? ` With ${cat[1].name} and ${cat[2].name} it makes up ${Math.round((cat[0].amount + cat[1].amount + cat[2].amount) / tot * 100)}% of spending.` : ''));
+    }
+    const loss = comp.filter((r) => r.sales - r.expenses < 0);
+    if (loss.length) h.finds.push(`${loss.length === 1 ? 'One month' : loss.length + ' months'} spent more than it sold: ${loss.slice(0, 4).map((r) => monthName(r.key)).join(', ')}${loss.length > 4 ? '…' : ''}.`);
+    if (comp.length >= 3) {
+      const pr = comp.map((r) => [r.key, r.sales - r.expenses]), best = pr.reduce((a, b) => (b[1] > a[1] ? b : a)), worst = pr.reduce((a, b) => (b[1] < a[1] ? b : a));
+      h.finds.push(`${monthName(best[0])} was your most profitable month (${money(best[1])}) and ${monthName(worst[0])} your least (${money(worst[1])}).`);
+    }
+    h.cat = cat.slice(0, 8); h.catTotal = cat.reduce((a, p) => a + p.amount, 0); h.comparable = comp.length;
+    return h;
+  }
+
+  return { classifySheet, splitMixed, prepareBooks, analyseExpenses, harmonize, readFile, decodeBytes, parseCSV, findTable, guess, analyse, buildTable, datesFromSheetNames, cleanedCSV, num, toDate, dateOrder, normName, periodOf, monthName, fmtN, TOTAL_ROW };
 });

@@ -69,3 +69,11 @@ Product names typed in several ways are counted together and the report says so;
 3. `vercel.json` gives the functions 30 seconds (the free default of 10 seconds is too short for a slow mail server).
 4. The real reason is written to Vercel > your project > Logs (search "[lead]"). No password is ever logged.
 5. While it is broken the visitor keeps what they typed and gets a one-tap "send these details on WhatsApp" link.
+
+## Sales and expenses together (added)
+The visitor can upload sales and expenses in two sheets (or two files' worth of sheets in one workbook), or in ONE sheet: with a Type column
+(Sale / Expense) or with "Money in" and "Money out" columns. Which sheet is which is decided from its name and headings, and the page shows
+the choice with a drop-down to change it, so the default just works and a wrong guess is one click to fix. Expenses get the same row-by-row accounting
+as sales (their own "Your expenses add up" card and cleaned download), negative bank-style expenses are turned round, and the profit is worked out
+only over the full months that both sales and expenses cover, so a partial month never distorts it. If the expenses cannot be read, the sales report
+is still shown, with a note. A file with amounts but no product column is still read (as one line of business) instead of being refused.

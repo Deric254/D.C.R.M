@@ -21,7 +21,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous" />
   <link rel="stylesheet" href="../assets/css/style.css?v=07531de3">
   <link rel="stylesheet" href="../assets/css/social_links.css?v=885951dd">
-  <link rel="stylesheet" href="../assets/css/tailwind.css?v=d1045869">
+  <link rel="stylesheet" href="../assets/css/tailwind.css?v=3722b578">
   <style>
   /* Everything here is prefixed fr- so it can never collide with the site's own styles (which restyle .card, button:hover and friends). */
   .fr-wrap{max-width:900px;margin:0 auto;padding:8px 14px 40px;color:#1f2937}
@@ -343,10 +343,10 @@ function toggleNewsletter() {
 </script>
 
 <script defer src="../assets/js/config.js?v=a0a11940"></script>
-<script defer src="../assets/js/chatbot.js?v=3c587bec"></script>
+<script defer src="../assets/js/chatbot.js?v=bf03de00"></script>
 <script defer src="../assets/js/social_links.js?v=6f1c5397"></script>
 <script defer src="../assets/js/email-link.js?v=bcd71479"></script>
-<script src="engine.js?v=1"></script>
+<script src="engine.js?v=3"></script>
 <script>
 (function () {
 'use strict';
@@ -365,7 +365,7 @@ var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, f
 var fmt = E.fmtN;
 var SRC = (new URLSearchParams(location.search).get('src') || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 30);
 var FIELDS = [['product', 'Product / item'], ['amount', 'Sales amount'], ['qty', 'Quantity'], ['price', 'Unit price'], ['date', 'Date'], ['receipt', 'Receipt / invoice no.'], ['stock', 'Stock on hand']];
-var S = { file: null, sheets: null, notes: [], sheetChoice: 'auto', table: null, guess: null, map: null, order: 'auto', currency: 'auto', out: null, summary: '', shownAt: 0, sample: false, xlsxP: null };
+var S = { kinds: {}, books: null, xo: null, xerr: '', hm: null, file: null, sheets: null, notes: [], sheetChoice: 'auto', table: null, guess: null, map: null, order: 'auto', currency: 'auto', out: null, summary: '', shownAt: 0, sample: false, xlsxP: null };
 
 function fail(msg) { var e = $('#frErr'); e.textContent = msg || ''; e.classList.toggle('fr-hide', !msg); }
 function show(sel, on) { $(sel).classList.toggle('fr-hide', !on); }
@@ -384,63 +384,88 @@ async function load(file) {
     var buf = await file.arrayBuffer();
     var X = /\.(xlsx?|xlsm|ods)$/i.test(file.name) || (buf.byteLength > 3 && new Uint8Array(buf, 0, 2)[0] === 0x50) ? await loadXlsx() : null;
     var f = E.readFile(new Uint8Array(buf), file.name, X);
-    S.file = file.name; S.sheets = f.sheets; S.notes = f.notes; S.sheetChoice = 'auto'; S.order = 'auto'; S.currency = 'auto'; S.sample = false; S.map = null;
+    S.file = file.name; S.sheets = f.sheets; S.notes = f.notes; S.sheetChoice = 'auto'; S.kinds = {}; S.order = 'auto'; S.currency = 'auto'; S.sample = false; S.map = null;
     prepare();
   } catch (e) { show('#frHow', false); fail(e.message || 'We could not read that file.'); }
 }
+function curOpts() { var o = {}; if (S.order !== 'auto') o.order = S.order; if (S.currency !== 'auto') o.currency = S.currency; return o; }
 function prepare() {
-  var t = E.buildTable(S.sheets, S.sheetChoice);
-  var g = E.guess(t);
+  show('#frReport', false); show('#frCta', false); fail('');
+  var B = E.prepareBooks(S.sheets, S.kinds);
+  S.books = B; S.xo = null; S.hm = null; S.xerr = ''; S.table = null; S.guess = null; out = null;
+  if (B.expenses) { try { S.xo = E.analyseExpenses(B.expenses, curOpts()); if (!S.xo.list.length) throw new Error('no expense amounts found'); } catch (e) { S.xo = null; S.xerr = 'We could not read the expenses (' + (e.message || 'unknown reason') + '), so the report below is sales only. You can change which sheet is which under "Something look wrong?".'; } }
+  if (!B.sales) {
+    if (!S.xo) { how(null); fail(S.xerr || 'We could not find sales or expenses in that file.'); return; }
+    how(null); render(null, S.xo, null); return;
+  }
+  var t = B.sales, g = E.guess(t);
   var dc = E.datesFromSheetNames(t, g.map); if (dc != null) { g.map.date = dc; g.how.date = 'sheet names'; }
-  S.table = t; S.guess = g; S.map = S.map || null;
+  S.table = t; S.guess = g;
   var choice = S.map ? { map: S.map, wide: null } : g;
-  if (g.confident || S.map) run(choice); else { out = null; show('#frReport', false); show('#frCta', false); how(null); fail(''); }
+  if (g.confident || S.map) run(choice); else { if (S.xerr) fail(S.xerr); how(null); }
 }
 var out = null;
 function run(choice) {
   try {
-    var opts = {}; if (S.order !== 'auto') opts.order = S.order; if (S.currency !== 'auto') opts.currency = S.currency;
-    out = E.analyse(S.table, choice, opts);
+    out = E.analyse(S.table, choice, curOpts());
     if (!out.list.length) throw new Error('We could not find any sales amounts in the columns chosen. Please check them below.');
-    S.out = out; how(out); render(out);
+    S.out = out;
+    S.hm = null; if (S.xo) { try { S.hm = E.harmonize(out, S.xo); } catch (e) { S.hm = null; } }
+    how(out); render(out, S.xo, S.hm); if (S.xerr) fail(S.xerr);
   } catch (e) { show('#frReport', false); show('#frCta', false); how(null); fail(e.message); }
 }
 
 /* ---------- "how we read your file" ---------- */
-function colName(i) { return i != null && S.table.headers[i] != null ? S.table.headers[i] : ''; }
+function colName(i) { return i != null && S.table && S.table.headers[i] != null ? S.table.headers[i] : ''; }
+function kindOf(name) { var e = (S.books ? S.books.kinds : []).filter(function (k) { return k.sheet === name; })[0]; return e ? e.kind : 'sales'; }
 function how(o) {
-  var box = $('#frHow'), t = S.table, g = S.guess, m = S.map || g.map, h = '';
-  var chosen = o ? (S.map ? 'your choice' : '') : '';
-  h += '<h2>' + (o ? 'How we read your file' : 'Please check how to read your file') + '</h2>';
-  h += '<p class="fr-mute fr-sm" style="margin:2px 0 10px"><b>' + esc(S.file) + '</b>' + (t.info && t.info.combined ? ' &middot; ' + t.info.used.length + ' sheets put together (' + esc(t.info.used.slice(0, 6).join(', ')) + (t.info.used.length > 6 ? '…' : '') + ')' : (S.sheets.length > 1 ? ' &middot; sheet "' + esc(t.info.used[0]) + '"' : '')) + '</p>';
-  if (g.layout === 'wide' && !S.map) h += '<p class="fr-sm" style="margin:0 0 8px">Your months run across the page, one product per row. We read every month cell as that product\'s sales for the month.</p>';
-  else if (o) {
+  var box = $('#frHow'), t = S.table, g = S.guess, B = S.books || { kinds: [], notes: [], expenses: null }, m = t ? (S.map || g.map) : {}, h = '';
+  var okRead = !!o || (!t && !!S.xo);
+  h += '<h2>' + (okRead ? 'How we read your file' : 'Please check how to read your file') + '</h2>';
+  h += '<p class="fr-mute fr-sm" style="margin:2px 0 8px"><b>' + esc(S.file) + '</b></p>';
+  var chips = [];
+  if (t) chips.push('<span class="fr-chip">Sales from: <b>' + esc((t.info ? t.info.used : []).slice(0, 4).join(', ')) + (t.info && t.info.used.length > 4 ? '…' : '') + '</b></span>');
+  if (B.expenses) chips.push('<span class="fr-chip">Expenses from: <b>' + esc((B.expenses.info ? B.expenses.info.used : []).slice(0, 4).join(', ')) + '</b></span>');
+  if (chips.length && (B.expenses || S.sheets.length > 1)) h += '<div>' + chips.join('') + '</div>';
+  if (t && g.layout === 'wide' && !S.map) h += '<p class="fr-sm" style="margin:8px 0 8px">Your months run across the page, one product per row. We read every month cell as that product\'s sales for the month.</p>';
+  else if (t && o) {
     var bits = FIELDS.filter(function (f) { return m[f[0]] != null; }).map(function (f) { return '<span class="fr-chip">' + esc(f[1]) + ': <b>' + esc(colName(m[f[0]])) + '</b></span>'; });
-    h += '<div>' + bits.join('') + '</div>';
-  } else h += '<p class="fr-warn" style="margin:0 0 8px">We could not be sure which columns hold the product and the amount. Please pick them below.</p>';
+    h += '<div style="margin-top:6px">' + bits.join('') + '</div>';
+  } else if (t) h += '<p class="fr-warn" style="margin:8px 0">We could not be sure which columns hold the product and the amount. Please pick them below.</p>';
   var more = [];
-  if (t.titleRows) more.push(t.titleRows + ' title line' + (t.titleRows > 1 ? 's' : '') + ' above your headings were skipped');
-  if (t.mergedHeader) more.push('two heading lines were joined');
+  if (t && t.titleRows) more.push(t.titleRows + ' title line' + (t.titleRows > 1 ? 's' : '') + ' above your headings were skipped');
+  if (t && t.mergedHeader) more.push('two heading lines were joined');
+  B.notes.forEach(function (n) { more.push(n); });
   S.notes.forEach(function (n) { more.push(n); });
+  if (S.xo && S.xo.flipped) more.push('your expenses were written as negative numbers, so they were turned round to count as spending');
   if (o && o.dateOrder && m.date != null) more.push('dates read ' + (o.dateOrder === 'mdy' ? 'month first (your file proved it)' : 'day first'));
   if (more.length) h += '<p class="fr-mute fr-sm" style="margin:6px 0 0">' + more.map(esc).join(' &middot; ') + '</p>';
-  var open = o ? '' : ' open';
-  h += '<details class="fr-more"' + open + '><summary>' + (o ? 'Something look wrong? Change how we read it' : 'Choose the columns') + '</summary><div style="margin-top:10px">';
-  h += '<div class="fr-grid">' + FIELDS.map(function (f) { var k = f[0]; return '<label class="fr-f">' + f[1] + '<select data-k="' + k + '"><option value="-1">— none —</option>' + t.headers.map(function (x, i) { return '<option value="' + i + '"' + (m[k] === i ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></label>'; }).join('') + '</div>';
+  var open = okRead ? '' : ' open';
+  h += '<details class="fr-more"' + open + '><summary>' + (okRead ? 'Something look wrong? Change how we read it' : 'Choose how to read it') + '</summary><div style="margin-top:10px">';
+  if (t) h += '<div class="fr-grid">' + FIELDS.map(function (f) { var k = f[0]; return '<label class="fr-f">' + f[1] + '<select data-k="' + k + '"><option value="-1">— none —</option>' + t.headers.map(function (x, i) { return '<option value="' + i + '"' + (m[k] === i ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></label>'; }).join('') + '</div>';
   h += '<div class="fr-grid" style="margin-top:10px">';
-  if (S.sheets.length > 1) h += '<label class="fr-f">Sheets<select id="frSheet"><option value="auto">Put matching sheets together</option>' + S.sheets.map(function (s) { return '<option value="' + esc(s.name) + '"' + (S.sheetChoice === s.name ? ' selected' : '') + '>Only: ' + esc(s.name) + '</option>'; }).join('') + '</select></label>';
+  var multi = S.sheets.length > 1;
+  if (multi) h += S.sheets.map(function (sh) { var k = kindOf(sh.name); if (k === 'both') return '<div class="fr-f">Sheet "' + esc(sh.name) + '"<br><span class="fr-mute">holds sales and expenses together; separated automatically</span></div>'; return '<label class="fr-f">Sheet "' + esc(sh.name) + '" is<select data-kind="' + esc(sh.name) + '" data-was="' + k + '"><option value="sales"' + (k === 'sales' ? ' selected' : '') + '>Sales</option><option value="expenses"' + (k === 'expenses' ? ' selected' : '') + '>Expenses</option><option value="ignore"' + (k === 'ignore' ? ' selected' : '') + '>Ignore it</option></select></label>'; }).join('');
   h += '<label class="fr-f">Dates are written<select id="frOrder"><option value="auto"' + (S.order === 'auto' ? ' selected' : '') + '>Let the file decide</option><option value="dmy"' + (S.order === 'dmy' ? ' selected' : '') + '>Day first (31/12/2026)</option><option value="mdy"' + (S.order === 'mdy' ? ' selected' : '') + '>Month first (12/31/2026)</option></select></label>';
   h += '<label class="fr-f">Money is in<select id="frCur"><option value="auto"' + (S.currency === 'auto' ? ' selected' : '') + '>Detect</option><option value="KES"' + (S.currency === 'KES' ? ' selected' : '') + '>KES</option><option value="USD"' + (S.currency === 'USD' ? ' selected' : '') + '>USD</option></select></label></div>';
-  h += '<div class="fr-row" style="margin-top:12px"><button class="fr-btn" id="frApply" type="button">' + (o ? 'Update my report' : 'Show my report') + '</button><span class="fr-mute fr-sm" id="frHint"></span></div></div></details>';
+  h += '<div class="fr-row" style="margin-top:12px"><button class="fr-btn" id="frApply" type="button">' + (okRead ? 'Update my report' : 'Show my report') + '</button><span class="fr-mute fr-sm" id="frHint"></span></div></div></details>';
   box.innerHTML = h; show('#frHow', true);
-  var check = function () { var v = function (k) { return +box.querySelector('[data-k=' + k + ']').value >= 0; }; var ok = v('product') && (v('amount') || (v('qty') && v('price'))) || (g.layout === 'wide' && !S.map); $('#frApply').disabled = !ok; $('#frHint').textContent = ok ? '' : 'Pick the product column, and either the amount or the quantity and price.'; };
+  var check = function () {
+    if (!t) { $('#frApply').disabled = false; return; }
+    var v = function (k) { return +box.querySelector('[data-k=' + k + ']').value >= 0; };
+    var ok = v('amount') || (v('qty') && v('price')) || (g.layout === 'wide' && !S.map);
+    $('#frApply').disabled = !ok; $('#frHint').textContent = ok ? '' : 'Pick the amount column, or the quantity and the price.';
+  };
   box.querySelector('details').addEventListener('change', check); check();
   $('#frApply').addEventListener('click', function () {
-    var mp = {}; box.querySelectorAll('select[data-k]').forEach(function (s) { if (+s.value >= 0) mp[s.dataset.k] = +s.value; });
-    var sh = $('#frSheet'); var newSheet = sh ? sh.value : 'auto';
     S.order = $('#frOrder').value; S.currency = $('#frCur').value;
-    if (newSheet !== S.sheetChoice) { S.sheetChoice = newSheet; S.map = null; return prepare(); }
-    S.map = (g.layout === 'wide' && JSON.stringify(mp) === JSON.stringify(g.map)) ? null : mp;
+    var kindChanged = false;
+    box.querySelectorAll('select[data-kind]').forEach(function (sel) { if (sel.value !== sel.dataset.was) { S.kinds[sel.dataset.kind] = sel.value; kindChanged = true; } });
+    if (kindChanged) { S.map = null; return prepare(); }
+    if (t) {
+      var mp = {}; box.querySelectorAll('select[data-k]').forEach(function (s) { if (+s.value >= 0) mp[s.dataset.k] = +s.value; });
+      S.map = (g.layout === 'wide' && JSON.stringify(mp) === JSON.stringify(g.map)) ? null : mp;
+    }
     prepare();
   });
 }
@@ -463,18 +488,18 @@ function bars(items, max, vt) {
   return '<table>' + items.map(function (x) { return '<tr><td style="width:30%">' + esc(x[0]) + '</td><td style="width:36%"><div class="fr-bar"><i style="width:' + Math.max(1, Math.max(0, x[1]) / max * 100) + '%"></i></div></td><td class="n">' + vt(x[1]) + (x[2] || '') + '</td></tr>'; }).join('') + '</table>';
 }
 function dstr(d) { return d.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' }); }
-function qualityCard(o) {
+function qualityCard(o, X) {
   var b = o.buckets, r = o.recon, mny = o.money, c = function (k) { return (b[k] || { rows: 0, amount: 0 }); };
   var rowsList = [];
-  if (c('sale').rows) rowsList.push([fmt(c('sale').rows) + ' sales lines', mny(c('sale').amount)]);
-  if (c('return').rows) rowsList.push([fmt(c('return').rows) + ' returns or credits', mny(c('return').amount)]);
+  if (c('sale').rows) rowsList.push([fmt(c('sale').rows) + (X ? ' expense lines' : ' sales lines'), mny(c('sale').amount)]);
+  if (c('return').rows) rowsList.push([fmt(c('return').rows) + (X ? ' refunds or credits' : ' returns or credits'), mny(c('return').amount)]);
   if (c('total').rows) rowsList.push([fmt(c('total').rows) + ' total line' + (c('total').rows > 1 ? 's' : '') + ' (shown, never added in twice)', mny(c('total').amount)]);
   if (c('zero').rows) rowsList.push([fmt(c('zero').rows) + ' zero-value lines', mny(0)]);
   var extra = [];
   if (c('unreadable').rows) extra.push(fmt(c('unreadable').rows) + ' amount' + (c('unreadable').rows > 1 ? 's' : '') + ' we could not read as a number (for example ' + (o.examples.unreadable || []).slice(0, 3).map(function (x) { return esc(x); }).join('; ') + ')');
   if (c('noamount').rows) extra.push(fmt(c('noamount').rows) + ' row' + (c('noamount').rows > 1 ? 's' : '') + ' with no amount');
-  if (r.derivedRows) extra.push(fmt(r.derivedRows) + ' amount' + (r.derivedRows > 1 ? 's were' : ' was') + ' empty, so we worked ' + (r.derivedRows > 1 ? 'them' : 'it') + ' out as quantity × price (' + mny(r.derived) + ' in all)');
-  if (c('unnamed').rows) extra.push(fmt(c('unnamed').rows) + ' sale' + (c('unnamed').rows > 1 ? 's' : '') + ' with no product name (kept, shown as "no product name")');
+  if (r.derivedRows) extra.push(o.derivedAll ? 'Your file has quantity and unit price but no amount column, so each line\'s amount was worked out as quantity × price (' + mny(r.derived) + ' in all)' : fmt(r.derivedRows) + ' amount' + (r.derivedRows > 1 ? 's were' : ' was') + ' empty, so we worked ' + (r.derivedRows > 1 ? 'them' : 'it') + ' out as quantity × price (' + mny(r.derived) + ' in all)');
+  if (c('unnamed').rows) extra.push(fmt(c('unnamed').rows) + (X ? ' expense' : ' sale') + (c('unnamed').rows > 1 ? 's' : '') + ' with no ' + (X ? 'category' : 'product') + ' name (kept, shown as "no product name")');
   if (c('nodate').rows) extra.push(fmt(c('nodate').rows) + ' row' + (c('nodate').rows > 1 ? 's' : '') + ' with a date we could not read (counted in the totals, left out of the timing charts)');
   if (c('blank').rows) extra.push(fmt(c('blank').rows) + ' blank row' + (c('blank').rows > 1 ? 's' : '') + ' ignored');
   if (c('heading').rows) extra.push(fmt(c('heading').rows) + ' repeated heading line' + (c('heading').rows > 1 ? 's' : '') + ' ignored');
@@ -483,46 +508,82 @@ function qualityCard(o) {
   if (o.totalMismatch) extra.push('In ' + fmt(o.totalMismatch) + ' row' + (o.totalMismatch > 1 ? 's' : '') + ' your Total column does not match the months added up, for example ' + ((o.examples.totalMismatch || [])[0] ? esc(o.examples.totalMismatch[0]) : ''));
   o.notes.forEach(function (n) { extra.push(esc(n)); });
   var cls = r.ok ? '' : ' bad';
-  var h = '<section class="fr-box fr-check' + cls + '"><h2>' + (r.ok ? '<i class="fas fa-circle-check fr-ok" aria-hidden="true"></i> Your numbers add up' : 'Your numbers do not add up yet') + '</h2>';
+  var h = '<section class="fr-box fr-check' + cls + '"><h2>' + (r.ok ? '<i class="fas fa-circle-check fr-ok" aria-hidden="true"></i> ' + (X ? 'Your expenses add up' : 'Your numbers add up') : (X ? 'Your expenses do not add up yet' : 'Your numbers do not add up yet')) + '</h2>';
   h += '<p class="fr-mute fr-sm" style="margin:2px 0 8px">We read <b>' + fmt(o.rowsRead) + '</b> row' + (o.rowsRead === 1 ? '' : 's') + '. Every number in the amount column is accounted for below, and nothing was thrown away.</p>';
   h += '<table>' + rowsList.map(function (x) { return '<tr><td>' + x[0] + '</td><td class="n">' + x[1] + '</td></tr>'; }).join('') + '<tr><td><b>Everything we read from your file</b></td><td class="n"><b>' + mny(r.readSum) + '</b></td></tr></table>';
-  h += '<p class="fr-sm" style="margin:8px 0 0">' + (r.ok ? '<span class="fr-ok">Sales + returns + total lines = everything we read. Difference: ' + mny(0) + '.</span>' : '<span class="fr-warn">Difference of ' + mny(r.diff) + ' between what we read and what we counted. Please tell me and I will look into it.</span>') + '</p>';
+  h += '<p class="fr-sm" style="margin:8px 0 0">' + (r.ok ? '<span class="fr-ok">' + (X ? 'Expenses + credits + total lines' : 'Sales + returns + total lines') + ' = everything we read. Difference: ' + mny(0) + '.</span>' : '<span class="fr-warn">Difference of ' + mny(r.diff) + ' between what we read and what we counted. Please tell me and I will look into it.</span>') + '</p>';
   if (extra.length) h += '<ul class="fr-find fr-sm">' + extra.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>';
-  h += '<div class="fr-row fr-noprint" style="margin-top:12px"><button class="fr-btn fr-alt" id="frDl" type="button"><i class="fas fa-download" aria-hidden="true"></i>&nbsp; Download the cleaned file</button><span class="fr-mute fr-sm">Every row, with what we did with it. It stays on your device.</span></div></section>';
+  h += '<div class="fr-row fr-noprint" style="margin-top:12px"><button class="fr-btn fr-alt" id="' + (X ? 'frDlX' : 'frDl') + '" type="button"><i class="fas fa-download" aria-hidden="true"></i>&nbsp; Download the cleaned ' + (X ? 'expenses ' : '') + 'file</button><span class="fr-mute fr-sm">Every row, with what we did with it. It stays on your device.</span></div></section>';
   return h;
 }
-function render(o) {
-  var mny = o.money, gross = o.grossSales > 0 ? o.grossSales : 1;
-  var top = o.list.filter(function (p) { return p.amount > 0; }).slice(0, 10);
-  var h = '<section class="fr-box"><h2>' + esc(CONFIG.name) + ' Health Check</h2><p class="fr-mute fr-sm" style="margin:0 0 12px">' + (o.first ? 'Sales from ' + dstr(o.first) + ' to ' + dstr(o.last) : 'No dates found in this file, so the timing reports are skipped') + '</p><div class="fr-stats">';
-  h += '<div class="fr-stat"><span class="fr-mute fr-sm">Net sales</span><b>' + mny(o.netSales) + '</b></div>';
-  if (o.returns) h += '<div class="fr-stat neg"><span class="fr-mute fr-sm">Returns / credits</span><b>' + mny(o.returns) + '</b></div>';
-  h += '<div class="fr-stat"><span class="fr-mute fr-sm">Products sold</span><b>' + fmt(o.list.length) + '</b></div>';
-  if (o.tied && o.tied.count) h += '<div class="fr-stat"><span class="fr-mute fr-sm">Cash tied up (estimate)</span><b>' + mny(o.tied.value) + '</b></div>';
-  h += '</div></section>';
-  h += qualityCard(o);
-  h += '<section class="fr-box"><h2>What stands out</h2>' + (o.finds.length ? '<ul class="fr-find">' + o.finds.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>' : '<p class="fr-mute">Add a date column, a receipt number or stock on hand to unlock more findings.</p>') + '</section>';
-  var rec = recommend(o);
-  h += '<section class="fr-box"><h2>A sensible next step</h2><p style="margin:6px 0 8px"><b>' + esc(rec.name) + '</b></p><p class="fr-mute fr-sm" style="margin:0 0 10px">' + esc(rec.why) + '</p><a class="fr-btn fr-alt fr-noprint" href="../services.html">See my options</a></section>';
-  if (top.length) h += '<section class="fr-box"><h2>Your best sellers</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">Top ' + top.length + ' by sales amount</p>' + bars(top.map(function (p) { return [p.name, p.amount, ' <span class="fr-mute fr-sm">' + (p.amount / gross * 100).toFixed(1) + '%</span>']; }), top[0].amount, mny) + '</section>';
-  if (o.slow && o.slow.length) h += '<section class="fr-box"><h2>Used to sell, now quiet</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">No sale for 30 days or more at the end of your file</p><table><tr><th>Product</th><th class="n">Past sales</th><th class="n">Quiet for</th></tr>' + o.slow.map(function (p) { return '<tr><td>' + esc(p.name) + '</td><td class="n">' + mny(p.amount) + '</td><td class="n">' + p.quiet + ' days</td></tr>'; }).join('') + '</table></section>';
-  if (o.months && o.months.length > 1) {
-    var mx = Math.max.apply(null, o.months.map(function (m) { return m[1]; }));
-    h += '<section class="fr-box"><h2>Your months</h2>' + bars(o.months.map(function (m) { return [E.monthName(m[0]), m[1], o.fullMonths.some(function (f) { return f[0] === m[0]; }) ? '' : ' <span class="fr-tag">partial</span>']; }), mx, mny) + '</section>';
-    if (!o.wideUnit && o.wk && Math.max.apply(null, o.wk) > 0) h += '<section class="fr-box"><h2>Your busiest days</h2>' + bars(o.dayNames.map(function (d, i) { return [d, o.wk[i]]; }), Math.max.apply(null, o.wk), mny) + '</section>';
+function profitCards(hm, xo, o) {
+  var mny = o.money;
+  var h = '<section class="fr-box"><h2>Sales, expenses and profit</h2><p class="fr-mute fr-sm" style="margin:0 0 12px">' + (hm.basis === 'months' ? 'Compared over ' + esc(hm.period) + ': only the full months both your sales and expenses cover.' : 'Compared as totals, because the two do not share a full month with dates.') + '</p>';
+  h += '<div class="fr-stats"><div class="fr-stat"><span class="fr-mute fr-sm">Sales</span><b>' + mny(hm.sales) + '</b></div><div class="fr-stat"><span class="fr-mute fr-sm">Expenses</span><b>' + mny(hm.expenses) + '</b></div>';
+  h += '<div class="fr-stat' + (hm.profit < 0 ? ' neg' : '') + '"><span class="fr-mute fr-sm">' + (hm.profit < 0 ? 'Loss' : 'Profit') + '</span><b>' + mny(hm.profit) + '</b></div>';
+  if (hm.margin != null) h += '<div class="fr-stat' + (hm.margin < 0 ? ' neg' : '') + '"><span class="fr-mute fr-sm">Profit margin</span><b>' + hm.margin.toFixed(1) + '%</b></div>';
+  h += '</div>';
+  if (hm.rows.length > 1) {
+    h += '<table style="margin-top:14px"><tr><th>Month</th><th class="n">Sales</th><th class="n">Expenses</th><th class="n">Profit</th></tr>' + hm.rows.map(function (r) {
+      var p = r.sales - r.expenses; return '<tr><td>' + esc(E.monthName(r.key)) + (r.comparable ? '' : ' <span class="fr-tag">not compared</span>') + '</td><td class="n">' + fmt(r.sales) + '</td><td class="n">' + fmt(r.expenses) + '</td><td class="n" style="' + (p < 0 ? 'color:#b45309;font-weight:700' : '') + '">' + fmt(p) + '</td></tr>'; }).join('') + '</table>';
   }
-  if (o.pairs && o.pairs.length) h += '<section class="fr-box"><h2>What customers buy together</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">From ' + fmt(o.bills) + ' receipts</p><table><tr><th>Pair</th><th class="n">Times together</th></tr>' + o.pairs.map(function (p) { return '<tr><td>' + esc(p.a) + ' + ' + esc(p.b) + '</td><td class="n">' + p.c + '</td></tr>'; }).join('') + '</table></section>';
-  else if (o.bills !== undefined) h += '<section class="fr-box"><h2>What customers buy together</h2><p class="fr-mute">Not enough shared receipts to show a pattern yet.</p></section>';
+  if (hm.finds.length) h += '<ul class="fr-find">' + hm.finds.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>';
+  if (hm.notes.length) h += '<p class="fr-mute fr-sm" style="margin:10px 0 0">' + hm.notes.map(esc).join('<br>') + '</p>';
+  h += '</section>';
+  return h;
+}
+function expenseSections(xo, money, hm) {
+  var h = '', cat = xo.list.filter(function (p) { return p.amount > 0; }).slice(0, 10), tot = cat.length ? xo.list.filter(function (p) { return p.amount > 0; }).reduce(function (a, p) { return a + p.amount; }, 0) : 1;
+  if (cat.length) h += '<section class="fr-box"><h2>Where your money goes</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">Top ' + cat.length + ' expenses' + (xo.merged && xo.merged.count ? ' (names typed differently were counted together)' : '') + '</p>' + bars(cat.map(function (p) { return [p.name, p.amount, ' <span class="fr-mute fr-sm">' + (p.amount / tot * 100).toFixed(1) + '%</span>']; }), cat[0].amount, money) + '</section>';
+  return h;
+}
+function render(o, xo, hm) {
+  var h = '', mny, rec = null, top = [];
+  if (o) {
+    mny = o.money; var gross = o.grossSales > 0 ? o.grossSales : 1;
+    top = o.list.filter(function (p) { return p.amount > 0; }).slice(0, 10);
+    h += '<section class="fr-box"><h2>' + esc(CONFIG.name) + ' Health Check</h2><p class="fr-mute fr-sm" style="margin:0 0 12px">' + (o.first ? 'Sales from ' + dstr(o.first) + ' to ' + dstr(o.last) : 'No dates found in this file, so the timing reports are skipped') + '</p><div class="fr-stats">';
+    h += '<div class="fr-stat"><span class="fr-mute fr-sm">Net sales</span><b>' + mny(o.netSales) + '</b></div>';
+    if (o.returns) h += '<div class="fr-stat neg"><span class="fr-mute fr-sm">Returns / credits</span><b>' + mny(o.returns) + '</b></div>';
+    h += '<div class="fr-stat"><span class="fr-mute fr-sm">Products sold</span><b>' + fmt(o.list.length) + '</b></div>';
+    if (o.tied && o.tied.count) h += '<div class="fr-stat"><span class="fr-mute fr-sm">Cash tied up (estimate)</span><b>' + mny(o.tied.value) + '</b></div>';
+    h += '</div></section>';
+    if (xo && hm) h += profitCards(hm, xo, o);
+    if (xo) h += expenseSections(xo, mny, hm);
+    h += qualityCard(o, false);
+    if (xo) h += qualityCard(xo, true);
+    h += '<section class="fr-box"><h2>What stands out</h2>' + (o.finds.length ? '<ul class="fr-find">' + o.finds.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>' : '<p class="fr-mute">Add a date column, a receipt number or stock on hand to unlock more findings.</p>') + '</section>';
+    rec = recommend(o);
+    h += '<section class="fr-box"><h2>A sensible next step</h2><p style="margin:6px 0 8px"><b>' + esc(rec.name) + '</b></p><p class="fr-mute fr-sm" style="margin:0 0 10px">' + esc(rec.why) + '</p><a class="fr-btn fr-alt fr-noprint" href="../services.html">See my options</a></section>';
+    if (top.length) h += '<section class="fr-box"><h2>Your best sellers</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">Top ' + top.length + ' by sales amount</p>' + bars(top.map(function (p) { return [p.name, p.amount, ' <span class="fr-mute fr-sm">' + (p.amount / gross * 100).toFixed(1) + '%</span>']; }), top[0].amount, mny) + '</section>';
+    if (o.slow && o.slow.length) h += '<section class="fr-box"><h2>Used to sell, now quiet</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">No sale for 30 days or more at the end of your file</p><table><tr><th>Product</th><th class="n">Past sales</th><th class="n">Quiet for</th></tr>' + o.slow.map(function (p) { return '<tr><td>' + esc(p.name) + '</td><td class="n">' + mny(p.amount) + '</td><td class="n">' + p.quiet + ' days</td></tr>'; }).join('') + '</table></section>';
+    if (o.months && o.months.length > 1) {
+      var mx = Math.max.apply(null, o.months.map(function (m) { return m[1]; }));
+      h += '<section class="fr-box"><h2>Your months</h2>' + bars(o.months.map(function (m) { return [E.monthName(m[0]), m[1], o.fullMonths.some(function (f) { return f[0] === m[0]; }) ? '' : ' <span class="fr-tag">partial</span>']; }), mx, mny) + '</section>';
+      if (!o.wideUnit && o.wk && Math.max.apply(null, o.wk) > 0) h += '<section class="fr-box"><h2>Your busiest days</h2>' + bars(o.dayNames.map(function (d, i) { return [d, o.wk[i]]; }), Math.max.apply(null, o.wk), mny) + '</section>';
+    }
+    if (o.pairs && o.pairs.length) h += '<section class="fr-box"><h2>What customers buy together</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">From ' + fmt(o.bills) + ' receipts</p><table><tr><th>Pair</th><th class="n">Times together</th></tr>' + o.pairs.map(function (p) { return '<tr><td>' + esc(p.a) + ' + ' + esc(p.b) + '</td><td class="n">' + p.c + '</td></tr>'; }).join('') + '</table></section>';
+    else if (o.bills !== undefined) h += '<section class="fr-box"><h2>What customers buy together</h2><p class="fr-mute">Not enough shared receipts to show a pattern yet.</p></section>';
+  } else {   // only expenses in the file: the same care, a smaller report
+    mny = xo.money;
+    h += '<section class="fr-box"><h2>' + esc(CONFIG.name) + ' Expenses Check</h2><p class="fr-mute fr-sm" style="margin:0 0 12px">' + (xo.first ? 'Expenses from ' + dstr(xo.first) + ' to ' + dstr(xo.last) : 'No dates found in this file') + '. No sales were found in it. Add your sales sheet to see profit.</p><div class="fr-stats"><div class="fr-stat"><span class="fr-mute fr-sm">Total expenses</span><b>' + mny(xo.netSales) + '</b></div><div class="fr-stat"><span class="fr-mute fr-sm">Categories</span><b>' + fmt(xo.list.length) + '</b></div></div></section>';
+    h += expenseSections(xo, mny, null);
+    if (xo.months && xo.months.length > 1) { var mx2 = Math.max.apply(null, xo.months.map(function (m) { return m[1]; })); h += '<section class="fr-box"><h2>Your spending by month</h2>' + bars(xo.months.map(function (m) { return [E.monthName(m[0]), m[1], xo.fullMonths.some(function (f) { return f[0] === m[0]; }) ? '' : ' <span class="fr-tag">partial</span>']; }), mx2, mny) + '</section>'; }
+    h += qualityCard(xo, true);
+  }
   var R = $('#frReport'); R.innerHTML = h; show('#frReport', true); show('#frCta', true);
-  $('#frDl').addEventListener('click', download);
-  S.summary = 'Suggested: ' + rec.name + '. Net sales ' + mny(o.netSales) + ', ' + o.list.length + ' products' + (o.tied && o.tied.count ? ', about ' + mny(o.tied.value) + ' tied up in slow stock' : '') + '; best seller ' + (top[0] ? top[0].name : '-') + (o.recon.ok ? '' : '; numbers did not reconcile') + '.';
+  var d1 = $('#frDl'), d2 = $('#frDlX'); if (d1) d1.addEventListener('click', function () { download(S.out, 'health-check-cleaned.csv'); }); if (d2) d2.addEventListener('click', function () { download(xo, 'expenses-cleaned.csv'); });
+  var best = top[0] ? top[0].name : '-';
+  S.summary = (rec ? 'Suggested: ' + rec.name + '. ' : 'Expenses only. ') + (o ? 'Net sales ' + mny(o.netSales) + ', ' + o.list.length + ' products' + (o.tied && o.tied.count ? ', about ' + mny(o.tied.value) + ' tied up in slow stock' : '') + '; best seller ' + best : '')
+    + (xo ? (o ? '; ' : '') + 'expenses ' + mny(xo.netSales) : '') + (hm ? ', ' + (hm.profit < 0 ? 'loss ' : 'profit ') + mny(hm.profit) + (hm.margin != null ? ' (' + hm.margin.toFixed(0) + '%)' : '') : '')
+    + ((o && !o.recon.ok) || (xo && !xo.recon.ok) ? '; numbers did not reconcile' : '') + '.';
   if (CONFIG.leadForm) { show('#frLead', true); S.shownAt = S.shownAt || Date.now(); }
   if (R.scrollIntoView) R.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-function download() {
+function download(data, name) {
   try {
-    var blob = new Blob([E.cleanedCSV(S.out)], { type: 'text/csv;charset=utf-8' });
-    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'health-check-cleaned.csv'; document.body.appendChild(a); a.click();
+    var blob = new Blob([E.cleanedCSV(data)], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
   } catch (e) { fail('We could not prepare the download on this device.'); }
 }
@@ -551,7 +612,8 @@ $('#frSample').addEventListener('click', function () {
         rows.push([date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0'), 'R' + rec, items[k][0], q, items[k][1], stock[items[k][0]]]); });
     }
   }
-  fail(''); S.file = 'Sample data (an invented pharmacy)'; S.sheets = [{ name: 'Sample', rows: rows }]; S.notes = ['This is sample data from an invented shop, not yours.']; S.sheetChoice = 'auto'; S.order = 'auto'; S.currency = 'auto'; S.map = null; S.sample = true;
+  var exp = [['Date', 'Category', 'Amount']]; [['Rent', 22000], ['Salaries', 45000], ['Electricity', 4500], ['Transport', 8000], ['Licences', 1500]].forEach(function (c) { for (var mo = 3; mo <= 8; mo++) { var q = c[0] === 'Electricity' || c[0] === 'Transport' ? 0.85 + rnd() * 0.3 : 1; exp.push([new Date(2026, mo, 1).getFullYear() + '-' + String(mo + 1).padStart(2, '0') + '-' + (c[0] === 'Rent' ? '01' : '28'), c[0], Math.round(c[1] * q)]); } });
+  fail(''); S.file = 'Sample data (an invented pharmacy)'; S.sheets = [{ name: 'Sales', rows: rows }, { name: 'Expenses', rows: exp }]; S.notes = ['This is sample data from an invented shop, not yours.']; S.sheetChoice = 'auto'; S.kinds = {}; S.order = 'auto'; S.currency = 'auto'; S.map = null; S.sample = true;
   prepare();
 });
 
