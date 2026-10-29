@@ -944,6 +944,8 @@ def process_inbound_email(raw: bytes, s: dict = None) -> dict:
     refs = re.findall(r"<[^>]+>", f"{msg.get('In-Reply-To', '')} {msg.get('References', '')}")
     body = _plain_text(msg)
 
+    if subject.lower().startswith("health check lead test"):   # the self-check email from the site: proof of delivery, never a lead
+        return {"matched": False, "test": True}
     if subject.lower().startswith("health check lead:"):
         return _report_lead(body, subject, mid, s)
 

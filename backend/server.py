@@ -828,6 +828,10 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         return {"summary": ai.summarize(db.get_settings(), lead)}
 
     # ------------------------------------------------------------- Grow (content drafts and partners: nothing here sends)
+    @app.post("/api/grow/lead-check")
+    def grow_lead_check(body: dict = Body(default={})):
+        return grow.lead_check(db.get_settings(), send=bool((body or {}).get("send")))
+
     @app.post("/api/grow/posts")
     def grow_posts(body: GrowPostsIn):
         return grow.draft_posts(db.get_settings(), body.finding, body.platforms, body.audience)

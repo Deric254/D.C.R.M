@@ -5,8 +5,12 @@ slow stock, best months and days, and what sells together. The sales file is rea
 uploaded. If they choose to leave their details at the end, those reach you as a lead in your CRM.
 
 Contents of this folder
-- `index.html`        the page (put it at `free-report/index.html` in your site)
+- `index.html`        the page, built in your site's own look (put it at `free-report/index.html` in your site; it uses your site's `assets/` folder)
+- `engine.js`         reads and cleans any sales file and proves every number is accounted for (put it next to `index.html`)
+- `vendor/`           the Excel reader, next to `index.html` as `free-report/vendor/`
 - `api/lead.js`       the small free Vercel function that receives the "leave your details" form (copy to `api/lead.js` at the SITE ROOT)
+- `api/lead-check.js` a self-check for that function (copy next to `lead.js`); the CRM's "Check lead capture" button calls it
+- `api/lead-retry.js` re-sends saved leads (optional, see the safety net)
 - `package.json`      the one dependency the function needs (merge into your site's package.json, or copy it if you have none)
 
 ## Step 1: the page (5 minutes)
@@ -48,3 +52,20 @@ Copy both `api/lead.js` and `api/lead-retry.js` to the `api` folder at your site
 
 ## Suggested next step (added)
 The report page now suggests the service that fits what the file showed, and adds it to the lead summary so you can open your reply with it.
+
+## Messy files (added)
+Whatever is uploaded is cleaned in the visitor's browser and every row is accounted for: title lines above the headings, blank rows, repeated
+headings, total and subtotal lines (shown, never added twice), returns and credits (negative amounts), KES / USD / "1.200,50" / "(500)" amounts,
+unreadable amounts (listed, never dropped), day-first or month-first dates (decided from the file), Excel date numbers, monthly sheets (put together),
+months across the page, Swahili headings, and UTF-8 / UTF-16 / Windows-1252 text. The report shows a "Your numbers add up" card:
+sales + returns + total lines = everything read from the file. A cleaned copy of the file can be downloaded, listing what was done with each row.
+Product names typed in several ways are counted together and the report says so; possible double entries are flagged, never removed.
+
+## If the form says "We could not send your details just now" (added)
+1. In the CRM press Grow > Content > Lead capture > "Check lead capture". It asks your website what is set up, in plain words.
+   "Check and send a test email" also proves delivery (the test email is ignored by the CRM, it never becomes a lead).
+2. The usual causes: a missing variable in Vercel, or the mail provider refusing the login (use an APP password for `SMTP_USER`).
+   After changing variables in Vercel you must redeploy.
+3. `vercel.json` gives the functions 30 seconds (the free default of 10 seconds is too short for a slow mail server).
+4. The real reason is written to Vercel > your project > Logs (search "[lead]"). No password is ever logged.
+5. While it is broken the visitor keeps what they typed and gets a one-tap "send these details on WhatsApp" link.

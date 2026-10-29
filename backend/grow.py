@@ -53,6 +53,49 @@ def respectful(text: str) -> str:
     return out[:1].upper() + out[1:] if out and text[:1].isupper() else out
 
 
+# ------------------------------------------------------------------ lead capture self-check
+def lead_check(s: dict, send: bool = False, post=None) -> dict:
+    """Ask the page's own /api/lead-check (on your site) what is wrong with lead capture. Needs only the free-report link and the secret.
+    Returns plain words the owner can act on. Nothing secret is shown."""
+    from urllib.parse import urlsplit
+    url = (s.get("free_report_url") or "").strip()
+    token = str(s.get("free_report_token") or "").strip()
+    if not url:
+        return {"ok": False, "stage": "setup", "say": "Save your free-report link first."}
+    if not token:
+        return {"ok": False, "stage": "setup", "say": "Press Generate and Save secret first, then put the same value in Vercel as LEAD_TOKEN."}
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return {"ok": False, "stage": "setup", "say": "The free-report link does not look right."}
+    endpoint = f"{parts.scheme}://{parts.netloc}/api/lead-check"
+    if post is None:
+        import requests
+        post = requests.post
+    try:
+        r = post(endpoint, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json={"send": bool(send)}, timeout=45)
+    except Exception as e:   # noqa: BLE001  (any network trouble is reported in words, never raised)
+        return {"ok": False, "stage": "reach", "say": "Could not reach your site just now (" + type(e).__name__ + "). Check your internet and try again."}
+    code = getattr(r, "status_code", 0)
+    if code == 404:
+        return {"ok": False, "stage": "deploy", "say": "Your site does not have the lead-check function yet. Upload the updated website files to Vercel (the api folder must include lead-check.js) and try again."}
+    if code == 401:
+        return {"ok": False, "stage": "token", "say": "Your site answered, but the secret does not match. Put exactly the value saved here into Vercel as LEAD_TOKEN, redeploy, and try again."}
+    try:
+        j = r.json()
+    except Exception:   # noqa: BLE001
+        return {"ok": False, "stage": "reply", "say": f"Your site answered with something unexpected (status {code}). Open Vercel > Logs for the lead function."}
+    if code >= 500 or not isinstance(j, dict):
+        return {"ok": False, "stage": "reply", "say": f"Your site's function crashed (status {code}). Open Vercel > Logs for the lead function and read the last error."}
+    out = {"ok": bool(j.get("ok")), "stage": "done", "missing": j.get("missing") or [], "mail_login": j.get("mailLogin"), "test": j.get("test"), "store": bool(j.get("store")), "advice": j.get("advice") or []}
+    if out["ok"]:
+        out["say"] = "Lead capture is working: the site's mail login is accepted." + (" A test email was sent to your inbox; it will be ignored by this app, not turned into a lead." if j.get("test") else " Press Send a test email to prove delivery.")
+    elif out["missing"]:
+        out["say"] = "These settings are missing in Vercel: " + ", ".join(out["missing"]) + "."
+    else:
+        out["say"] = "The mail login failed: " + str(j.get("mailLogin") or j.get("test") or "unknown reason") + "."
+    return out
+
+
 # ------------------------------------------------------------------ content
 def _link(s: dict, src: str = "") -> str:
     """The free-report link, tagged with where it is shared (?src=...) so a lead shows which channel brought it."""

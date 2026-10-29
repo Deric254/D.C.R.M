@@ -18,10 +18,12 @@ const crypto = require('crypto');
 const hits = new Map();   // fallback throttle when no store is connected: 5 submissions per 10 minutes per address
 const one = (v, n) => String(v == null ? '' : v).replace(/[\r\n\t]+/g, ' ').trim().slice(0, n);   // one line only: no header or field injection
 
+// what actually went wrong, safe to log and to return to the owner (never the password)
+const why = (e) => one([e && e.code, e && e.responseCode, e && e.command, (e && (e.response || e.message)) || String(e)].filter(Boolean).join(' '), 200);
 let transportOverride = null, storeOverride;
 const transport = () => transportOverride || nodemailer.createTransport({
   host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: Number(process.env.SMTP_PORT) === 465,
-  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }, connectionTimeout: 10000, socketTimeout: 15000
+  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }, connectionTimeout: 8000, greetingTimeout: 8000, socketTimeout: 12000
 });
 
 /* ---------- optional store (Upstash Redis / Vercel KV over HTTPS, no extra dependency) ---------- */
@@ -81,7 +83,7 @@ async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
   const env = process.env;
   if (!env.NOTIFY_TO || !env.LEAD_TOKEN || (!transportOverride && (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS)))
-    return res.status(500).json({ ok: false, error: 'The form is not set up yet.' });
+    { console.error('[lead] missing settings:', ['NOTIFY_TO', 'LEAD_TOKEN', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'].filter((k) => !env[k]).join(', ')); return res.status(500).json({ ok: false, error: 'The form is not set up yet. Please use the WhatsApp or email button instead.' }); }
   let b = req.body;
   try { if (typeof b === 'string') b = JSON.parse(b); } catch (e) { b = null; }
   if (!b || typeof b !== 'object') return res.status(400).json({ ok: false, error: 'Invalid request.' });
@@ -118,6 +120,7 @@ async function handler(req, res) {
   try {
     await transport().sendMail(mailFor(rec));
   } catch (e) {
+    console.error('[lead] email send failed:', why(e), saved ? '(lead was saved and will be retried)' : '(lead NOT saved: no store connected)');
     if (saved) return res.status(200).json({ ok: true });   // the lead is safely stored and will be sent on the next retry
     return res.status(502).json({ ok: false, error: 'We could not send your details just now. Please use the WhatsApp or email button instead.' });
   }
@@ -130,4 +133,6 @@ module.exports._useTransport = (t) => { transportOverride = t; };
 module.exports._useStore = (s) => { storeOverride = s; };
 module.exports._reset = () => hits.clear();
 module.exports.flushPending = flushPending;
+module.exports.why = why;
+module.exports.transport = transport;
 module.exports.getStore = getStore;

@@ -157,6 +157,10 @@ try:
         page.wait_for_function("document.body.innerText.includes('Used everywhere')")
         page.click("summary:has-text('Lead capture')"); page.click("#rgen"); assert len(page.input_value("#rtoken")) == 32
         page.click("#rtsave"); page.wait_for_function("document.body.innerText.includes('Lead capture (on)')")
+        page.click("summary:has-text('Lead capture')"); page.click("#rtest")
+        page.wait_for_function("document.querySelector('#rtestout').innerText.trim() !== '' && !document.querySelector('#rtestout').innerText.startsWith('Checking')", timeout=60000)
+        assert page.locator("#rtestout").inner_text().strip(), "the lead-capture check must always answer in words"
+        assert page.locator("#rtest").is_enabled()
         shot("3b-grow")
 
         # ---- replies

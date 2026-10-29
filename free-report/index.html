@@ -1,403 +1,594 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" class="overflow-x-hidden">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Free Business Health Check</title>
-<meta name="description" content="Upload your sales sheet and see what stands out: best sellers, slow stock, your best months and what sells together. Your file stays on your device.">
-<style>
-:root{--bg:#f4f6f5;--card:#fff;--ink:#14231f;--mute:#5d6b66;--line:#dde4e1;--brand:#0f6b57;--brand-ink:#fff;--accent:#e6f3ef;--warn:#b45309;--bar:#0f6b57;--bar2:#9ccbbf}
-@media(prefers-color-scheme:dark){:root{--bg:#0f1816;--card:#16231f;--ink:#e8f0ed;--mute:#9bb0a9;--line:#27382f;--brand:#2fb797;--brand-ink:#06211a;--accent:#173129;--warn:#f0a35a;--bar:#2fb797;--bar2:#285f52}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-.wrap{max-width:860px;margin:0 auto;padding:0 16px 64px}
-header{padding:36px 0 8px}
-h1{font-size:clamp(1.6rem,4.5vw,2.3rem);line-height:1.2;margin:0 0 10px}
-h2{font-size:1.15rem;margin:0 0 4px}
-.lead{color:var(--mute);margin:0;max-width:62ch}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-top:16px}
-.drop{border:2px dashed var(--line);border-radius:12px;padding:28px 16px;text-align:center;background:var(--accent)}
-.drop.over{border-color:var(--brand)}
-.btn{display:inline-block;border:0;border-radius:10px;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer;background:var(--brand);color:var(--brand-ink);text-decoration:none}
-.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
-.btn:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.muted{color:var(--mute)}.small{font-size:.9rem}
-.privacy{display:flex;gap:8px;align-items:flex-start;margin-top:12px;color:var(--mute);font-size:.92rem}
-.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
-label.f{display:block;font-size:.85rem;color:var(--mute)}
-select{width:100%;padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit}
-.stats{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
-.stat{background:var(--accent);border-radius:12px;padding:14px}
-.stat b{display:block;font-size:1.5rem;line-height:1.2}
-ul.find{margin:8px 0 0;padding-left:20px}ul.find li{margin:6px 0}
-table{width:100%;border-collapse:collapse;font-size:.95rem}
-th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle}
-th{color:var(--mute);font-weight:600;font-size:.85rem}
-td.n,th.n{text-align:right;white-space:nowrap}
-.bar{height:10px;border-radius:6px;background:var(--bar2);min-width:2px}
-.bar>i{display:block;height:100%;border-radius:6px;background:var(--bar)}
-.tag{display:inline-block;font-size:.75rem;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--mute)}
-.note{color:var(--warn);font-size:.9rem}
-.cta{background:var(--brand);color:var(--brand-ink);border-radius:14px;padding:22px;margin-top:16px}
-.cta .btn{background:var(--brand-ink);color:var(--brand)}
-.cta .btn.ghost{background:transparent;color:var(--brand-ink);border:1px solid currentColor}
-.hidden{display:none!important}
-.form input,.form textarea{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit}
-.form .grid{margin-bottom:10px}.hp{position:absolute;left:-9999px;height:0;overflow:hidden}
-.ok{color:var(--brand);font-weight:600}
-footer{margin-top:28px;color:var(--mute);font-size:.85rem}
-@media print{body{background:#fff;color:#000}.no-print,.drop,#mapcard{display:none!important}.card{break-inside:avoid;border-color:#ccc}.cta{background:#fff;color:#000;border:1px solid #000}.cta .btn{display:none}}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+  <title>Free Business Health Check | dericBI</title>
+  <meta name="description" content="Upload your sales sheet, however messy, and see what stands out: best sellers, slow stock, your best months and what sells together. Free, and your file stays on your device." />
+  <meta name="author" content="Deric Marangu" />
+  <link rel="canonical" href="https://dericbi.vercel.app/free-report/" />
+  <meta property="og:title" content="Free Business Health Check | dericBI" />
+  <meta property="og:description" content="Upload your sales sheet and see what stands out. Free, and your file never leaves your device." />
+  <meta property="og:url" content="https://dericbi.vercel.app/free-report/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://dericbi.vercel.app/assets/img/og-share.jpg" />
+  <link rel="apple-touch-icon" sizes="180x180" href="../icon/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../icon/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../icon/favicon-16x16.png">
+  <link rel="shortcut icon" href="../icon/favicon.ico">
+  <meta name="theme-color" content="#49A078">
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" crossorigin="anonymous" />
+  <link rel="stylesheet" href="../assets/css/style.css?v=07531de3">
+  <link rel="stylesheet" href="../assets/css/social_links.css?v=885951dd">
+  <link rel="stylesheet" href="../assets/css/tailwind.css?v=d1045869">
+  <style>
+  /* Everything here is prefixed fr- so it can never collide with the site's own styles (which restyle .card, button:hover and friends). */
+  .fr-wrap{max-width:900px;margin:0 auto;padding:8px 14px 40px;color:#1f2937}
+  .fr-hero{text-align:center;padding:18px 0 6px}
+  .fr-hero h1{font-size:clamp(1.7rem,5vw,2.4rem);font-weight:800;color:#49A078;line-height:1.2;margin:0 0 10px}
+  .fr-hero p{margin:0 auto;max-width:60ch;color:#374151}
+  .fr-box{background:#fff;border:1px solid #cfe8dc;border-radius:14px;padding:18px;margin-top:16px;box-shadow:0 2px 10px rgba(73,160,120,.08)}
+  .fr-box h2{font-size:1.15rem;font-weight:700;color:#3D8069;margin:0 0 4px}
+  .fr-drop{border:2px dashed #49A078;border-radius:12px;padding:26px 14px;text-align:center;background:#f0fdf6}
+  .fr-drop.over{background:#dff3ea;border-color:#3D8069}
+  .fr-btn,.fr-btn:hover,.fr-btn:focus{display:inline-block;border:0;border-radius:10px;padding:10px 18px;font:inherit;font-weight:700;font-size:.95rem;cursor:pointer;background:#49A078;color:#fff;text-decoration:none;transform:none;box-shadow:none;text-shadow:none}
+  .fr-btn:hover{background:#3D8069;color:#fff}
+  .fr-btn.fr-alt,.fr-btn.fr-alt:hover{background:#fff;color:#3D8069;border:1px solid #49A078}
+  .fr-btn.fr-alt:hover{background:#f0fdf6}
+  .fr-btn.fr-gold,.fr-btn.fr-gold:hover{background:#facc15;color:#1f2937}
+  .fr-btn[disabled]{opacity:.55;cursor:not-allowed}
+  .fr-btn:focus-visible,.fr-box select:focus-visible,.fr-box input:focus-visible,.fr-box textarea:focus-visible,summary:focus-visible{outline:3px solid #facc15;outline-offset:2px}
+  .fr-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .fr-mute{color:#4b5563}.fr-sm{font-size:.9rem}
+  .fr-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .fr-box label.fr-f{display:block;font-size:.85rem;color:#4b5563}
+  .fr-box select,.fr-box input:not([type=checkbox]):not([type=file]),.fr-box textarea{width:100%;padding:9px 10px;border-radius:8px;border:1px solid #b6d9c8;background:#fff;color:#1f2937;font:inherit;margin-top:3px}
+  .fr-stats{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+  .fr-stat{background:#f0fdf6;border:1px solid #cfe8dc;border-radius:12px;padding:12px 14px}
+  .fr-stat b{display:block;font-size:1.45rem;line-height:1.25;color:#1f2937}
+  .fr-stat.neg b{color:#b45309}
+  .fr-find{margin:8px 0 0;padding-left:20px}.fr-find li{margin:6px 0}
+  .fr-box table{width:100%;border-collapse:collapse;font-size:.95rem}
+  .fr-box th,.fr-box td{text-align:left;padding:7px 6px;border-bottom:1px solid #e3f1ea;vertical-align:middle;background:none}
+  .fr-box th{color:#4b5563;font-weight:600;font-size:.85rem}
+  .fr-box td.n,.fr-box th.n{text-align:right;white-space:nowrap}
+  .fr-bar{height:10px;border-radius:6px;background:#dff3ea;min-width:2px}
+  .fr-bar>i{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,#49A078,#3D8069)}
+  .fr-tag{display:inline-block;font-size:.72rem;border:1px solid #b6d9c8;border-radius:999px;padding:1px 8px;color:#4b5563}
+  .fr-warn{color:#b45309;font-size:.92rem}
+  .fr-ok{color:#2f7d5b;font-weight:700}
+  .fr-check{border-left:5px solid #49A078}
+  .fr-check.bad{border-left-color:#f59e0b}
+  .fr-cta{background:linear-gradient(135deg,#49A078,#3D8069);color:#fff;border-radius:14px;padding:20px;margin-top:16px}
+  .fr-cta h2{color:#fff;font-size:1.2rem;font-weight:700;margin:0}
+  .fr-cta .fr-btn,.fr-cta .fr-btn:hover{background:#facc15;color:#1f2937}
+  .fr-cta .fr-btn.fr-alt,.fr-cta .fr-btn.fr-alt:hover{background:transparent;color:#fff;border:1px solid #fff}
+  .fr-hide{display:none!important}
+  .fr-hp{position:absolute;left:-9999px;height:0;overflow:hidden}
+  .fr-note{font-size:.85rem;color:#4b5563;text-align:center;margin:22px 0 4px}
+  details.fr-more summary{cursor:pointer;color:#3D8069;font-weight:700;font-size:.92rem;margin-top:10px}
+  .fr-chip{display:inline-block;background:#f0fdf6;border:1px solid #cfe8dc;border-radius:999px;padding:2px 10px;font-size:.82rem;margin:2px 4px 2px 0}
+  @media(max-width:480px){.fr-box{padding:14px}.fr-box td:first-child{word-break:break-word}}
+  @media print{nav,footer,#backToTop,.fr-noprint,.fr-drop,#frHow,#chatbot-container,[id*=chatbot]{display:none!important}body{background:#fff}.fr-box{break-inside:avoid;box-shadow:none;border-color:#bbb}.fr-cta{background:#fff;color:#000;border:1px solid #000}.fr-cta h2{color:#000}.fr-cta .fr-btn{display:none}}
+  </style>
+  <style>
+  .nav-link{transition:color .3s ease,text-shadow .3s ease}
+  </style>
 </head>
-<body>
-<div class="wrap">
-<header>
-  <p class="small" style="margin:0 0 8px"><a href="../home.html" style="color:var(--brand);font-weight:600;text-decoration:none">&larr; dericBI</a></p>
-  <h1>Free Business Health Check</h1>
-  <p class="lead">Upload your sales sheet and see what stands out: what sells best, what sits too long, your strongest months, and what customers buy together. Free, and your file never leaves your device.</p>
-</header>
+<body class="bg-white text-gray-800 flex flex-col min-h-screen overflow-x-hidden w-full max-w-[100vw]">
+<!-- ✅ Responsive Navbar -->
+<nav class="bg-[#49A078] text-white px-2 xs:px-3 sm:px-4 py-2 xs:py-3 shadow-lg fixed top-0 left-0 right-0 z-50 w-full bg-gradient-to-r from-[#49A078] to-[#3D8069] border-b border-gray-300" role="navigation" aria-label="Main Navigation">
+  <div class="w-full max-w-7xl mx-auto flex items-center justify-between gap-1 xs:gap-2 sm:gap-3 md:gap-4">
 
-<section class="card no-print" id="upload">
-  <div class="drop" id="drop">
-    <p style="margin:0 0 12px"><b>Drop your sales file here</b><br><span class="muted small">Excel (.xlsx) or CSV. One row per item sold works best.</span></p>
-    <div class="row" style="justify-content:center">
-      <label class="btn" for="file">Choose a file</label>
-      <input id="file" type="file" accept=".csv,.txt,.xlsx,.xls" class="hidden">
-      <button class="btn ghost" id="sample" type="button">Try it with sample data</button>
+    <!-- ✅ Logo & Brand -->
+    <div class="flex items-center gap-1.5 xs:gap-2 sm:gap-3 shrink-0">
+      <img src="../assets/img/logo-avatar.webp" 
+           alt="dericBI Logo" 
+           class="h-9 w-9 xs:h-10 xs:w-10 sm:h-12 sm:w-12 md:h-16 md:w-16 rounded-full object-cover shadow-md flex-shrink-0" />
+      <div class="font-bold text-lg xs:text-xl sm:text-2xl leading-none whitespace-nowrap">
+        <span>deric</span><span class="text-[#facc15]">BI</span>
+      </div>
+    </div>
+
+    <!-- ✅ Extra Links for Small Screens -->
+    <div class="hidden xs:flex gap-1.5 xs:gap-2 sm:gap-3 flex-1 justify-center md:hidden">
+      <a href="../home.html" class="nav-link text-[10px] xs:text-xs tracking-wide px-2 xs:px-2.5 sm:px-3 py-1 rounded-lg bg-white/10 shadow-md border border-white/30 hover:bg-white/20 hover:border-white/50 hover:shadow-lg transition-all whitespace-nowrap">Home</a>
+      <a href="../services.html" class="nav-link text-[10px] xs:text-xs tracking-wide px-2 xs:px-2.5 sm:px-3 py-1 rounded-lg bg-white/10 shadow-md border border-white/30 hover:bg-white/20 hover:border-white/50 hover:shadow-lg transition-all whitespace-nowrap">Services</a>
+      <a href="../my-projects.html" class="nav-link text-[10px] xs:text-xs tracking-wide px-2 xs:px-2.5 sm:px-3 py-1 rounded-lg bg-white/10 shadow-md border border-white/30 hover:bg-white/20 hover:border-white/50 hover:shadow-lg transition-all whitespace-nowrap">Projects</a>
+    </div>
+
+    <!-- ✅ Scrolling Text (Visible on medium+) -->
+    <div class="hidden md:flex flex-1 justify-center overflow-hidden relative h-10 px-6">
+      <div class="whitespace-nowrap animate-slide text-lg font-semibold text-[#facc15] tracking-wide flex items-center">
+        • Stop Losing MONEY Monthly • Turn Data Chaos Into Profit • 48 Hours From Confusion to Clarity • Your Data Hiding Profits? • From Excel Hell to Business Heaven • Stop Guessing, Start Knowing • Data That Actually Makes Money • From Confused to Empowered • Stop Losing MONEY Monthly • Turn Data Chaos Into Profit • 48 Hours From Confusion to Clarity • Your Data Hiding Profits? • From Excel Hell to Business Heaven • Stop Guessing, Start Knowing • Data That Actually Makes Money • From Confused to Empowered •
+      </div>
+    </div>
+
+    <!-- ✅ Desktop Nav Links -->
+    <ul class="hidden md:flex gap-6 text-sm font-medium items-center shrink-0">
+      <li><a href="../home.html" class="nav-link hover:bg-[#3D8069]/40 px-3 py-2 rounded-md transition-all">Home</a></li>
+      <li><a href="../services.html" class="nav-link font-bold px-3 py-2 rounded-md bg-[#3D8069]/50 shadow-inner text-yellow-300 border-b-2 border-yellow-300">Services</a></li>
+      <li><a href="../my-projects.html" class="nav-link hover:bg-[#3D8069]/40 px-3 py-2 rounded-md transition-all">Projects</a></li>
+      <li><a href="../contact.html" class="nav-link hover:bg-[#3D8069]/40 px-3 py-2 rounded-md transition-all">Contact</a></li>
+      <!--<li><a href="../about.html" class="nav-link hover:bg-[#3D8069]/40 px-3 py-2 rounded-md transition-all">About Us</a></li>-->
+      <li><a href="../terms.html" class="nav-link hover:bg-[#3D8069]/40 px-3 py-2 rounded-md transition-all">T&C's</a></li>
+    </ul>
+
+    <!-- ✅ Hamburger Menu Button with Dropdown -->
+    <div class="relative block md:hidden">
+      <button id="menu-toggle" class="text-xl xs:text-2xl focus:outline-none ml-1 xs:ml-2 sm:ml-3 shrink-0 bg-[#3D8069]/50 hover:bg-[#3D8069]/70 p-2 rounded-md shadow-md transition-all">☰</button>
+      
+      <!-- ✅ Compact Menu Dropdown (Below Icon) -->
+      <div id="mobile-menu" class="absolute right-0 top-full mt-2 w-48 max-h-0 overflow-hidden transition-all duration-300 ease-in-out bg-[#3e8865] rounded-lg shadow-2xl border-2 border-[#49A078] z-50">
+        <div class="py-2 px-2 flex flex-col gap-1.5">
+          <a href="../home.html" class="nav-link block py-2 px-3 transition-all hover:bg-[#367659]/50 text-xs rounded-md border border-white/20 hover:border-white/50 shadow-sm">Home</a>
+          <a href="../services.html" class="nav-link block py-2 px-3 transition-all hover:bg-[#367659]/50 text-xs rounded-md border border-white/20 hover:border-white/50 shadow-sm">Services</a>
+          <a href="../my-projects.html" class="nav-link block py-2 px-3 transition-all hover:bg-[#367659]/50 text-xs rounded-md border border-white/20 hover:border-white/50 shadow-sm">Projects</a>
+          <a href="../contact.html" class="nav-link block py-2 px-3 transition-all hover:bg-[#367659]/50 text-xs rounded-md border border-white/20 hover:border-white/50 shadow-sm">Contact</a>
+          <a href="../about.html" class="nav-link block py-2 px-3 transition-all hover:bg-[#367609]/50 text-xs rounded-md border border-white/20 hover:border-white/50 shadow-sm">About</a>
+          <a href="../terms.html" class="nav-link block py-2 px-3 transition-all bg-[#367659]/60 font-semibold text-yellow-300 text-xs rounded-md border border-yellow-400/50 shadow-sm">Terms</a>
+        </div>
+      </div>
     </div>
   </div>
-  <div class="privacy"><span aria-hidden="true">🔒</span><span>Your sales file is read and analysed inside your own browser. It is never uploaded. Only if you choose to leave your details at the end do I receive them.</span></div>
-  <p class="muted small" style="margin:12px 0 0">Useful columns (any names): <b>product</b>, <b>amount</b> or <b>quantity + price</b>. Helpful extras: <b>date</b>, <b>receipt number</b> (shows what sells together) and <b>stock on hand</b> (shows cash tied up).</p>
-  <p class="note hidden" id="err" role="alert"></p>
-</section>
+</nav>
 
-<section class="card hidden" id="mapcard">
-  <h2>Check we understood your columns</h2>
-  <p class="muted small" style="margin:0 0 12px">We guessed these from your headings. Change any that look wrong.</p>
-  <div class="grid" id="mapgrid"></div>
-  <div class="row" style="margin-top:14px"><button class="btn" id="run" type="button">Show my report</button><span class="muted small" id="maphint"></span></div>
-</section>
+<!-- ✅ CSS -->
+<style>
+/* Navigation Links Hover Glow */
+.nav-link {
+  transition: color 0.3s ease, text-shadow 0.3s ease;
+}
+.nav-link:hover {
+  color: #facc15; /* Soft Yellow */
+  text-shadow: 0 0 4px rgba(250, 204, 21, 0.4);
+}
 
-<div id="report" class="hidden"></div>
+/* Continuous Scrolling Animation */
+@keyframes slide {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+.animate-slide {
+  animation: slide 15s linear infinite; /* Faster smooth continuous scrolling */
+}
+</style>
 
-<section class="cta hidden" id="cta">
-  <h2>Want this on your full records, every month?</h2>
-  <p style="margin:6px 0 14px">I can look at your complete sales and stock records and show you exactly where money is slipping and where the opportunities are. You only pay when you see value.</p>
-  <div class="row"><a class="btn hidden" id="wa" target="_blank" rel="noopener">Message me on WhatsApp</a><a class="btn ghost hidden" id="mail">Send me an email</a><button class="btn ghost no-print" id="print" type="button">Save this report as PDF</button></div>
-</section>
-<section class="card hidden" id="leadcard">
-  <h2>Want me to look at your full records?</h2>
-  <p class="muted small" style="margin:4px 0 12px">Leave your details and I will get back to you, with no cost and no obligation. Only what you type here is sent to me. Your sales file is never sent.</p>
-  <form class="form" id="leadform" novalidate>
-    <div class="grid"><label class="f">Your name<input name="name" autocomplete="name"></label><label class="f">Business name<input name="business" autocomplete="organization"></label>
-      <label class="f">WhatsApp / phone<input name="phone" inputmode="tel" autocomplete="tel"></label><label class="f">Email<input name="email" type="email" autocomplete="email"></label></div>
-    <label class="f" style="margin-bottom:10px">Anything you would like me to look at? (optional)<textarea name="note" rows="2" maxlength="600"></textarea></label>
-    <div class="hp" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
-    <label class="row small" style="gap:8px;align-items:flex-start;margin-bottom:12px"><input type="checkbox" name="consent" style="width:auto;margin-top:4px"><span>I agree that <span id="consentname"></span> may contact me about this by WhatsApp, phone or email. I can say stop at any time.</span></label>
-    <div class="row"><button class="btn" type="submit" id="leadsend">Send my details</button><span id="leadmsg" class="small" role="status"></span></div>
-  </form>
-</section>
-<footer>Estimates are based only on the file you provide. They show where to look, not a guarantee of results.</footer>
+<!-- ✅ JS -->
+<script>
+const toggleBtn = document.getElementById('menu-toggle');
+const mobileMenu = document.getElementById('mobile-menu');
+
+// Toggle menu on button click
+toggleBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  mobileMenu.classList.toggle('max-h-0');
+  mobileMenu.classList.toggle('max-h-96');
+});
+
+// Close menu when clicking outside
+document.addEventListener('click', (e) => {
+  if (!mobileMenu.contains(e.target) && !toggleBtn.contains(e.target)) {
+    mobileMenu.classList.add('max-h-0');
+    mobileMenu.classList.remove('max-h-96');
+  }
+});
+</script>
+
+<!-- Spacer for Fixed Navbar -->
+<div class="h-14 xs:h-16 sm:h-20"></div>
+<main class="relative flex-1 w-full overflow-hidden bg-gradient-to-br from-[#f0fdfa] via-[#e0f7fa] to-[#d9f99d]">
+<div class="fr-wrap">
+  <header class="fr-hero">
+    <h1>Free Business Health Check</h1>
+    <p>Upload your sales sheet, however messy it is, and see what stands out: what sells best, what sits too long, your strongest months and what customers buy together. Free, and your file never leaves your device.</p>
+  </header>
+
+  <section class="fr-box fr-noprint" id="frUpload">
+    <div class="fr-drop" id="frDrop">
+      <p style="margin:0 0 12px"><b>Drop your sales file here</b><br><span class="fr-mute fr-sm">Excel or CSV, tidy or messy. We clean it, and show you exactly what we did.</span></p>
+      <div class="fr-row" style="justify-content:center">
+        <label class="fr-btn" for="frFile" style="margin:0"><i class="fas fa-file-upload" aria-hidden="true"></i>&nbsp; Choose a file</label>
+        <input id="frFile" type="file" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods" class="fr-hide">
+        <button class="fr-btn fr-alt" id="frSample" type="button">Try it with sample data</button>
+      </div>
+    </div>
+    <p class="fr-mute fr-sm" style="margin:12px 0 0"><i class="fas fa-lock" aria-hidden="true"></i>&nbsp; Your sales file is read inside your own browser and is never uploaded. I only receive your details if you choose to leave them at the end.</p>
+    <p class="fr-mute fr-sm" style="margin:8px 0 0">Works with title lines, blank rows, totals, returns, KES amounts, repeated headings, monthly sheets and Swahili headings. Best results: a <b>product</b> and an <b>amount</b> (or quantity and price). A <b>date</b>, a <b>receipt number</b> and <b>stock on hand</b> unlock more.</p>
+    <p class="fr-warn fr-hide" id="frErr" role="alert"></p>
+  </section>
+
+  <section class="fr-box fr-hide fr-noprint" id="frHow" aria-live="polite"></section>
+  <div id="frReport" class="fr-hide"></div>
+
+  <section class="fr-cta fr-hide" id="frCta">
+    <h2>Want this on your full records, every month?</h2>
+    <p style="margin:6px 0 14px">I can look at your complete sales and stock records and show you exactly where money is slipping and where the opportunities are. You only pay when you see value.</p>
+    <div class="fr-row"><a class="fr-btn fr-hide" id="frWa" target="_blank" rel="noopener"><i class="fab fa-whatsapp" aria-hidden="true"></i>&nbsp; Message me on WhatsApp</a><a class="fr-btn fr-alt fr-hide" id="frMail"><i class="fas fa-envelope" aria-hidden="true"></i>&nbsp; Send me an email</a><button class="fr-btn fr-alt fr-noprint" id="frPrint" type="button"><i class="fas fa-print" aria-hidden="true"></i>&nbsp; Save this report as PDF</button></div>
+  </section>
+
+  <section class="fr-box fr-hide" id="frLead">
+    <h2>Want me to look at your full records?</h2>
+    <p class="fr-mute fr-sm" style="margin:4px 0 12px">Leave your details and I will get back to you, with no cost and no obligation. Only what you type here is sent to me. Your sales file is never sent.</p>
+    <form id="frForm" novalidate>
+      <div class="fr-grid" style="margin-bottom:10px">
+        <label class="fr-f">Your name<input name="name" autocomplete="name"></label>
+        <label class="fr-f">Business name<input name="business" autocomplete="organization"></label>
+        <label class="fr-f">WhatsApp / phone<input name="phone" inputmode="tel" autocomplete="tel"></label>
+        <label class="fr-f">Email<input name="email" type="email" autocomplete="email"></label>
+      </div>
+      <label class="fr-f" style="margin-bottom:10px">Anything you would like me to look at? (optional)<textarea name="note" rows="2" maxlength="600"></textarea></label>
+      <div class="fr-hp" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
+      <label class="fr-row fr-sm" style="gap:8px;align-items:flex-start;margin-bottom:12px;flex-wrap:nowrap"><input type="checkbox" name="consent" style="width:auto;margin-top:4px"><span>I agree that dericBI may contact me about this by WhatsApp, phone or email. I can say stop at any time.</span></label>
+      <div class="fr-row"><button class="fr-btn" type="submit" id="frSend">Send my details</button><span id="frMsg" class="fr-sm" role="status"></span></div>
+      <p class="fr-sm fr-hide" id="frFallback" style="margin:12px 0 0">Your details are still here. You can also <a id="frFallbackWa" class="fr-ok" style="text-decoration:underline" target="_blank" rel="noopener">send them to me on WhatsApp</a> in one tap.</p>
+    </form>
+  </section>
+  <p class="fr-note">Estimates are based only on the file you provide. They show where to look, not a guarantee of results.</p>
+</div>
+</main>
+<footer class="bg-[#DFF3EA] py-4 px-4 text-sm text-gray-600 mt-auto border-t border-green-300">
+  <div class="container mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+
+<!-- ✅ Footer Logo and Tagline -->
+<div class="flex items-center gap-2 xs:gap-3 bg-white/70 p-2 rounded-xl shadow-sm hover:shadow-md transition-all border border-green-100">
+  <img src="../assets/img/logo-avatar.webp" 
+       alt="dericBI Logo" 
+       class="h-10 w-10 xs:h-12 xs:w-12 rounded-full object-cover shadow-md" />
+  <div class="flex flex-col leading-tight">
+    <div class="font-extrabold text-xl text-gray-800 tracking-wide">
+      <span>deric</span><span class="text-[#facc15] text-[22px] drop-shadow-lg font-black">BI</span>
+    </div>
+    <span class="text-xs italic text-gray-500 -mt-1 bg-gradient-to-r from-gray-500 to-gray-700 bg-clip-text text-transparent font-medium">Cut Through  Noise</span>
+  </div>
 </div>
 
+    <!-- ✅ Copyright & Links Stacked -->
+    <div class="flex flex-col items-center text-center bg-white/70 p-2 rounded-xl shadow-sm border border-green-100">
+      <div class="text-xs sm:text-sm text-gray-500">
+        &copy; 2025 <span>deric</span><span class="text-[#facc15] font-bold drop-shadow-sm">BI</span> – Built by 
+        <a href="https://dericmarangu.vercel.app/" class="footer-link font-medium hover:text-[#49A078] transition-colors underline decoration-dotted hover:decoration-solid">Deric Marangu</a>. All rights reserved.
+      </div>
+      <div class="flex flex-wrap justify-center gap-2 xs:gap-3 sm:gap-4 mt-1">
+        <a href="../about.html" class="footer-link text-xs xs:text-sm bg-green-50 hover:bg-green-100 px-2 py-1 rounded-md shadow-sm hover:shadow transition-all">About Us</a>
+        <a href="../terms.html" class="footer-link text-xs xs:text-sm bg-green-50 hover:bg-green-100 px-2 py-1 rounded-md shadow-sm hover:shadow transition-all">T&C's</a>
+        <button onclick="toggleNewsletter()" class="footer-link text-xs bg-green-50 hover:bg-green-100 px-2 py-1 rounded-md shadow-sm hover:shadow transition-all">
+          <i class="fas fa-envelope mr-1"></i>Newsletter
+        </button>
+      </div>
+      <!-- Hidden Newsletter Signup -->
+      <div id="newsletterSignup" class="hidden mt-2 w-full max-w-xs bg-white rounded-lg p-2 shadow-md border border-green-200">
+        <div class="flex text-xs">
+          <input type="email" placeholder="Your email..." 
+            class="flex-1 px-2 py-1 text-xs border border-gray-300 rounded-l focus:outline-none focus:ring-2 focus:ring-[#49A078] shadow-inner">
+          <button aria-label="Send" class="bg-gradient-to-r from-[#49A078] to-[#3e8865] text-white px-3 py-1 rounded-r text-xs hover:from-[#3e8865] hover:to-[#357255] transition shadow-sm hover:shadow">
+            <i class="fas fa-paper-plane"></i>
+          </button>
+        </div>
+        <p class="text-xs text-gray-600 mt-1 font-medium">Monthly insights & tips</p>
+      </div>
+    </div>
+
+    <!-- ✅ Social + Founder -->
+    <div class="flex items-center justify-between gap-2 xs:gap-3 bg-white/70 p-2 rounded-xl shadow-sm border border-green-100">
+      <!-- Profile image next to name -->
+      <div class="flex items-center gap-2 xs:gap-3">
+        <a href="https://dericmarangu.vercel.app/" class="footer-link rounded-full p-1 bg-white hover:bg-green-50 shadow-sm hover:shadow-md transition-all">
+          <img src="../assets/img/deric-avatar.webp" alt="Deric's Photo" class="h-10 w-10 xs:h-12 xs:w-12 rounded-full object-cover border-2 border-[#49A078]/30 hover:border-[#49A078] transition-all" />
+        </a>
+        <div class="flex flex-col">
+          <a href="https://dericmarangu.vercel.app/" class="footer-link font-semibold text-sm hover:text-[#49A078]">Deric Marangu</a>
+          <p class="text-xs italic text-gray-600">
+            CEO and Founder of 
+            <a href="https://dericbi.vercel.app/" class="footer-link font-semibold hover:text-[#49A078]">
+              <span>deric</span><span class="text-[#facc15] text-[15px] font-bold drop-shadow-md">BI</span>
+            </a>
+          </p>
+        </div>
+      </div>
+      
+      <!-- Social media icons in a compact, right-aligned container -->
+      <div class="flex flex-wrap justify-end gap-1">
+        <a aria-label="Chat with dericBI on WhatsApp" href="https://wa.me/254791360805" class="footer-link bg-green-100 hover:bg-green-200 p-1 rounded-full w-6 h-6 flex items-center justify-center shadow-sm hover:shadow transition-all"><i class="fab fa-whatsapp text-green-600"></i></a>
+        <a href="mailto:dericmarangu@gmail.com" class="footer-link bg-blue-100 hover:bg-blue-200 p-1 rounded-full w-6 h-6 flex items-center justify-center shadow-sm hover:shadow transition-all" title="Email"><i class="fas fa-envelope text-blue-600"></i></a>
+        <a aria-label="dericBI on Facebook" href="https://web.facebook.com/deric.aldertrax" class="footer-link bg-blue-100 hover:bg-blue-200 p-1 rounded-full w-6 h-6 flex items-center justify-center shadow-sm hover:shadow transition-all"><i class="fab fa-facebook text-blue-600"></i></a>
+        <a href="https://www.facebook.com/dericbiservices/" class="footer-link bg-blue-100 hover:bg-blue-200 p-1 rounded-full w-6 h-6 flex items-center justify-center shadow-sm hover:shadow transition-all" title="dericBI Facebook"><i class="fab fa-facebook text-blue-600"></i></a>
+        <a aria-label="dericBI on LinkedIn" href="https://www.linkedin.com/in/deric-marangu-134340297/" class="footer-link bg-blue-700 hover:bg-blue-800 p-1 rounded-full w-6 h-6 flex items-center justify-center shadow-sm hover:shadow transition-all"><i class="fab fa-linkedin text-white"></i></a>
+        <a aria-label="dericBI on X (Twitter)" href="https://x.com/Dericmwiti" class="footer-link bg-black hover:bg-gray-800 p-1 rounded-full w-6 h-6 flex items-center justify-center shadow-sm hover:shadow transition-all"><i class="fab fa-twitter text-white"></i></a>
+        <a aria-label="dericBI on Instagram" href="https://www.instagram.com/dericmarangu/" class="footer-link bg-pink-100 hover:bg-pink-200 p-1 rounded-full w-6 h-6 flex items-center justify-center shadow-sm hover:shadow transition-all"><i class="fab fa-instagram text-pink-600"></i></a>
+      </div>
+    </div>
+  </div>
+<style>
+.footer-link {
+  color: inherit;
+  transition: color 0.3s ease, text-shadow 0.3s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  display: inline-block;
+}
+.footer-link:hover {
+  transform: translateY(-1px);
+  color: #facc15; /* Soft Yellow */
+  text-shadow: 0 0 4px rgba(250, 204, 21, 0.5); /* Subtle glow */
+}
+</style>
+
 <script>
-/* ===== Fill these in before you put the page online ===== */
-const CONFIG = {
-  name: 'DericBI',
-  leadForm: true,        // shows the 'leave your details' form (needs the api/lead.js function from this folder); set false to hide it
-  whatsapp: '254791360805',          // your WhatsApp number with country code and no plus or spaces, e.g. '2547XXXXXXXX'
-  email: 'dericmarangu@gmail.com',             // e.g. 'you@yourdomain.com'
+function toggleNewsletter() {
+  const newsletterSignup = document.getElementById('newsletterSignup');
+  newsletterSignup.classList.toggle('hidden');
+}
+</script>
+</footer>
+
+<!-- Back to Top Button -->
+<button aria-label="Back to top" id="backToTop" class="fixed bg-[#49A078] text-white rounded-full shadow-lg flex items-center justify-center text-xl z-40 opacity-0 transition-opacity duration-300 md:flex"
+  style="border: none; outline: none; display: none; bottom: 10rem; right: 2rem; width: 3rem; height: 3rem; pointer-events: auto !important; cursor: pointer !important;">
+  <i class="fas fa-arrow-up"></i>
+</button>
+
+<script>
+/* idempotent back-to-top initializer to avoid redeclaration errors */
+(function(){
+  if (window.__dericbi_bt_initialized) return;
+  window.__dericbi_bt_initialized = true;
+  var bt = document.getElementById('backToTop');
+  if (!bt) return;
+  var btHideTimeout = null;
+  function showBT(){ bt.style.display = 'flex'; bt.style.opacity = '0.9'; clearTimeout(btHideTimeout); btHideTimeout = setTimeout(hideBT,3000); }
+  function hideBT(){ bt.style.opacity = '0'; setTimeout(function(){ bt.style.display = 'none'; },300); }
+  window.addEventListener('scroll', function(){ clearTimeout(btHideTimeout); if (window.scrollY > 300) showBT(); else hideBT(); });
+  bt.addEventListener('click', function(){ window.scrollTo({ top: 0, behavior: 'smooth' }); });
+})();
+</script>
+
+<script defer src="../assets/js/config.js?v=a0a11940"></script>
+<script defer src="../assets/js/chatbot.js?v=3c587bec"></script>
+<script defer src="../assets/js/social_links.js?v=6f1c5397"></script>
+<script defer src="../assets/js/email-link.js?v=bcd71479"></script>
+<script src="engine.js?v=1"></script>
+<script>
+(function () {
+'use strict';
+/* ===== Settings ===== */
+var CONFIG = {
+  name: 'dericBI',
+  leadForm: true,                      // the "leave your details" form (needs api/lead.js); false hides it
+  whatsapp: '254791360805',
+  email: 'dericmarangu@gmail.com',
   currency: 'KES'
 };
-/* ========================================================= */
+/* ==================== */
+var E = window.ReportEngine;
+var $ = function (s) { return document.querySelector(s); };
+var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+var fmt = E.fmtN;
+var SRC = (new URLSearchParams(location.search).get('src') || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 30);
+var FIELDS = [['product', 'Product / item'], ['amount', 'Sales amount'], ['qty', 'Quantity'], ['price', 'Unit price'], ['date', 'Date'], ['receipt', 'Receipt / invoice no.'], ['stock', 'Stock on hand']];
+var S = { file: null, sheets: null, notes: [], sheetChoice: 'auto', table: null, guess: null, map: null, order: 'auto', currency: 'auto', out: null, summary: '', shownAt: 0, sample: false, xlsxP: null };
 
-const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (n) => Math.round(n).toLocaleString('en-KE');
-const money = (n) => CONFIG.currency + ' ' + fmt(n);
-const FIELDS = [['product', 'Product / item'], ['amount', 'Sales amount'], ['qty', 'Quantity'], ['price', 'Unit price'], ['date', 'Date'], ['receipt', 'Receipt / invoice no.'], ['stock', 'Stock on hand']];
-const GUESS = {
-  product: /item|product|description|particular|name|sku|goods|article/i,
-  amount: /^(total|amount|sales?|revenue|value|line ?total|sub ?total|net)|amount|revenue|total/i,
-  qty: /qty|quantity|units|sold|pcs|count/i,
-  price: /price|rate|unit ?cost|selling/i,
-  date: /date|day|time|when/i,
-  receipt: /receipt|invoice|transaction|order|bill|ref|docket|sale ?id|trans/i,
-  stock: /stock|balance|on ?hand|closing|remaining|inventory/i
-};
-let SUMMARY = '', SHOWN_AT = 0;
-const SRC = (new URLSearchParams(location.search).get('src') || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 30);   // where the visitor came from, e.g. ?src=popup
-let TABLE = null;        // { headers: [], rows: [[...]] }
+function fail(msg) { var e = $('#frErr'); e.textContent = msg || ''; e.classList.toggle('fr-hide', !msg); }
+function show(sel, on) { $(sel).classList.toggle('fr-hide', !on); }
 
-/* ---------- reading files ---------- */
-function parseCSV(text) {
-  text = text.replace(/^﻿/, '');
-  const first = text.split(/\r?\n/, 1)[0] || '';
-  const delim = [',', ';', '\t'].map((d) => [d, first.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
-  const rows = []; let row = [], cur = '', q = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
-    else if (c === '"') q = true;
-    else if (c === delim) { row.push(cur); cur = ''; }
-    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; }
-    else cur += c;
-  }
-  if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
-  return rows.filter((r) => r.some((x) => String(x).trim() !== ''));
+/* ---------- reading ---------- */
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (S.xlsxP) return S.xlsxP;
+  S.xlsxP = new Promise(function (res) { var s = document.createElement('script'); s.src = 'vendor/xlsx.full.min.js'; s.onload = function () { res(window.XLSX); }; s.onerror = function () { res(null); }; document.head.appendChild(s); });
+  return S.xlsxP;
 }
-function toTable(rows) {
-  if (rows.length < 2) throw new Error('The file has no rows of data.');
-  let h = 0; // the heading row is the first one with several filled cells
-  for (let i = 0; i < Math.min(rows.length, 10); i++) { if (rows[i].filter((x) => String(x).trim() !== '').length >= 2) { h = i; break; } }
-  const headers = rows[h].map((x, i) => String(x).trim() || 'Column ' + (i + 1));
-  return { headers, rows: rows.slice(h + 1) };
+async function load(file) {
+  fail(''); show('#frReport', false); show('#frCta', false); show('#frLead', false);
+  try {
+    if (file.size > 60 * 1024 * 1024) throw new Error('That file is very large (over 60 MB). Please send me the first few months, or the file itself on WhatsApp.');
+    var buf = await file.arrayBuffer();
+    var X = /\.(xlsx?|xlsm|ods)$/i.test(file.name) || (buf.byteLength > 3 && new Uint8Array(buf, 0, 2)[0] === 0x50) ? await loadXlsx() : null;
+    var f = E.readFile(new Uint8Array(buf), file.name, X);
+    S.file = file.name; S.sheets = f.sheets; S.notes = f.notes; S.sheetChoice = 'auto'; S.order = 'auto'; S.currency = 'auto'; S.sample = false; S.map = null;
+    prepare();
+  } catch (e) { show('#frHow', false); fail(e.message || 'We could not read that file.'); }
 }
-async function readFile(file) {
-  const name = file.name.toLowerCase();
-  if (/\.xlsx?$/.test(name)) {
-    if (!window.XLSX) throw new Error('This Excel file could not be opened here. Save your sheet as CSV (File > Save as > CSV) and upload that instead.');
-    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    return toTable(XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' }));
-  }
-  return toTable(parseCSV(await file.text()));
+function prepare() {
+  var t = E.buildTable(S.sheets, S.sheetChoice);
+  var g = E.guess(t);
+  var dc = E.datesFromSheetNames(t, g.map); if (dc != null) { g.map.date = dc; g.how.date = 'sheet names'; }
+  S.table = t; S.guess = g; S.map = S.map || null;
+  var choice = S.map ? { map: S.map, wide: null } : g;
+  if (g.confident || S.map) run(choice); else { out = null; show('#frReport', false); show('#frCta', false); how(null); fail(''); }
+}
+var out = null;
+function run(choice) {
+  try {
+    var opts = {}; if (S.order !== 'auto') opts.order = S.order; if (S.currency !== 'auto') opts.currency = S.currency;
+    out = E.analyse(S.table, choice, opts);
+    if (!out.list.length) throw new Error('We could not find any sales amounts in the columns chosen. Please check them below.');
+    S.out = out; how(out); render(out);
+  } catch (e) { show('#frReport', false); show('#frCta', false); how(null); fail(e.message); }
 }
 
-/* ---------- cleaning ---------- */
-function num(v) {
-  if (typeof v === 'number') return v;
-  if (v == null) return NaN;
-  let s = String(v).trim(); if (!s) return NaN;
-  const neg = /^\(.*\)$/.test(s) || /^-/.test(s);
-  s = s.replace(/[^0-9.,]/g, '');
-  if (!s) return NaN;
-  if (s.includes(',') && s.includes('.')) s = s.replace(/,/g, '');
-  else if (s.includes(',')) s = /,\d{3}(,|$)/.test(s) ? s.replace(/,/g, '') : s.replace(',', '.');
-  const n = parseFloat(s); return neg ? -n : n;
-}
-function toDate(v) {
-  if (v instanceof Date) return isNaN(v) ? null : v;
-  if (v == null || v === '') return null;
-  if (typeof v === 'number') return v > 20000 && v < 80000 ? new Date(Math.round((v - 25569) * 86400 * 1000)) : null;
-  const s = String(v).trim();
-  let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
-  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
-  m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/);   // Kenya writes day first
-  if (m) { let y = +m[3]; if (y < 100) y += 2000; let d = +m[1], mo = +m[2]; if (mo > 12 && d <= 12) [d, mo] = [mo, d]; return new Date(y, mo - 1, d); }
-  const t = Date.parse(s); return isNaN(t) ? null : new Date(t);
-}
-
-/* ---------- mapping screen ---------- */
-function guessMap(headers) {
-  const map = {}, used = new Set();
-  for (const [k] of FIELDS) {
-    const i = headers.findIndex((h, idx) => !used.has(idx) && GUESS[k].test(h) && !(k === 'amount' && /price|rate/i.test(h) && !/total/i.test(h)));
-    if (i >= 0) { map[k] = i; used.add(i); }
-  }
-  return map;
-}
-function showMapping() {
-  const map = guessMap(TABLE.headers);
-  $('#mapgrid').innerHTML = FIELDS.map(([k, label]) => `<label class="f">${label}<select data-k="${k}"><option value="-1">— none —</option>${TABLE.headers.map((h, i) => `<option value="${i}" ${map[k] === i ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></label>`).join('');
-  $('#mapcard').classList.remove('hidden');
-  const check = () => { const s = (k) => +$(`[data-k=${k}]`).value >= 0; const ok = s('product') && (s('amount') || (s('qty') && s('price'))); $('#run').disabled = !ok; $('#maphint').textContent = ok ? '' : 'Pick the product column, and either the amount or the quantity and price.'; };
-  $('#mapgrid').onchange = check; check();
+/* ---------- "how we read your file" ---------- */
+function colName(i) { return i != null && S.table.headers[i] != null ? S.table.headers[i] : ''; }
+function how(o) {
+  var box = $('#frHow'), t = S.table, g = S.guess, m = S.map || g.map, h = '';
+  var chosen = o ? (S.map ? 'your choice' : '') : '';
+  h += '<h2>' + (o ? 'How we read your file' : 'Please check how to read your file') + '</h2>';
+  h += '<p class="fr-mute fr-sm" style="margin:2px 0 10px"><b>' + esc(S.file) + '</b>' + (t.info && t.info.combined ? ' &middot; ' + t.info.used.length + ' sheets put together (' + esc(t.info.used.slice(0, 6).join(', ')) + (t.info.used.length > 6 ? '…' : '') + ')' : (S.sheets.length > 1 ? ' &middot; sheet "' + esc(t.info.used[0]) + '"' : '')) + '</p>';
+  if (g.layout === 'wide' && !S.map) h += '<p class="fr-sm" style="margin:0 0 8px">Your months run across the page, one product per row. We read every month cell as that product\'s sales for the month.</p>';
+  else if (o) {
+    var bits = FIELDS.filter(function (f) { return m[f[0]] != null; }).map(function (f) { return '<span class="fr-chip">' + esc(f[1]) + ': <b>' + esc(colName(m[f[0]])) + '</b></span>'; });
+    h += '<div>' + bits.join('') + '</div>';
+  } else h += '<p class="fr-warn" style="margin:0 0 8px">We could not be sure which columns hold the product and the amount. Please pick them below.</p>';
+  var more = [];
+  if (t.titleRows) more.push(t.titleRows + ' title line' + (t.titleRows > 1 ? 's' : '') + ' above your headings were skipped');
+  if (t.mergedHeader) more.push('two heading lines were joined');
+  S.notes.forEach(function (n) { more.push(n); });
+  if (o && o.dateOrder && m.date != null) more.push('dates read ' + (o.dateOrder === 'mdy' ? 'month first (your file proved it)' : 'day first'));
+  if (more.length) h += '<p class="fr-mute fr-sm" style="margin:6px 0 0">' + more.map(esc).join(' &middot; ') + '</p>';
+  var open = o ? '' : ' open';
+  h += '<details class="fr-more"' + open + '><summary>' + (o ? 'Something look wrong? Change how we read it' : 'Choose the columns') + '</summary><div style="margin-top:10px">';
+  h += '<div class="fr-grid">' + FIELDS.map(function (f) { var k = f[0]; return '<label class="fr-f">' + f[1] + '<select data-k="' + k + '"><option value="-1">— none —</option>' + t.headers.map(function (x, i) { return '<option value="' + i + '"' + (m[k] === i ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></label>'; }).join('') + '</div>';
+  h += '<div class="fr-grid" style="margin-top:10px">';
+  if (S.sheets.length > 1) h += '<label class="fr-f">Sheets<select id="frSheet"><option value="auto">Put matching sheets together</option>' + S.sheets.map(function (s) { return '<option value="' + esc(s.name) + '"' + (S.sheetChoice === s.name ? ' selected' : '') + '>Only: ' + esc(s.name) + '</option>'; }).join('') + '</select></label>';
+  h += '<label class="fr-f">Dates are written<select id="frOrder"><option value="auto"' + (S.order === 'auto' ? ' selected' : '') + '>Let the file decide</option><option value="dmy"' + (S.order === 'dmy' ? ' selected' : '') + '>Day first (31/12/2026)</option><option value="mdy"' + (S.order === 'mdy' ? ' selected' : '') + '>Month first (12/31/2026)</option></select></label>';
+  h += '<label class="fr-f">Money is in<select id="frCur"><option value="auto"' + (S.currency === 'auto' ? ' selected' : '') + '>Detect</option><option value="KES"' + (S.currency === 'KES' ? ' selected' : '') + '>KES</option><option value="USD"' + (S.currency === 'USD' ? ' selected' : '') + '>USD</option></select></label></div>';
+  h += '<div class="fr-row" style="margin-top:12px"><button class="fr-btn" id="frApply" type="button">' + (o ? 'Update my report' : 'Show my report') + '</button><span class="fr-mute fr-sm" id="frHint"></span></div></div></details>';
+  box.innerHTML = h; show('#frHow', true);
+  var check = function () { var v = function (k) { return +box.querySelector('[data-k=' + k + ']').value >= 0; }; var ok = v('product') && (v('amount') || (v('qty') && v('price'))) || (g.layout === 'wide' && !S.map); $('#frApply').disabled = !ok; $('#frHint').textContent = ok ? '' : 'Pick the product column, and either the amount or the quantity and price.'; };
+  box.querySelector('details').addEventListener('change', check); check();
+  $('#frApply').addEventListener('click', function () {
+    var mp = {}; box.querySelectorAll('select[data-k]').forEach(function (s) { if (+s.value >= 0) mp[s.dataset.k] = +s.value; });
+    var sh = $('#frSheet'); var newSheet = sh ? sh.value : 'auto';
+    S.order = $('#frOrder').value; S.currency = $('#frCur').value;
+    if (newSheet !== S.sheetChoice) { S.sheetChoice = newSheet; S.map = null; return prepare(); }
+    S.map = (g.layout === 'wide' && JSON.stringify(mp) === JSON.stringify(g.map)) ? null : mp;
+    prepare();
+  });
 }
 
-/* ---------- analysis ---------- */
-function analyse(map) {
-  const rows = [];
-  for (const r of TABLE.rows) {
-    const name = String(r[map.product] ?? '').trim(); if (!name) continue;
-    const qty = map.qty >= 0 ? num(r[map.qty]) : NaN;
-    const price = map.price >= 0 ? num(r[map.price]) : NaN;
-    let amount = map.amount >= 0 ? num(r[map.amount]) : NaN;
-    if (isNaN(amount) && !isNaN(qty) && !isNaN(price)) amount = qty * price;
-    if (isNaN(amount) || amount <= 0) continue;
-    rows.push({ key: name.toLowerCase(), name, amount, qty: isNaN(qty) ? null : qty,
-      date: map.date >= 0 ? toDate(r[map.date]) : null, receipt: map.receipt >= 0 ? String(r[map.receipt] ?? '').trim() : '',
-      stock: map.stock >= 0 ? num(r[map.stock]) : NaN });
-  }
-  if (!rows.length) throw new Error('We could not find any sales amounts. Check the column choices above.');
-  const total = rows.reduce((a, r) => a + r.amount, 0);
-  const prods = new Map();
-  for (const r of rows) {
-    let p = prods.get(r.key); if (!p) { p = { name: r.name, amount: 0, qty: 0, hasQty: false, last: null, stock: NaN, stockAt: null }; prods.set(r.key, p); }
-    p.amount += r.amount; if (r.qty != null) { p.qty += r.qty; p.hasQty = true; }
-    if (r.date && (!p.last || r.date > p.last)) p.last = r.date;
-    if (!isNaN(r.stock) && r.date && (!p.stockAt || r.date >= p.stockAt)) { p.stock = r.stock; p.stockAt = r.date; }
-    else if (!isNaN(r.stock) && !r.date) p.stock = r.stock;
-  }
-  const list = [...prods.values()].sort((a, b) => b.amount - a.amount);
-  const dates = rows.map((r) => r.date).filter(Boolean).sort((a, b) => a - b);
-  const out = { rows, total, list, first: dates[0] || null, last: dates[dates.length - 1] || null, finds: [], skipped: TABLE.rows.length - rows.length, hasDate: map.date >= 0, undated: map.date >= 0 ? rows.filter((r) => !r.date).length : 0 };
-
-  // concentration
-  let acc = 0, n80 = 0; for (const p of list) { acc += p.amount; n80++; if (acc >= total * 0.8) break; }
-  out.n80 = n80;
-  if (list.length >= 5) out.finds.push(`${n80} of your ${list.length} products (${Math.round(n80 / list.length * 100)}%) bring in 80% of your sales. Those are the ones to never run out of.`);
-
-  // slow movers (needs dates)
-  if (out.last) {
-    const day = 86400000, span = Math.max(1, (out.last - out.first) / day + 1);
-    out.slow = list.filter((p) => p.last && (out.last - p.last) / day >= 30 && span >= 60)
-      .map((p) => ({ ...p, quiet: Math.floor((out.last - p.last) / day) })).sort((a, b) => b.amount - a.amount).slice(0, 8);
-    if (out.slow.length) out.finds.push(`${out.slow.length} product${out.slow.length > 1 ? 's that used to sell have' : ' that used to sell has'} not sold for 30 days or more, led by ${esc(out.slow[0].name)}. Check whether they are still on your shelf, and what they are costing you.`);
-    // cash tied up in stock
-    if (map.stock >= 0) {
-      let tied = 0, count = 0;
-      for (const p of list) {
-        if (!(p.stock > 0) || !p.hasQty || !(p.qty > 0)) continue;
-        const unit = p.amount / p.qty, perDay = p.qty / span, cover = p.stock / perDay, quiet = p.last ? (out.last - p.last) / day : 0;
-        if (cover >= 90 || quiet >= 30) { tied += p.stock * unit; count++; }
-      }
-      out.tied = { value: tied, count };
-      if (count) out.finds.push(`About ${money(tied)} is tied up in ${count} slow-moving product${count > 1 ? 's' : ''} (stock that would take 90 days or more to sell at the current pace, or has not moved in a month). This is an estimate at selling price.`);
-    }
-    // months and weekdays
-    const mon = new Map(), wk = [0, 0, 0, 0, 0, 0, 0];
-    for (const r of rows) { if (!r.date) continue; const k = r.date.getFullYear() + '-' + String(r.date.getMonth() + 1).padStart(2, '0'); mon.set(k, (mon.get(k) || 0) + r.amount); wk[(r.date.getDay() + 6) % 7] += r.amount; }
-    out.months = [...mon.entries()].sort();
-    out.wk = wk;
-    const full = out.months.filter(([k], i) => {
-      const [y, m] = k.split('-').map(Number), len = new Date(y, m, 0).getDate();
-      if (i === 0 && out.first.getDate() > 3) return false;
-      if (i === out.months.length - 1 && out.last.getDate() < len - 3) return false;
-      return true;
-    });
-    out.fullMonths = full;
-    if (full.length >= 3) {
-      const best = full.reduce((a, b) => (b[1] > a[1] ? b : a)), worst = full.reduce((a, b) => (b[1] < a[1] ? b : a));
-      out.finds.push(`${monthName(best[0])} was your strongest full month (${money(best[1])}) and ${monthName(worst[0])} your quietest (${money(worst[1])}). Plan stock and cash for both.`);
-    }
-    const names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    const bi = wk.indexOf(Math.max(...wk));
-    if (wk.filter((x) => x > 0).length >= 4) out.finds.push(`${names[bi]} is your busiest day, with ${Math.round(wk[bi] / total * 100)}% of sales.`);
-    out.dayNames = names;
-  }
-  // what sells together (needs a receipt number)
-  if (map.receipt >= 0) {
-    const bills = new Map();
-    for (const r of rows) { if (!r.receipt) continue; let s = bills.get(r.receipt); if (!s) bills.set(r.receipt, (s = new Set())); s.add(r.key); }
-    const pairs = new Map(); let multi = 0;
-    for (const s of bills.values()) { const a = [...s].slice(0, 25); if (a.length > 1) multi++; for (let i = 0; i < a.length; i++) for (let j = i + 1; j < a.length; j++) { const k = a[i] < a[j] ? a[i] + '\u0001' + a[j] : a[j] + '\u0001' + a[i]; pairs.set(k, (pairs.get(k) || 0) + 1); } }
-    out.pairs = [...pairs.entries()].filter(([, c]) => c >= 3).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, c]) => { const [a, b] = k.split('\u0001'); return { a: prods.get(a).name, b: prods.get(b).name, c }; });
-    out.bills = bills.size; out.multi = multi;
-    if (out.pairs.length) out.finds.push(`${esc(out.pairs[0].a)} and ${esc(out.pairs[0].b)} were bought together ${out.pairs[0].c} times. Keep them side by side and make sure you never run out of one of them.`);
-  }
-  return out;
-}
-const MN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const monthName = (k) => { const [y, m] = k.split('-').map(Number); return MN[m - 1] + ' ' + y; };
-
-/* ---------- suggested next step: chosen only from what this file showed ---------- */
-function recommend(a) {
-  const n = a.rows.length;
-  const messy = a.skipped / (a.skipped + n) >= 0.1 || (a.hasDate && a.undated / n >= 0.1);
-  const stock = (a.tied && a.tied.count) || (a.slow && a.slow.length);
-  const trends = a.fullMonths && a.fullMonths.length >= 3;
+/* ---------- the plain-English next step ---------- */
+function recommend(o) {
+  var b = o.buckets, n = o.rowsRead || 1, cnt = function (k) { return (b[k] || {}).rows || 0; };
+  var messy = (cnt('unreadable') + cnt('noamount') + cnt('nodate') + cnt('unnamed')) / n >= 0.1;
+  var stock = (o.tied && o.tied.count) || (o.slow && o.slow.length), trends = o.fullMonths && o.fullMonths.length >= 3, hasDate = !!o.first;
   if (messy && (stock || trends)) return { name: 'Complete Package', why: 'Part of this file is incomplete or untidy, and the numbers in it are worth tracking month by month. Cleaning the data first and then putting it on a dashboard gets you both.' };
   if (messy) return { name: 'Excel Cleanup', why: 'A good share of the rows in this file are blank, have no usable amount, or have dates that could not be read. Tidying the sheet makes every figure above more trustworthy.' };
   if (stock || trends) return { name: 'PowerBI Dashboards', why: 'Your file already shows slow stock or clear month-to-month patterns. A dashboard would keep these in front of you every month without rebuilding the sheet.' };
-  if (!a.hasDate) return { name: 'Data Setup Consultation (free)', why: 'Your file has no dates, so the timing and slow-stock checks were skipped. A short free consultation can show you what to record so next month\'s report says much more.' };
+  if (!hasDate) return { name: 'Data Setup Consultation (free)', why: 'Your file has no dates, so the timing and slow-stock checks were skipped. A short free consultation can show you what to record so next month\'s report says much more.' };
   return { name: 'Data Setup Consultation (free)', why: 'Your file looks tidy. A short free consultation can show where the next gains are likely to be.' };
 }
 
 /* ---------- report ---------- */
-function bars(items, max, valueText) {
-  return `<table>${items.map(([label, v, extra]) => `<tr><td style="width:28%">${esc(label)}</td><td style="width:38%"><div class="bar"><i style="width:${Math.max(1, v / max * 100)}%"></i></div></td><td class="n">${valueText(v)}${extra || ''}</td></tr>`).join('')}</table>`;
+function bars(items, max, vt) {
+  max = max > 0 ? max : 1;
+  return '<table>' + items.map(function (x) { return '<tr><td style="width:30%">' + esc(x[0]) + '</td><td style="width:36%"><div class="fr-bar"><i style="width:' + Math.max(1, Math.max(0, x[1]) / max * 100) + '%"></i></div></td><td class="n">' + vt(x[1]) + (x[2] || '') + '</td></tr>'; }).join('') + '</table>';
 }
-function render(a) {
-  const top = a.list.slice(0, 10);
-  let h = `<section class="card"><h2>${esc(CONFIG.name)} Health Check</h2>
-    <p class="muted small" style="margin:0 0 12px">${a.first ? `Sales from ${a.first.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })} to ${a.last.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'No dates found in this file, so the timing reports are skipped'}</p>
-    <div class="stats"><div class="stat"><span class="muted small">Total sales</span><b>${money(a.total)}</b></div><div class="stat"><span class="muted small">Products sold</span><b>${fmt(a.list.length)}</b></div>${a.tied && a.tied.count ? `<div class="stat"><span class="muted small">Cash tied up (estimate)</span><b>${money(a.tied.value)}</b></div>` : ''}</div></section>`;
-  h += `<section class="card"><h2>What stands out</h2>${a.finds.length ? `<ul class="find">${a.finds.map((f) => `<li>${f}</li>`).join('')}</ul>` : '<p class="muted">Add a date column, a receipt number or stock on hand to unlock more findings.</p>'}</section>`;
-  const rec = recommend(a);
-  h += `<section class="card"><h2>A sensible next step</h2><p style="margin:6px 0 8px"><b>${esc(rec.name)}</b></p><p class="muted small" style="margin:0 0 10px">${esc(rec.why)}</p><a class="btn ghost no-print" href="../services.html">See my options</a></section>`;
-  h += `<section class="card"><h2>Your best sellers</h2><p class="muted small" style="margin:0 0 8px">Top ${top.length} by sales amount</p>${bars(top.map((p) => [p.name, p.amount, ` <span class="muted small">${(p.amount / a.total * 100).toFixed(1)}%</span>`]), top[0].amount, money)}</section>`;
-  if (a.slow && a.slow.length) h += `<section class="card"><h2>Used to sell, now quiet</h2><p class="muted small" style="margin:0 0 8px">No sale for 30 days or more at the end of your file</p><table><tr><th>Product</th><th class="n">Past sales</th><th class="n">Quiet for</th></tr>${a.slow.map((p) => `<tr><td>${esc(p.name)}</td><td class="n">${money(p.amount)}</td><td class="n">${p.quiet} days</td></tr>`).join('')}</table></section>`;
-  if (a.fullMonths && a.months.length > 1) {
-    const mx = Math.max(...a.months.map((m) => m[1]));
-    h += `<section class="card"><h2>Your months</h2>${bars(a.months.map(([k, v], i) => [monthName(k), v, a.fullMonths.some((m) => m[0] === k) ? '' : ' <span class="tag">partial</span>']), mx, money)}</section>`;
-    const wmx = Math.max(...a.wk); h += `<section class="card"><h2>Your busiest days</h2>${bars(a.dayNames.map((d, i) => [d, a.wk[i]]), wmx, money)}</section>`;
+function dstr(d) { return d.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' }); }
+function qualityCard(o) {
+  var b = o.buckets, r = o.recon, mny = o.money, c = function (k) { return (b[k] || { rows: 0, amount: 0 }); };
+  var rowsList = [];
+  if (c('sale').rows) rowsList.push([fmt(c('sale').rows) + ' sales lines', mny(c('sale').amount)]);
+  if (c('return').rows) rowsList.push([fmt(c('return').rows) + ' returns or credits', mny(c('return').amount)]);
+  if (c('total').rows) rowsList.push([fmt(c('total').rows) + ' total line' + (c('total').rows > 1 ? 's' : '') + ' (shown, never added in twice)', mny(c('total').amount)]);
+  if (c('zero').rows) rowsList.push([fmt(c('zero').rows) + ' zero-value lines', mny(0)]);
+  var extra = [];
+  if (c('unreadable').rows) extra.push(fmt(c('unreadable').rows) + ' amount' + (c('unreadable').rows > 1 ? 's' : '') + ' we could not read as a number (for example ' + (o.examples.unreadable || []).slice(0, 3).map(function (x) { return esc(x); }).join('; ') + ')');
+  if (c('noamount').rows) extra.push(fmt(c('noamount').rows) + ' row' + (c('noamount').rows > 1 ? 's' : '') + ' with no amount');
+  if (r.derivedRows) extra.push(fmt(r.derivedRows) + ' amount' + (r.derivedRows > 1 ? 's were' : ' was') + ' empty, so we worked ' + (r.derivedRows > 1 ? 'them' : 'it') + ' out as quantity × price (' + mny(r.derived) + ' in all)');
+  if (c('unnamed').rows) extra.push(fmt(c('unnamed').rows) + ' sale' + (c('unnamed').rows > 1 ? 's' : '') + ' with no product name (kept, shown as "no product name")');
+  if (c('nodate').rows) extra.push(fmt(c('nodate').rows) + ' row' + (c('nodate').rows > 1 ? 's' : '') + ' with a date we could not read (counted in the totals, left out of the timing charts)');
+  if (c('blank').rows) extra.push(fmt(c('blank').rows) + ' blank row' + (c('blank').rows > 1 ? 's' : '') + ' ignored');
+  if (c('heading').rows) extra.push(fmt(c('heading').rows) + ' repeated heading line' + (c('heading').rows > 1 ? 's' : '') + ' ignored');
+  if (o.possibleDuplicates) extra.push(fmt(o.possibleDuplicates) + ' line' + (o.possibleDuplicates > 1 ? 's' : '') + ' look like possible double entries (same receipt, product, quantity and amount). We left them in, so check them');
+  if (o.merged && o.merged.count) extra.push(fmt(o.merged.count) + ' product name' + (o.merged.count > 1 ? 's were' : ' was') + ' typed in more than one way and counted together, for example ' + o.merged.examples.slice(0, 2).map(esc).join('; '));
+  if (o.totalMismatch) extra.push('In ' + fmt(o.totalMismatch) + ' row' + (o.totalMismatch > 1 ? 's' : '') + ' your Total column does not match the months added up, for example ' + ((o.examples.totalMismatch || [])[0] ? esc(o.examples.totalMismatch[0]) : ''));
+  o.notes.forEach(function (n) { extra.push(esc(n)); });
+  var cls = r.ok ? '' : ' bad';
+  var h = '<section class="fr-box fr-check' + cls + '"><h2>' + (r.ok ? '<i class="fas fa-circle-check fr-ok" aria-hidden="true"></i> Your numbers add up' : 'Your numbers do not add up yet') + '</h2>';
+  h += '<p class="fr-mute fr-sm" style="margin:2px 0 8px">We read <b>' + fmt(o.rowsRead) + '</b> row' + (o.rowsRead === 1 ? '' : 's') + '. Every number in the amount column is accounted for below, and nothing was thrown away.</p>';
+  h += '<table>' + rowsList.map(function (x) { return '<tr><td>' + x[0] + '</td><td class="n">' + x[1] + '</td></tr>'; }).join('') + '<tr><td><b>Everything we read from your file</b></td><td class="n"><b>' + mny(r.readSum) + '</b></td></tr></table>';
+  h += '<p class="fr-sm" style="margin:8px 0 0">' + (r.ok ? '<span class="fr-ok">Sales + returns + total lines = everything we read. Difference: ' + mny(0) + '.</span>' : '<span class="fr-warn">Difference of ' + mny(r.diff) + ' between what we read and what we counted. Please tell me and I will look into it.</span>') + '</p>';
+  if (extra.length) h += '<ul class="fr-find fr-sm">' + extra.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>';
+  h += '<div class="fr-row fr-noprint" style="margin-top:12px"><button class="fr-btn fr-alt" id="frDl" type="button"><i class="fas fa-download" aria-hidden="true"></i>&nbsp; Download the cleaned file</button><span class="fr-mute fr-sm">Every row, with what we did with it. It stays on your device.</span></div></section>';
+  return h;
+}
+function render(o) {
+  var mny = o.money, gross = o.grossSales > 0 ? o.grossSales : 1;
+  var top = o.list.filter(function (p) { return p.amount > 0; }).slice(0, 10);
+  var h = '<section class="fr-box"><h2>' + esc(CONFIG.name) + ' Health Check</h2><p class="fr-mute fr-sm" style="margin:0 0 12px">' + (o.first ? 'Sales from ' + dstr(o.first) + ' to ' + dstr(o.last) : 'No dates found in this file, so the timing reports are skipped') + '</p><div class="fr-stats">';
+  h += '<div class="fr-stat"><span class="fr-mute fr-sm">Net sales</span><b>' + mny(o.netSales) + '</b></div>';
+  if (o.returns) h += '<div class="fr-stat neg"><span class="fr-mute fr-sm">Returns / credits</span><b>' + mny(o.returns) + '</b></div>';
+  h += '<div class="fr-stat"><span class="fr-mute fr-sm">Products sold</span><b>' + fmt(o.list.length) + '</b></div>';
+  if (o.tied && o.tied.count) h += '<div class="fr-stat"><span class="fr-mute fr-sm">Cash tied up (estimate)</span><b>' + mny(o.tied.value) + '</b></div>';
+  h += '</div></section>';
+  h += qualityCard(o);
+  h += '<section class="fr-box"><h2>What stands out</h2>' + (o.finds.length ? '<ul class="fr-find">' + o.finds.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>' : '<p class="fr-mute">Add a date column, a receipt number or stock on hand to unlock more findings.</p>') + '</section>';
+  var rec = recommend(o);
+  h += '<section class="fr-box"><h2>A sensible next step</h2><p style="margin:6px 0 8px"><b>' + esc(rec.name) + '</b></p><p class="fr-mute fr-sm" style="margin:0 0 10px">' + esc(rec.why) + '</p><a class="fr-btn fr-alt fr-noprint" href="../services.html">See my options</a></section>';
+  if (top.length) h += '<section class="fr-box"><h2>Your best sellers</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">Top ' + top.length + ' by sales amount</p>' + bars(top.map(function (p) { return [p.name, p.amount, ' <span class="fr-mute fr-sm">' + (p.amount / gross * 100).toFixed(1) + '%</span>']; }), top[0].amount, mny) + '</section>';
+  if (o.slow && o.slow.length) h += '<section class="fr-box"><h2>Used to sell, now quiet</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">No sale for 30 days or more at the end of your file</p><table><tr><th>Product</th><th class="n">Past sales</th><th class="n">Quiet for</th></tr>' + o.slow.map(function (p) { return '<tr><td>' + esc(p.name) + '</td><td class="n">' + mny(p.amount) + '</td><td class="n">' + p.quiet + ' days</td></tr>'; }).join('') + '</table></section>';
+  if (o.months && o.months.length > 1) {
+    var mx = Math.max.apply(null, o.months.map(function (m) { return m[1]; }));
+    h += '<section class="fr-box"><h2>Your months</h2>' + bars(o.months.map(function (m) { return [E.monthName(m[0]), m[1], o.fullMonths.some(function (f) { return f[0] === m[0]; }) ? '' : ' <span class="fr-tag">partial</span>']; }), mx, mny) + '</section>';
+    if (!o.wideUnit && o.wk && Math.max.apply(null, o.wk) > 0) h += '<section class="fr-box"><h2>Your busiest days</h2>' + bars(o.dayNames.map(function (d, i) { return [d, o.wk[i]]; }), Math.max.apply(null, o.wk), mny) + '</section>';
   }
-  if (a.pairs && a.pairs.length) h += `<section class="card"><h2>What customers buy together</h2><p class="muted small" style="margin:0 0 8px">From ${fmt(a.bills)} receipts</p><table><tr><th>Pair</th><th class="n">Times together</th></tr>${a.pairs.map((p) => `<tr><td>${esc(p.a)} + ${esc(p.b)}</td><td class="n">${p.c}</td></tr>`).join('')}</table></section>`;
-  else if (a.bills !== undefined) h += `<section class="card"><h2>What customers buy together</h2><p class="muted">Not enough shared receipts to show a pattern yet.</p></section>`;
-  $('#report').innerHTML = h; $('#report').classList.remove('hidden'); $('#cta').classList.remove('hidden');
-  SUMMARY = `Suggested: ${rec.name}. Sales ${money(a.total)}, ${a.list.length} products` + (a.tied && a.tied.count ? `, about ${money(a.tied.value)} tied up in slow stock` : '') + `; best seller ${a.list[0].name}.`;
-  if (CONFIG.leadForm) { $('#leadcard').classList.remove('hidden'); SHOWN_AT = Date.now(); }
-  $('#report').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (o.pairs && o.pairs.length) h += '<section class="fr-box"><h2>What customers buy together</h2><p class="fr-mute fr-sm" style="margin:0 0 8px">From ' + fmt(o.bills) + ' receipts</p><table><tr><th>Pair</th><th class="n">Times together</th></tr>' + o.pairs.map(function (p) { return '<tr><td>' + esc(p.a) + ' + ' + esc(p.b) + '</td><td class="n">' + p.c + '</td></tr>'; }).join('') + '</table></section>';
+  else if (o.bills !== undefined) h += '<section class="fr-box"><h2>What customers buy together</h2><p class="fr-mute">Not enough shared receipts to show a pattern yet.</p></section>';
+  var R = $('#frReport'); R.innerHTML = h; show('#frReport', true); show('#frCta', true);
+  $('#frDl').addEventListener('click', download);
+  S.summary = 'Suggested: ' + rec.name + '. Net sales ' + mny(o.netSales) + ', ' + o.list.length + ' products' + (o.tied && o.tied.count ? ', about ' + mny(o.tied.value) + ' tied up in slow stock' : '') + '; best seller ' + (top[0] ? top[0].name : '-') + (o.recon.ok ? '' : '; numbers did not reconcile') + '.';
+  if (CONFIG.leadForm) { show('#frLead', true); S.shownAt = S.shownAt || Date.now(); }
+  if (R.scrollIntoView) R.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function download() {
+  try {
+    var blob = new Blob([E.cleanedCSV(S.out)], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'health-check-cleaned.csv'; document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  } catch (e) { fail('We could not prepare the download on this device.'); }
 }
 
 /* ---------- wiring ---------- */
-function fail(msg) { const e = $('#err'); e.textContent = msg; e.classList.toggle('hidden', !msg); }
-async function load(file) {
-  fail(''); $('#report').classList.add('hidden'); $('#cta').classList.add('hidden');
-  try { TABLE = await readFile(file); showMapping(); } catch (e) { $('#mapcard').classList.add('hidden'); fail(e.message || 'We could not read that file.'); }
-}
-$('#file').addEventListener('change', (e) => e.target.files[0] && load(e.target.files[0]));
-const drop = $('#drop');
-['dragover', 'dragenter'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
-['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', (e) => e.dataTransfer.files[0] && load(e.dataTransfer.files[0]));
-$('#run').addEventListener('click', () => {
-  const map = {}; document.querySelectorAll('#mapgrid select').forEach((s) => (map[s.dataset.k] = +s.value));
-  try { fail(''); render(analyse(map)); } catch (e) { fail(e.message); }
-});
-$('#print').addEventListener('click', () => window.print());
+$('#frFile').addEventListener('change', function (e) { if (e.target.files[0]) load(e.target.files[0]); e.target.value = ''; });
+var drop = $('#frDrop');
+['dragover', 'dragenter'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+['dragleave', 'drop'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
+drop.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); });
+$('#frPrint').addEventListener('click', function () { window.print(); });
 
-// sample data (clearly labelled): six months of an invented shop
-$('#sample').addEventListener('click', () => {
-  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const items = [['Paracetamol 500mg', 20, 9], ['Amoxicillin 500mg', 45, 6], ['Cough syrup', 180, 4], ['Vitamin C', 120, 4], ['ORS sachets', 30, 7], ['Pain gel', 250, 3], ['Bandages', 90, 3], ['Antacid', 60, 5], ['Hand sanitiser', 150, 3], ['Thermometer', 600, 1], ['Baby lotion', 320, 1.5], ['Old brand tonic', 400, 0.8]];
-  const rows = [['Date', 'Receipt', 'Item', 'Qty', 'Unit price', 'Stock']]; const stock = {}; items.forEach((i) => (stock[i[0]] = 60 + Math.floor(rnd() * 60)));
-  stock['Old brand tonic'] = 90; let rec = 1000;
-  for (let d = 0; d < 180; d++) {
-    const date = new Date(2026, 3, 1 + d); const dow = (date.getDay() + 6) % 7; const bills = 8 + Math.floor(rnd() * 8) + (dow === 4 ? 6 : 0);
-    for (let b = 0; b < bills; b++) {
-      rec++; const n = 1 + Math.floor(rnd() * 3); const picks = new Set();
+// sample data (clearly an invented shop)
+$('#frSample').addEventListener('click', function () {
+  var seed = 7; var rnd = function () { return (seed = (seed * 16807) % 2147483647) / 2147483647; };
+  var items = [['Paracetamol 500mg', 20, 9], ['Amoxicillin 500mg', 45, 6], ['Cough syrup', 180, 4], ['Vitamin C', 120, 4], ['ORS sachets', 30, 7], ['Pain gel', 250, 3], ['Bandages', 90, 3], ['Antacid', 60, 5], ['Hand sanitiser', 150, 3], ['Thermometer', 600, 1], ['Baby lotion', 320, 1.5], ['Old brand tonic', 400, 0.8]];
+  var rows = [['Date', 'Receipt', 'Item', 'Qty', 'Unit price', 'Stock']], stock = {}; items.forEach(function (i) { stock[i[0]] = 60 + Math.floor(rnd() * 60); });
+  stock['Old brand tonic'] = 90; var rec = 1000, wt = items.reduce(function (a, i) { return a + i[2]; }, 0);
+  for (var d = 0; d < 180; d++) {
+    var date = new Date(2026, 3, 1 + d), dow = (date.getDay() + 6) % 7, bills = 8 + Math.floor(rnd() * 8) + (dow === 4 ? 6 : 0);
+    for (var b = 0; b < bills; b++) {
+      rec++; var n = 1 + Math.floor(rnd() * 3), picks = new Set();
       if (rnd() < 0.3) { picks.add(0); picks.add(4); }
-      while (picks.size < n) { let t = rnd() * items.reduce((a, i) => a + i[2], 0), k = 0; for (; k < items.length; k++) { t -= items[k][2]; if (t <= 0) break; } picks.add(Math.min(k, items.length - 1)); }
-      for (const k of picks) { if (k === 11 && d > 60) continue; const q = 1 + Math.floor(rnd() * 3); stock[items[k][0]] = Math.max(0, stock[items[k][0]] - (k === 11 ? 0 : q) + (rnd() < 0.05 ? 40 : 0));
-        rows.push([date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0'), 'R' + rec, items[k][0], q, items[k][1], stock[items[k][0]]]); }
+      while (picks.size < n) { var t = rnd() * wt, k = 0; for (; k < items.length; k++) { t -= items[k][2]; if (t <= 0) break; } picks.add(Math.min(k, items.length - 1)); }
+      picks.forEach(function (k) { if (k === 11 && d > 60) return; var q = 1 + Math.floor(rnd() * 3); stock[items[k][0]] = Math.max(0, stock[items[k][0]] - (k === 11 ? 0 : q) + (rnd() < 0.05 ? 40 : 0));
+        rows.push([date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0'), 'R' + rec, items[k][0], q, items[k][1], stock[items[k][0]]]); });
     }
   }
-  fail(''); TABLE = toTable(rows); showMapping(); $('#report').classList.add('hidden');
-  $('#maphint').textContent = 'This is sample data from an invented shop. Press Show my report.';
+  fail(''); S.file = 'Sample data (an invented pharmacy)'; S.sheets = [{ name: 'Sample', rows: rows }]; S.notes = ['This is sample data from an invented shop, not yours.']; S.sheetChoice = 'auto'; S.order = 'auto'; S.currency = 'auto'; S.map = null; S.sample = true;
+  prepare();
 });
 
-// the "leave your details" form: sends only what the visitor typed, plus a one-line summary of the report (never the file)
-$('#consentname').textContent = CONFIG.name;
-$('#leadform').addEventListener('submit', async (e) => {
+/* ---------- the "leave your details" form ---------- */
+function waLink(text) { return 'https://wa.me/' + CONFIG.whatsapp.replace(/\D/g, '') + '?text=' + encodeURIComponent(text); }
+$('#frForm').addEventListener('submit', async function (e) {
   e.preventDefault();
-  const f = e.target, v = (k) => f.elements[k].value.trim(), msg = $('#leadmsg');
-  const say = (t, ok) => { msg.textContent = t; msg.className = 'small' + (ok ? ' ok' : ''); if (!ok) msg.style.color = 'var(--warn)'; else msg.style.color = ''; };
-  const phoneOk = /^[+0-9][0-9 ()\-]{6,}$/.test(v('phone')), emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v('email'));
+  var f = e.target, v = function (k) { return f.elements[k].value.trim(); }, msg = $('#frMsg');
+  var say = function (t, ok) { msg.textContent = t; msg.className = 'fr-sm' + (ok ? ' fr-ok' : ' fr-warn'); };
+  var phoneOk = /^[+0-9][0-9 ()\-]{6,}$/.test(v('phone')), emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v('email'));
   if (!(v('name') || v('business'))) return say('Please tell us your name or your business.');
   if (!phoneOk && !emailOk) return say('Please give a phone number or an email so we can reply.');
   if (!f.elements.consent.checked) return say('Please tick the box to say we may contact you.');
-  $('#leadsend').disabled = true; say('Sending…', true);
+  $('#frSend').disabled = true; say('Sending…', true); $('#frFallback').classList.add('fr-hide');
+  var ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, 25000);
   try {
-    const r = await fetch('/api/lead', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+    var r = await fetch('/api/lead', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal, body: JSON.stringify({
       name: v('name'), business: v('business'), phone: v('phone'), email: v('email'), note: v('note'), consent: true,
-      website: v('website'), elapsed: Date.now() - SHOWN_AT, summary: SUMMARY, source: SRC }) });
-    const j = await r.json().catch(() => ({}));
+      website: v('website'), elapsed: Date.now() - (S.shownAt || Date.now() - 60000), summary: S.summary, source: SRC }) });
+    var j = await r.json().catch(function () { return {}; });
     if (r.ok && j.ok) { say('Thank you. I will be in touch soon.', true); f.reset(); }
-    else say(j.error || 'We could not send that just now. Please use the WhatsApp or email button above.');
-  } catch (err) { say('We could not send that just now. Please use the WhatsApp or email button above.'); }
-  finally { $('#leadsend').disabled = false; }
+    else throw new Error(j.error || 'status ' + r.status);
+  } catch (err) {
+    say((err && err.message && !/^status|abort|Failed to fetch|NetworkError|Load failed/i.test(err.message) ? err.message + ' ' : 'We could not send that just now. ') + 'Nothing is lost: your details are still here.');
+    var txt = 'Hello, I used your free Business Health Check. Name: ' + v('name') + '. Business: ' + v('business') + '. Phone: ' + v('phone') + '. Email: ' + v('email') + '. ' + v('note');
+    $('#frFallbackWa').href = waLink(txt); $('#frFallback').classList.remove('fr-hide');
+  } finally { clearTimeout(timer); $('#frSend').disabled = false; }
 });
 
 // contact buttons
 (function () {
-  const msg = encodeURIComponent('Hello, I tried your free Business Health Check and would like you to look at my full records.');
-  if (CONFIG.whatsapp) { const a = $('#wa'); a.href = 'https://wa.me/' + CONFIG.whatsapp.replace(/\D/g, '') + '?text=' + msg; a.classList.remove('hidden'); }
-  if (CONFIG.email) { const m = $('#mail'); m.href = 'mailto:' + CONFIG.email + '?subject=' + encodeURIComponent('My Business Health Check') + '&body=' + msg; m.classList.remove('hidden'); }
+  var msg = 'Hello, I tried your free Business Health Check and would like you to look at my full records.';
+  if (CONFIG.whatsapp) { var a = $('#frWa'); a.href = waLink(msg); a.classList.remove('fr-hide'); }
+  if (CONFIG.email) { var m = $('#frMail'); m.href = 'mailto:' + CONFIG.email + '?subject=' + encodeURIComponent('My Business Health Check') + '&body=' + encodeURIComponent(msg); m.classList.remove('fr-hide'); }
+})();
 })();
 </script>
-<script src="vendor/xlsx.full.min.js" async onerror="window.XLSX=undefined"></script>
+<script src="../assets/js/analytics-tracking.js?v=cffb507b"></script>
 </body>
 </html>

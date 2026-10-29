@@ -5013,6 +5013,40 @@ def the_free_report_page_has_working_contact_details():
     assert (folder / "api" / "lead.js").is_file()
 
 
+@test
+def lead_capture_check_explains_what_is_wrong_in_plain_words_and_the_test_email_is_never_a_lead():
+    fresh(); configure(closer_mode="off")
+    import grow
+    class R:
+        def __init__(self, code, j=None, bad=False): self.status_code, self._j, self._bad = code, j, bad
+        def json(self):
+            if self._bad: raise ValueError("no json")
+            return self._j
+    def with_reply(rep, **kw):
+        sent = {}
+        def post(url, **k): sent["url"], sent["k"] = url, k; return rep() if callable(rep) else rep
+        return grow.lead_check({"free_report_url": "https://site.example/free-report/?src=x", "free_report_token": "t" * 20}, post=post, **kw), sent
+    assert "link first" in grow.lead_check({})["say"]
+    assert "Generate" in grow.lead_check({"free_report_url": "https://a.example/free-report/"})["say"]
+    r, sent = with_reply(R(200, {"ok": True, "mailLogin": "ok", "missing": [], "advice": ["Connect a store."], "store": False}))
+    assert r["ok"] and sent["url"] == "https://site.example/api/lead-check" and sent["k"]["headers"]["Authorization"] == "Bearer " + "t" * 20 and r["advice"] == ["Connect a store."]
+    r, _ = with_reply(R(200, {"ok": True, "mailLogin": "ok", "test": "sent to m***@x.test"}), send=True); assert "test email was sent" in r["say"]
+    r, _ = with_reply(R(404)); assert not r["ok"] and r["stage"] == "deploy" and "lead-check.js" in r["say"]
+    r, _ = with_reply(R(401)); assert r["stage"] == "token" and "LEAD_TOKEN" in r["say"]
+    r, _ = with_reply(R(200, {"ok": False, "missing": ["SMTP_PASS"], "advice": ["Add the missing settings"]})); assert "SMTP_PASS" in r["say"]
+    r, _ = with_reply(R(200, {"ok": False, "missing": [], "mailLogin": "FAILED: EAUTH 535"})); assert "535" in r["say"]
+    r, _ = with_reply(R(500, bad=True)); assert r["stage"] == "reply" and "Logs" in r["say"]
+    def boom(): raise ConnectionError("offline")
+    r, _ = with_reply(boom); assert r["stage"] == "reach" and "internet" in r["say"]     # network trouble is reported, never raised
+    # the self-check email from the site is proof of delivery and never becomes a lead or a reply
+    db.save_settings({"free_report_token": "s3cret-token-value-1234"})
+    raw = (b"From: Health Check leads <bot@other.test>\r\nTo: deric@dericbi.test\r\nSubject: Health Check lead TEST: ignore\r\nMessage-ID: <t1@x>\r\n\r\n"
+           b"Name: Jane\nBusiness: Test\nPhone: 0712345678\nConsent: yes\nToken: s3cret-token-value-1234\n")
+    assert messaging.process_inbound_email(raw, db.get_settings()).get("test") and count("SELECT COUNT(*) FROM leads") == 0
+    with AuthedClient(server.create_app(port=8769), base_url="http://127.0.0.1:8769") as cl:
+        j = cl.post("/api/grow/lead-check", json={}).json(); assert j["ok"] is False and j["stage"] == "setup"
+
+
 if __name__ == "__main__":
     SMTP.stop()
     PHONE.shutdown()

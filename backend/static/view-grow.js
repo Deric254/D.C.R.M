@@ -34,6 +34,8 @@
               <p class="muted small">The page can send you the details a visitor chooses to leave. They reach you as an email that this app reads and turns into a lead. A secret that only the page and this app know keeps strangers out: press Generate, copy it, and put the same value in Vercel as <b>LEAD_TOKEN</b> (the steps are in the README of the free-report folder).</p>
               <div class="row"><input id="rtoken" type="text" autocomplete="off" placeholder="${cur.free_report_token_set ? 'Saved. Generate a new one to replace' : 'Press Generate'}" style="flex:1;min-width:240px">
                 <button class="btn" id="rgen" type="button">Generate</button><button class="btn" id="rtsave" type="button">Save secret</button><button class="btn small" id="rtcopy" type="button">Copy</button></div>
+              <div class="row"><button class="btn" id="rtest" type="button">Check lead capture</button><button class="btn" id="rtestsend" type="button">Check and send a test email</button><span class="muted small">Asks your website what is set up and what is not.</span></div>
+              <div id="rtestout" class="small" role="status"></div>
             </div></details>
           </div></section>
           <section class="panel"><div class="panel-head"><h2>Turn one finding into posts</h2></div><div class="panel-body stack" style="gap:12px">
@@ -101,6 +103,17 @@
           if (e.target.closest('#rsave')) { await api('/settings', { method: 'PUT', body: { free_report_url: $('#rlink').value.trim() } }); toast('Link saved'); return drawContent(); }
           if (e.target.closest('#rgen')) { const a = new Uint8Array(16); crypto.getRandomValues(a); $('#rtoken').value = [...a].map((x) => x.toString(16).padStart(2, '0')).join(''); return; }
           if (e.target.closest('#rtcopy')) return copy($('#rtoken').value);
+          const rt = e.target.closest('#rtest, #rtestsend');
+          if (rt) {
+            const out = $('#rtestout'); out.textContent = 'Checking your website…'; rt.disabled = true;
+            try {
+              const r = await api('/grow/lead-check', { method: 'POST', body: { send: rt.id === 'rtestsend' } });
+              const items = [r.say, ...(r.advice || [])].filter(Boolean);
+              out.innerHTML = ''; items.forEach((t, i) => { const p = document.createElement('p'); p.style.margin = '4px 0'; p.textContent = t; if (i === 0) { p.style.fontWeight = '600'; p.className = r.ok ? 'ok' : ''; } out.appendChild(p); });
+            } catch (err) { out.textContent = (err && err.message) || 'The check could not run.'; }
+            finally { rt.disabled = false; }
+            return;
+          }
           if (e.target.closest('#rtsave')) { const v = $('#rtoken').value.trim(); if (!v) return toast('Press Generate first'); await api('/settings', { method: 'PUT', body: { free_report_token: v } }); toast('Secret saved. Put the same value in Vercel as LEAD_TOKEN.'); return drawContent(); }
           const c = e.target.closest('[data-text-of]'); if (c) return copy($('#' + c.dataset.textOf).value);
           const ct = e.target.closest('[data-copytext]'); if (ct) return copy($('#old-' + ct.dataset.copytext).textContent);
