@@ -288,6 +288,22 @@ try:
         page.wait_for_selector(".drawer")
         assert page.input_value('input[name="deal_value"]') == "45000"
         page.keyboard.press("Escape")
+        # a won lead offers the link another system advertises (opens there; nothing is sent from here); other leads do not
+        wid = call("POST", "/leads", {"name": "Won Handoff Shop", "sector": "Retail", "town": "Nairobi", "phone": "0712000999"})["id"]
+        call("PATCH", f"/leads/{wid}", {"status": "won"})
+        card = {"ok": True, "url": "https://bre.test/", "name": "Engine", "card": {"name": "Business Reality Engine", "handoffs": {"licence.issue": "/master?issue_to={name}"}}}
+        page.route("**/api/ecosystem", lambda r: r.fulfill(json={"me": {}, "systems": [card]}))
+        page.click('#nav a[data-view="leads"]')
+        page.wait_for_selector("table.t tbody tr")
+        page.fill("#q", "Won Handoff"); page.wait_for_function("document.querySelectorAll('table.t tbody tr').length == 1")
+        page.locator("table.t tbody tr").first.click()
+        page.wait_for_selector(".drawer a:has-text('Set up a licence in Business Reality Engine')")
+        assert page.get_attribute(".drawer a:has-text('Set up a licence')", "href") == "https://bre.test/master?issue_to=Won%20Handoff%20Shop"
+        page.keyboard.press("Escape"); page.wait_for_selector(".drawer", state="detached")
+        page.fill("#q", ""); page.locator("table.t tbody tr").filter(has_not_text="Won Handoff").first.click(); page.wait_for_selector(".drawer")
+        assert page.locator(".drawer a:has-text('Set up a licence')").count() == 0
+        page.keyboard.press("Escape"); page.wait_for_selector(".drawer", state="detached")
+        page.unroute("**/api/ecosystem")
         page.wait_for_selector(".drawer", state="detached")
         # follow-ups can be chosen when writing a campaign
         page.click('#nav a[data-view="outreach"]')

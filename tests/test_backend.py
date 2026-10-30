@@ -5069,6 +5069,11 @@ def the_ecosystem_list_reads_cards_without_knowing_any_system_and_never_fails():
     get, _ = fake({"https://g.test/dericbi.json": R(200, b"{" + b" " * 70000 + b"}")}); assert "too large" in ecosystem.read_card("https://g.test", get)["say"]
     for bad in ("ftp://x.test", "not a url", "https://user:pw@x.test", ""):
         assert not ecosystem.read_card(bad, get)["ok"]
+    # handoff links: only plain paths on that same system survive; anything that could lead the browser elsewhere is dropped
+    hand = {"licence.issue": "/master?issue_to={name}", "a": "https://evil.test/x", "b": "//evil.test", "c": "javascript:alert(1)", "d": "relative", "e": "/x\\y", "f": 5}
+    assert ecosystem._handoffs(hand) == {"licence.issue": "/master?issue_to={name}"} and ecosystem._handoffs("x") == {} and ecosystem._handoffs(None) == {}
+    get, _ = fake({"https://h.test/dericbi.json": R(200, json.dumps(dict(good, handoffs=hand)).encode())})
+    assert ecosystem.read_card("https://h.test", get)["card"]["handoffs"] == {"licence.issue": "/master?issue_to={name}"}
     with AuthedClient(server.create_app(port=8770), base_url="http://127.0.0.1:8770") as cl:
         assert cl.get("/api/ecosystem/card").json()["contract"] == "dericbi.ecosystem/1"
         assert cl.post("/api/ecosystem", json={"url": "javascript:alert(1)"}).status_code == 400

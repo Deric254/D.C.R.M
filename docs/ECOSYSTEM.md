@@ -13,6 +13,8 @@ A small JSON file every system publishes. Only `contract`, `id` and `name` are r
   "offers": ["alerts", "forecast"], "accepts": ["events.webhook", "files.upload"], "health": "/api/health/" }
 ```
 `offers` and `accepts` are plain strings. Any system may invent new ones; nobody needs a central list. Unknown fields are kept and ignored.
+
+A card may also carry `"handoffs": {"licence.issue": "/master?issue_to={name}"}`: a ready-made link (a plain path on that same system, `{name}` filled in by the opener) that another system can show its owner. Anything that is not a plain path is dropped. Opening it sends nothing; it only fills a form that the owner still submits. The CRM shows it as a button on a won lead.
 Cards hold no secrets and no business data.
 
 ## Where each card lives (the CRM tries these in order)

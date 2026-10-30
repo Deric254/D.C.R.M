@@ -188,6 +188,14 @@
     lead.events.filter((e) => !['reply', 'sent'].includes(e.kind)).forEach((e) => items.push({ t: e.ts, e }));
     items.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
 
+    // A won lead can be passed on to another of the owner's systems that offers a link for it (the page opens there; nothing is sent from here).
+    let handoffs = [];
+    if (lead.status === 'won') {
+      try {
+        handoffs = (await api('/ecosystem')).systems.filter((s) => s.ok && s.card.handoffs && s.card.handoffs['licence.issue'])
+          .map((s) => ({ name: s.card.name, href: s.url.replace(/\/+$/, '') + s.card.handoffs['licence.issue'].replace('{name}', encodeURIComponent(lead.name)) }));
+      } catch (e) { handoffs = []; }
+    }
     const CH = { email: 'email', sms: 'text', whatsapp: 'WhatsApp', other: 'call or chat' };
     const byId = Object.fromEntries(lead.messages.map((m) => [m.id, m]));
     const real = lead.messages.filter((m) => m.direction === 'in' || m.status === 'sent');
@@ -216,7 +224,8 @@
             <div class="row" style="gap:6px;margin-top:6px">${statusChip(lead.status)} ${gradeChip(lead.grade)}
               ${awaiting ? html`<span class="chip warm" title="We sent the last message and they have not answered yet">Awaiting reply</span>` : ''}
               ${lead.do_not_contact ? html`<span class="chip optout">Do not contact</span>` : ''}${lead.email_bounced ? html`<span class="chip bounce">Email bounced</span>` : ''}
-              ${lead.archived ? html`<span class="chip">Archived</span>` : ''}</div></div>
+              ${lead.archived ? html`<span class="chip">Archived</span>` : ''}</div>
+            ${handoffs.map((h) => html`<div style="margin-top:8px"><a class="btn" href="${h.href}" target="_blank" rel="noopener">Set up a licence in ${h.name}</a></div>`)}</div>
           <button class="btn quiet" id="x" aria-label="Close">Close</button>
         </div>
         <div class="drawer-body">

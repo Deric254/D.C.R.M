@@ -105,7 +105,18 @@ def _tidy(card: dict) -> dict:
     def strs(v, n=40):
         return [str(x)[:60] for x in v[:n]] if isinstance(v, list) else []
     return {"id": str(card.get("id"))[:40], "name": str(card.get("name"))[:80], "version": str(card.get("version") or "")[:20], "role": str(card.get("role") or "")[:160],
-            "offers": strs(card.get("offers")), "accepts": strs(card.get("accepts"))}
+            "offers": strs(card.get("offers")), "accepts": strs(card.get("accepts")), "handoffs": _handoffs(card.get("handoffs"))}
+
+
+def _handoffs(v) -> dict:
+    """Links a system offers ("what to do" -> a path on that system, with {name} for the business). Only plain relative paths are kept, so a card can
+    never point the owner's browser at another website."""
+    out = {}
+    if isinstance(v, dict):
+        for k, p in list(v.items())[:10]:
+            if isinstance(k, str) and isinstance(p, str) and p.startswith("/") and not p.startswith("//") and "\\" not in p and len(p) <= 200 and ":" not in p.split("?")[0]:
+                out[k[:40]] = p
+    return out
 
 
 def overview(get=None) -> dict:
