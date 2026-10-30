@@ -58,7 +58,7 @@ ok(r.out.last && r.out.last.getFullYear() >= 2025 && near(r.out.recon.net, 150),
 
 // 8 wide months
 r = run(buf('Product,Jan,Feb,Mar,Total\nSugar,100,200,300,600\nRice,50,60,70,180\nTotal,150,260,370,780\n'), 'h.csv');
-ok(r.g.layout === 'wide', 'wide layout'); ok(near(r.out.recon.net, 780 - 780 + 780 - 780 + 780 - 0 - 780 + 780 - 780 + 780) || true, '');
+ok(r.g.layout === 'wide', 'wide layout'); 
 ok(near(r.out.recon.sales, 780) && near(r.out.recon.totalRows, 780) && r.out.recon.ok, 'wide ' + JSON.stringify(r.out.recon));
 
 // 9 swahili
@@ -70,7 +70,7 @@ r = run(buf('Date\tItem\tAmount\n2026-01-02\tCafé au lait\t100\n2026-01-03\tRic
 r = run(buf('Date,Item,Amount\n2026-01-02,Caf\xe9,100\n2026-01-03,Rice,50\n', 'w1252'), 'k.csv'); ok(near(r.out.recon.net, 150) && /Café/.test(r.out.list.map((p) => p.name).join()), 'w1252');
 
 // 11 useless single column
-let threw = false; try { r = run(buf('hello\nworld\nfoo\n'), 'l.csv'); ok(!r.g.confident, 'unsure when no amount'); } catch (e) { threw = true; } ok(true, 'no crash');
+try { r = run(buf('hello\nworld\nfoo\n'), 'l.csv'); ok(!r.g.confident, 'unsure when no amount'); } catch (e) { ok(/could not find/.test(e.message), 'a useless file gives a plain message: ' + e.message); }
 
 // 12 qty x price, no amount
 r = run(buf('Date,Item,Qty,Price\n2026-01-02,Sugar,2,150\n2026-01-03,Rice,3,100\n'), 'm.csv'); ok(near(r.out.recon.net, 600), 'qty*price ' + r.out.recon.net);
@@ -92,7 +92,7 @@ ok(near(r.out.recon.net, exp) && r.out.recon.ok && r.out.rowsRead === 100000, 'b
 
 
 // no product column at all: still a report (one line of business), never a refusal
-r = run(buf('Date,Amount\n2026-01-02,100\n2026-01-03,250\nTotal,350\n'), 'p.csv'); ok(r.g.confident && near(r.out.recon.sales, 350 - 0) === false || true, ''); ok(near(r.out.recon.sales, 350) && near(r.out.recon.totalRows, 350) && r.out.recon.ok, 'no product column ' + JSON.stringify(r.out.recon));
+r = run(buf('Date,Amount\n2026-01-02,100\n2026-01-03,250\nTotal,350\n'), 'p.csv'); ok(near(r.out.recon.sales, 350) && near(r.out.recon.totalRows, 350) && r.out.recon.ok, 'no product column ' + JSON.stringify(r.out.recon));
 r = run(buf('Date,Details,Amount\n2026-01-02,Takings,100\n2026-01-03,Takings,250\n'), 'q.csv'); ok(r.g.map.product === 1 && near(r.out.recon.net, 350), '"Details" is read as the product column');
 
 // ---- the downloadable template: it must read back perfectly, with its own instructions sheet ignored
@@ -106,14 +106,21 @@ r = run(buf('Date,Details,Amount\n2026-01-02,Takings,100\n2026-01-03,Takings,250
   const g = E.guess(B.sales); const so = E.analyse(B.sales, g, {}), xo = E.analyseExpenses(B.expenses, {});
   const salesLines = T.sheets[1].rows.slice(1); const expectSales = salesLines.reduce((a, r) => a + r[5], 0), expectExp = T.sheets[2].rows.slice(1).reduce((a, r) => a + r[3], 0);
   ok(g.confident && g.map.date != null && g.map.receipt != null && g.map.stock != null && g.map.qty != null && g.map.price != null, 'template: every optional column found ' + JSON.stringify(g.map));
-  ok(near(so.recon.net, expectSales) && so.recon.ok && so.rowsRead === salesLines.length && (so.buckets.return || {}).rows === 1, 'template: sales add up exactly ' + so.recon.net + ' vs ' + expectSales);
+  ok(near(so.recon.net, expectSales) && so.recon.ok && so.rowsRead === salesLines.length && (so.buckets.return || {}).rows === salesLines.filter((r) => r[5] < 0).length, 'template: sales add up exactly ' + so.recon.net + ' vs ' + expectSales);
   ok(near(xo.recon.sales, expectExp) && xo.recon.ok, 'template: expenses add up exactly');
   const hm = E.harmonize(so, xo); ok(hm.basis === 'months' && hm.comparable === 3 && !!so.months && so.months.length === 3 && so.pairs !== undefined, 'template: three comparable months ' + JSON.stringify([hm.basis, hm.comparable]));
-  ok(so.finds.length >= 1 || true, '');
   ok(!so.possibleDuplicates, 'template: no false double entries');
 }
+// ---- Google Sheets / Drive links
+{
+  const ID = '1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
+  const g = E.googleLinks(`https://docs.google.com/spreadsheets/d/${ID}/edit?usp=sharing#gid=77`);
+  ok(g && g.kind === 'sheet' && g.urls[0].endsWith('/export?format=xlsx') && g.urls.some((u) => u.includes('gviz') && u.includes('gid=77')), 'google: workbook first, then the tab');
+  const pub = E.googleLinks('https://docs.google.com/spreadsheets/d/e/2PACX-1vAbCdEfGhIjKlMnOpQrStUv/pub?output=html'); ok(pub && pub.urls.length === 1 && /output=csv/.test(pub.urls[0]) && !/output=html/.test(pub.urls[0]), 'google: published link becomes csv');
+  ok(E.googleLinks(`https://drive.google.com/file/d/${ID}/view`).kind === 'drive', 'google: drive link');
+  ok(E.googleLinks('https://example.com/spreadsheets/d/' + ID) === null && E.googleLinks('') === null && E.googleLinks('javascript:alert(1)') === null, 'google: anything else is refused');
+}
 // ---- books: sales and expenses, in two sheets, in one sheet, in and out columns, bank-style negatives
-const monthRows = (months, kindFn) => { const rows = []; months.forEach((m) => { rows.push(...kindFn(m)); }); return rows; };
 const d1 = (m) => `2026-${String(m).padStart(2, '0')}-01`, d2 = (m) => `2026-${String(m).padStart(2, '0')}-${m === 2 ? 28 : m % 2 ? 31 : 30}`;
 const bookRun = (sheets, kinds) => { const B = E.prepareBooks(sheets, kinds); const so = B.sales ? E.analyse(B.sales, E.guess(B.sales), {}) : null; const xo = B.expenses ? E.analyseExpenses(B.expenses, {}) : null; return { B, so, xo, hm: so && xo ? E.harmonize(so, xo) : null }; };
 const sheetOf = (name, rows) => ({ name, rows });
@@ -210,7 +217,6 @@ for (let k = 0; k < 300; k++) {
     const B = E.prepareBooks(sheets, {}); if (!B.sales || !B.expenses) { bad++; console.log('NOT SPLIT', mode, k); continue; }
     const so = E.analyse(B.sales, E.guess(B.sales), {}), xo = E.analyseExpenses(B.expenses, {}); n++;
     const total = so.recon.readSum + xo.recon.readSum - (mode === 'type' ? 0 : 0);
-    const totRows = so.recon.totalRows + xo.recon.totalRows; // a "Total" row in a type sheet is counted in one side
     if (!so.recon.ok || !xo.recon.ok) { bad++; console.log('RECON', mode, k); }
     // everything in the input (minus a stray total of 999) is somewhere
     const expectedMax = inSum + (mode === 'type' ? 999 : 0);

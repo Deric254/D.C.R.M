@@ -22,6 +22,7 @@ import campaigns as C
 import closer
 import config
 import db
+import ecosystem
 import enrich
 import grow
 import jobs
@@ -828,6 +829,28 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         return {"summary": ai.summarize(db.get_settings(), lead)}
 
     # ------------------------------------------------------------- Grow (content drafts and partners: nothing here sends)
+    # ------------------------------------------------------------- Ecosystem (your other systems: read their cards, nothing is sent to them)
+    @app.get("/api/ecosystem/card")
+    def eco_card():
+        return ecosystem.my_card()
+
+    @app.get("/api/ecosystem")
+    def eco_overview(request: Request):
+        owner_only(request)
+        return ecosystem.overview()
+
+    @app.post("/api/ecosystem")
+    def eco_add(request: Request, body: dict = Body(...)):
+        owner_only(request)
+        link = ecosystem.add_link(body.get("name", ""), body.get("url", ""))
+        return dict(link, **ecosystem.read_card(link["url"]))
+
+    @app.delete("/api/ecosystem/{link_id}")
+    def eco_remove(request: Request, link_id: int):
+        owner_only(request)
+        ecosystem.remove_link(link_id)
+        return {"ok": True}
+
     @app.post("/api/grow/lead-check")
     def grow_lead_check(body: dict = Body(default={})):
         return grow.lead_check(db.get_settings(), send=bool((body or {}).get("send")))

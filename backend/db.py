@@ -152,6 +152,14 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+-- Other systems of yours this app knows about (the ecosystem). Only a name and an address: nothing is ever sent to them from here yet.
+CREATE TABLE IF NOT EXISTS ecosystem_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL UNIQUE,
+  added_at TEXT NOT NULL
+);
+
 -- People who may sign in. Passwords and security answers are stored only as salted scrypt hashes.
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

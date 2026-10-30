@@ -83,3 +83,10 @@ The page offers "Download the Excel template": an .xlsx made in the visitor's br
 sheet (tips on how to arrange data), a Sales sheet (Date, Receipt, Item, Qty, Unit price, Amount as a formula, Stock on hand, with one example return) and an Expenses sheet.
 Uploaded unchanged, it reads perfectly and shows sales, expenses and profit; the "Read me first" sheet is ignored. The tips live once, in `engine.js` (`TEMPLATE_TIPS`),
 and the same text is shown on the page. Your own layout still works: the template only gives the best results.
+
+## Several files, and Google Sheets (added)
+The visitor can choose several files at once (for example a sales file and an expenses file), or paste a Google Sheets link instead.
+For a link the page asks Google for the whole workbook first (so the Sales and Expenses tabs both arrive), then one tab, then the table feed.
+The sheet must be shared as "Anyone with the link"; if Google answers with a sign-in page the visitor is told exactly how to share it, or to
+download the file and drop it in. Google's rules about reading a sheet from another website can change, so this is the one part to
+test on the live site after each deploy (the quick way round, download then drop, always works).

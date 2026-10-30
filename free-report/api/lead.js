@@ -92,7 +92,7 @@ async function handler(req, res) {
   if (b.consent !== true) return res.status(400).json({ ok: false, error: 'Please tick the box to say we may contact you.' });
   const name = one(b.name, 80), business = one(b.business, 120), phone = one(b.phone, 30), email = one(b.email, 120).toLowerCase();
   if (!(name || business)) return res.status(400).json({ ok: false, error: 'Please tell us your name or your business.' });
-  const phoneOk = /^[+0-9][0-9 ()\-]{6,}$/.test(phone), emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+  const phoneOk = /^[+0-9][0-9 ()-]{6,}$/.test(phone), emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
   if (!phoneOk && !emailOk) return res.status(400).json({ ok: false, error: 'Please give a phone number or an email so we can reply.' });
 
   // Vercel sets these itself from the real connection, so a visitor cannot choose them

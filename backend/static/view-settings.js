@@ -175,6 +175,13 @@
             <div><button type="button" class="btn" id="backup">Download a full copy of the database (advanced)</button> <span class="muted small">Owner only. It includes accounts, the licence and saved passwords: use "Backups" below to move to another computer.</span></div>
           </div></section>
 
+        <section class="panel" data-group="data" id="eco-panel"><div class="panel-head"><h2>Your other systems</h2></div>
+          <div class="panel-body stack" style="gap:12px">
+            <div class="small muted">Add the address of another system of yours (your website, your intelligence engine, a client system). This app reads its short "capability card" to see who it is and what it offers. Nothing is sent to it from here, and a system that is off simply shows as not reachable.</div>
+            <div id="eco-body" class="stack" style="gap:8px"><p class="muted small">Loading…</p></div>
+            <div class="row" style="gap:8px;flex-wrap:wrap"><input id="eco-name" placeholder="Name (optional)" style="width:180px"><input id="eco-url" type="url" placeholder="https://dericbi.vercel.app" style="flex:1;min-width:240px"><button class="btn" id="eco-add" type="button">Add and check</button></div>
+          </div></section>
+
         <section class="panel" data-group="data" id="backups-panel"><div class="panel-head"><h2>Backups and moving to another computer</h2></div>
           <div class="panel-body stack" style="gap:12px">
             <div class="small muted">A backup is your whole business in one file: leads, messages, campaigns, history, settings and logo. Use it to recover from a mistake or a broken computer, or to move to another computer. Sign-in accounts and this computer's licence are never in it.</div>
@@ -203,6 +210,21 @@
           ${r.accounts.map((a) => html`<div class="row" style="gap:8px;margin-top:4px"><span>${a.from}</span><span class="muted">${a.sent_today} of ${a.limit || 'no limit'}${a.warming_up ? ' (warming up)' : ''}</span>
             ${a.resting_min ? html`<span class="chip">resting ${a.resting_min} min</span>` : ''}${a.last_error ? html`<span style="color:var(--bad)">${a.last_error}</span>` : ''}</div>`)}
         </div>`);
+      };
+      const drawEco = async () => {
+        const box = $('#eco-body'); if (!box) return;
+        let eco;
+        try { eco = await api('/ecosystem'); }
+        catch (err) { render(box, html`<p class="muted small">${err.status === 403 ? 'Only the owner account can manage this.' : err.message}</p>`); return; }
+        if (!$('#eco-body')) return;
+        const line = (x) => html`<div class="panel" style="margin:0"><div class="panel-body stack" style="gap:4px">
+          <div class="row"><b>${x.card ? x.card.name : x.name}</b><span class="chip ${x.ok ? 'ok' : 'bad'}">${x.ok ? 'Reachable' : 'Not reachable'}</span><span class="right small muted">${x.url}</span><button class="btn small" data-eco-del="${x.id}" type="button">Remove</button></div>
+          <div class="small ${x.ok ? 'muted' : ''}">${x.say}</div>
+          ${x.card ? html`<div class="small muted">${x.card.role || ''}${x.card.version ? ' · version ' + x.card.version : ''}</div>
+            ${x.card.offers.length ? html`<div class="small">Offers: ${x.card.offers.map((o) => html`<span class="chip">${o}</span> `)}</div>` : ''}
+            ${x.card.accepts.length ? html`<div class="small">Accepts: ${x.card.accepts.map((o) => html`<span class="chip">${o}</span> `)}</div>` : ''}` : ''}
+        </div></div>`;
+        render(box, eco.systems.length ? html`${eco.systems.map(line)}` : html`<p class="muted small">No other systems added yet. This is optional: nothing here changes how the app works.</p>`);
       };
       const drawBackups = async () => {
         const box = $('#bk-body'); if (!box) return;
@@ -275,11 +297,22 @@
         el.querySelectorAll('[data-group]').forEach((n) => { n.hidden = n.dataset.group !== tab; });
         el.querySelectorAll('.subnav-item').forEach((b) => { b.classList.toggle('active', b.dataset.tab === tab); b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'); });
       };
+      el.addEventListener('click', async (e) => {
+        const eadd = e.target.closest('#eco-add'), edel = e.target.closest('[data-eco-del]');
+        if (eadd) {
+          eadd.disabled = true;
+          try { const r = await api('/ecosystem', { method: 'POST', body: { name: $('#eco-name').value, url: $('#eco-url').value } }); $('#eco-name').value = ''; $('#eco-url').value = ''; toast(r.say, !r.ok); await drawEco(); }
+          catch (err) { toast(err.message, true, 8000); }
+          finally { eadd.disabled = false; }
+          return;
+        }
+        if (edel) { await api('/ecosystem/' + edel.dataset.ecoDel, { method: 'DELETE' }); toast('Removed'); return drawEco(); }
+      });
       el.addEventListener('click', (e) => {
         const b = e.target.closest('.subnav-item'); if (!b) return;
         tab = b.dataset.tab; applyTab(); const c = document.querySelector('.content'); if (c) c.scrollTop = 0;
       });
-      const draw = () => { render(el, form()); applyTab(); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); drawMailHealth().catch(() => {}); };
+      const draw = () => { render(el, form()); applyTab(); updateBox(); App.renderAccount($('#account-panels')).catch(fail); drawBackups().catch(() => {}); drawEco().catch(() => {}); drawMailHealth().catch(() => {}); };
       draw();
 
       const save = async () => {

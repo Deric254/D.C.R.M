@@ -115,7 +115,7 @@
   function dateOrder(values) {
     let dmy = 0, mdy = 0;
     for (const v of values) {
-      const m = typeof v === 'string' && txt(v).match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/);
+      const m = typeof v === 'string' && txt(v).match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
       if (!m) continue;
       if (+m[1] > 12) dmy++; else if (+m[2] > 12) mdy++;
     }
@@ -123,19 +123,24 @@
   }
 
   function toDate(v, order) {
-    if (v instanceof Date) return isNaN(v) ? null : v;
+    if (v instanceof Date) {
+      if (isNaN(v)) return null;
+      // Excel dates arrive from the Excel reader a few seconds BEFORE midnight (e.g. 23:59:44 the evening before), which would
+      // put every Excel row one day early (1 July counted as 30 June). Anything within five minutes of midnight is that day's midnight.
+      return (v.getHours() === 23 && v.getMinutes() >= 55) ? new Date(v.getFullYear(), v.getMonth(), v.getDate() + 1) : v;
+    }
     if (v == null || v === '') return null;
     if (typeof v === 'number') return v > 20000 && v < 80000 ? new Date(Math.round((v - 25569) * 86400 * 1000) + new Date().getTimezoneOffset() * 60000) : null;
     const s = txt(v); if (!s) return null;
-    let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+    let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
     if (m) return mk(+m[1], +m[2], +m[3]);
-    m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/);
+    m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
     if (m) { let y = +m[3]; if (y < 100) y += 2000; let d = +m[1], mo = +m[2]; if (order === 'mdy') [d, mo] = [mo, d]; if (mo > 12 && d <= 12) [d, mo] = [mo, d]; return mk(y, mo, d); }
-    m = s.match(/^(\d{1,2})[-\/. ]([A-Za-z]{3,9})[-\/. ,]*(\d{2,4})/);   // 5-Jan-26, 5 January 2026
+    m = s.match(/^(\d{1,2})[-/. ]([A-Za-z]{3,9})[-/. ,]*(\d{2,4})/);   // 5-Jan-26, 5 January 2026
     if (m && monthIndex(m[2]) >= 0) { let y = +m[3]; if (y < 100) y += 2000; return mk(y, monthIndex(m[2]) + 1, +m[1]); }
-    m = s.match(/^([A-Za-z]{3,9})[-\/. ]+(\d{1,2})(?:st|nd|rd|th)?[, ]+(\d{4})/);   // January 5, 2026
+    m = s.match(/^([A-Za-z]{3,9})[-/. ]+(\d{1,2})(?:st|nd|rd|th)?[, ]+(\d{4})/);   // January 5, 2026
     if (m && monthIndex(m[1]) >= 0) return mk(+m[3], monthIndex(m[1]) + 1, +m[2]);
-    m = s.match(/^([A-Za-z]{3,9})[-\/. ]+(\d{2,4})$/);   // Jan-26, January 2026 (a month, taken as its 1st)
+    m = s.match(/^([A-Za-z]{3,9})[-/. ]+(\d{2,4})$/);   // Jan-26, January 2026 (a month, taken as its 1st)
     if (m && monthIndex(m[1]) >= 0) { let y = +m[2]; if (y < 100) y += 2000; return mk(y, monthIndex(m[1]) + 1, 1); }
     const t = Date.parse(s); const d = isNaN(t) ? null : new Date(t);
     return d && d.getFullYear() > 1990 && d.getFullYear() < 2100 ? d : null;
@@ -264,8 +269,8 @@
     const s = txt(h); if (!s) return null;
     if (/^(grand\s*)?total|jumla|avg|average|mean|%|share|qty|units|price/i.test(s)) return null;
     const d = toDate(s, 'dmy');
-    if (d && /[A-Za-z]/.test(s) || (d && /^\d{4}[-\/]\d{1,2}$/.test(s))) return d;
-    const m = s.match(/^([A-Za-z]{3,9})\.?(?:[-\/ ']*(\d{2,4}))?$/);
+    if (d && /[A-Za-z]/.test(s) || (d && /^\d{4}[-/]\d{1,2}$/.test(s))) return d;
+    const m = s.match(/^([A-Za-z]{3,9})\.?(?:[-/ ']*(\d{2,4}))?$/);
     if (m && monthIndex(m[1]) >= 0) { let y = m[2] ? +m[2] : null; if (y != null && y < 100) y += 2000; return { month: monthIndex(m[1]), year: y }; }
     return null;
   }
@@ -294,7 +299,6 @@
     const cur = { kes: 0, usd: 0, other: 0 };
 
     const addLine = (ln) => lines.push(ln);
-    const productOf = (raw) => { const n = txt(raw); return n; };
 
     if (wide) {   // ---- months across the top: unpivot, then everything below is the same
       const yearGuess = opts.defaultYear || new Date().getFullYear();
@@ -379,7 +383,7 @@
 
     /* ---- the figures that matter, from sale and return lines */
     const live = lines.filter((l) => l.type.startsWith('sale') || l.type.startsWith('return') || l.type === 'zero value');
-    const prods = new Map(); let spellingMerged = 0;
+    const prods = new Map();
     for (const l of live) {
       const key = normName(l.product); let p = prods.get(key);
       if (!p) { p = { name: l.product, amount: 0, sales: 0, returns: 0, qty: 0, hasQty: false, last: null, first: null, stock: NaN, stockAt: null, spell: new Set() }; prods.set(key, p); }
@@ -411,7 +415,7 @@
   const fmtN = (n) => Math.round(n).toLocaleString('en-KE');
 
   function analyseMore(out, live, list) {
-    const total = out.netSales; const money = (n) => (out.unit ? fmtN(n) + ' ' + out.unit : out.currency + ' ' + fmtN(n));
+    const money = (n) => (out.unit ? fmtN(n) + ' ' + out.unit : out.currency + ' ' + fmtN(n));
     out.money = money;
     if (!list.length) return;
     let acc = 0, n80 = 0; const pos = list.filter((p) => p.amount > 0), posTotal = pos.reduce((a, p) => a + p.amount, 0);
@@ -649,37 +653,91 @@
 
   /* ------------------------------------------------------------------ the template people can download and fill in */
   const TEMPLATE_TIPS = [
+    ['Sales and expenses go together', 'Put them in the same workbook (a Sales tab and an Expenses tab), or in two files, or in a Google Sheet. Add expenses and the report shows profit, not just sales.'],
     ['One row per line sold', 'One item on one receipt is one row. Keep the headings in row 1, one table per sheet.'],
     ['Keep it plain', 'No merged cells, no blank rows in the middle, no total or subtotal rows. (We cope with them if they are there, but plain gives the cleanest result.)'],
-    ['Dates', 'A real date, for example 2026-04-02 or 02/04/2026. Cover whole months, from the 1st to the last day.'],
+    ['Dates', 'A real date, for example 2026-08-02 or 02/08/2026. Cover whole months, from the 1st to the last day, for sales and for expenses.'],
     ['Item names', 'Spell each product the same way every time. Different spellings are counted together, but one spelling is safest.'],
     ['Amounts', 'Numbers only, no "KES" typed in. Amount = Qty x Unit price (the template does this for you). A return or refund is a negative amount.'],
     ['Receipt number', 'The same number on every item of one bill. It shows what customers buy together.'],
     ['Stock on hand', 'Optional: the quantity left after that sale. It shows slow stock and how much cash is tied up in it.'],
-    ['Expenses', 'Their own sheet: Date, Category (Rent, Salaries, Electricity, Transport...) and Amount. One row per payment, for the same months as your sales, so profit is fair.'],
-    ['Your own layout is fine too', 'This template just gives the best results. Any sales file still works, and the report shows exactly how it was read.']
+    ['Expenses', 'Date, Category (Rent, Salaries, Electricity, Stock purchases...), Description and Amount. One row per payment. Money you pay your suppliers for stock counts as an expense too.'],
+    ['Your own layout is fine too', 'This template just gives the best results. Any sales or expenses file still works, and the report shows exactly how it was read.']
   ];
 
-  /** The example workbook (an invented pharmacy): a Read me sheet, Sales and Expenses. Plain rows, so the page can write an .xlsx or a .csv from them. */
+  /** The example workbook: a Read me sheet, Sales and Expenses for a made-up neighbourhood shop in Nairobi (July to September 2026).
+   *  Built to look like a real shop's books: weekday and weekend rhythm, busy month-ends, a few slow products, stock topped up each week,
+   *  stock bought from the wholesaler as the biggest expense, and a thin but real profit. Plain rows, so the page can write an .xlsx or a .csv from them. */
   function templateRows() {
-    const items = [['Paracetamol 500mg', 20], ['Amoxicillin 500mg', 45], ['Cough syrup', 180], ['Vitamin C', 120], ['ORS sachets', 30], ['Pain gel', 250], ['Bandages', 90], ['Antacid', 60], ['Hand sanitiser', 150], ['Baby lotion', 320]];
-    const stock = items.map((_, i) => 60 + i * 8);
-    const days = [2, 9, 16, 23, 29], months = [3, 4, 5];   // April, May, June (0-based)
+    let seed = 20260807; const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let x = Math.imul(seed ^ (seed >>> 15), 1 | seed); x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x; return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+    // name, price (KES), how often it sells, usual max quantity, shelf stock after a restock
+    const items = [
+      ['Maize flour 2kg', 175, 11, 2, 70], ['Sugar 1kg', 195, 9, 2, 60], ['Cooking oil 1L', 340, 6, 2, 36], ['Rice 1kg', 210, 6, 2, 48],
+      ['Milk 500ml', 65, 13, 4, 110], ['Bread 400g', 70, 11, 3, 36], ['Eggs tray of 30', 520, 3, 1, 22], ['Tea leaves 250g', 135, 5, 2, 48],
+      ['Wheat flour 2kg', 190, 3, 2, 36], ['Salt 500g', 40, 4, 2, 60], ['Bar soap', 95, 5, 3, 60], ['Toothpaste', 190, 2, 1, 30],
+      ['Soda 500ml', 70, 9, 6, 96], ['Cooking fat 500g', 180, 3, 1, 30], ['Matchbox', 20, 4, 5, 80], ['Detergent 1kg', 320, 1.2, 1, 26], ['Baby oil', 280, 0.4, 1, 30]
+    ];
+    const wt = items.reduce((a, i) => a + i[2], 0), stock = items.map((i) => i[4]);
+    const pick = () => { let r = rnd() * wt, k = 0; for (; k < items.length; k++) { r -= items[k][2]; if (r <= 0) break; } return Math.min(k, items.length - 1); };
     const sales = [['Date', 'Receipt', 'Item', 'Qty', 'Unit price', 'Amount', 'Stock on hand']];
-    let rec = 1000, k = 0;
-    months.forEach((m) => days.forEach((d) => {
-      [[0, 1], [2]].forEach((_, ri) => {
-        rec++; const picks = ri === 0 ? [k % 10, (k + 3) % 10] : [(k + 5) % 10]; k++;
-        picks.forEach((it, j) => { const q = 5 * (1 + ((k + j) % 3)); stock[it] = Math.max(5, stock[it] - q); sales.push([new Date(2026, m, d), 'R' + rec, items[it][0], q, items[it][1], q * items[it][1], stock[it]]); });
-      });
-    }));
-    sales.push([new Date(2026, 4, 12), 'R' + (++rec), 'Cough syrup', -5, 180, -900, stock[2]]);   // a return, as an example
     const exp = [['Date', 'Category', 'Description', 'Amount']];
-    months.forEach((m) => { exp.push([new Date(2026, m, 1), 'Rent', 'Shop rent', 3500], [new Date(2026, m, 28), 'Salaries', 'Staff pay', 4500], [new Date(2026, m, 28), 'Electricity', 'Power bill', 500 + m * 20], [new Date(2026, m, 28), 'Transport', 'Deliveries', 650 + m * 10], [new Date(2026, m, 15), 'Licences', 'Permits', 250]); });
+    const round100 = (n) => Math.round(n / 100) * 100;
+    let rec = 4100, weekSales = 0, returnsLeft = 2;
+    for (let m = 6; m <= 8; m++) {                                    // July, August, September (0-based months)
+      const days = new Date(2026, m + 1, 0).getDate();
+      for (let d = 1; d <= days; d++) {
+        const date = new Date(2026, m, d), dow = date.getDay();      // 0 = Sunday
+        if (dow === 1 && weekSales > 0) {                              // Monday: pay the wholesaler for the week's restock
+          exp.push([date, 'Stock purchases', ['Restock from wholesaler', 'Wholesaler: flour, sugar and oil', 'Restock: dairy, bread and drinks'][Math.floor(rnd() * 3)], round100(weekSales * (0.62 + rnd() * 0.05))]);
+          items.forEach((it, i) => { if (i !== 16 && stock[i] < it[4] * 0.4) stock[i] = it[4]; });   // shelves refilled (baby oil is never reordered)
+          weekSales = 0;
+        }
+        let receipts = 8 + Math.floor(rnd() * 5);
+        if (dow === 6) receipts += 4; if (dow === 0) receipts -= 2;                       // busy Saturdays, quiet Sundays
+        if (d >= 26 || d <= 3) receipts += 3;                                              // pay-day shopping around month-end
+        for (let r = 0; r < receipts; r++) {
+          rec++; const n = 1 + Math.floor(rnd() * 3), used = new Set();
+          for (let j = 0; j < n; j++) {
+            const k = pick(); if (used.has(k)) continue; used.add(k);
+            const q = 1 + Math.floor(rnd() * items[k][3]);
+            stock[k] = Math.max(2, stock[k] - q); weekSales += q * items[k][1];
+            sales.push([date, 'R' + rec, items[k][0], q, items[k][1], q * items[k][1], stock[k]]);
+          }
+        }
+        if (returnsLeft > 0 && d === 17 && m > 6) { returnsLeft--; rec++; sales.push([date, 'R' + rec, 'Milk 500ml', -2, 65, -130, stock[4]]); }   // a customer returns spoilt milk
+        if (d === 1) exp.push([date, 'Rent', 'Shop rent', 12000]);
+        if (d === 5) exp.push([date, 'Electricity', 'Electricity tokens', 2400 + Math.floor(rnd() * 8) * 100]);
+        if (d === 12 || d === 26) exp.push([date, 'Transport', 'Deliveries and fares', 1200 + Math.floor(rnd() * 8) * 100]);
+        if (d === 15) exp.push([date, 'Airtime and internet', 'Airtime and M-Pesa float costs', 900 + Math.floor(rnd() * 4) * 100]);
+        if (d === 20) exp.push([date, 'Packaging', 'Paper bags and wrapping', 600 + Math.floor(rnd() * 5) * 100]);
+        if (d === 28) exp.push([date, 'Salaries', 'Shop assistant pay', 15000]);
+        if (d === 9 && m === 7) exp.push([date, 'Repairs', 'Fridge repair', 3500]);
+      }
+    }
     exp.sort((a, b) => (a === exp[0] ? -1 : b === exp[0] ? 1 : a[0] - b[0]));
-    const read = [['dericBI Business Health Check: template'], ['These are EXAMPLE rows from an invented pharmacy. Delete them and type or paste your own, then upload the file to the Health Check.'], [''], ['Tip', 'What to do']].concat(TEMPLATE_TIPS);
+    const read = [
+      ['dericBI Business Health Check: template'],
+      ['The rows in the Sales and Expenses sheets are EXAMPLES from a made-up neighbourhood shop, so you can see how real books look. Select them, delete them, and type or paste your own.'],
+      ['Then upload this file to the Health Check (or paste a Google Sheets link to it). Sales alone is fine; add Expenses and you also get profit.'],
+      [''], ['Tip', 'What to do']
+    ].concat(TEMPLATE_TIPS);
     return { sheets: [{ name: 'Read me first', rows: read }, { name: 'Sales', rows: sales }, { name: 'Expenses', rows: exp }] };
   }
 
-  return { TEMPLATE_TIPS, templateRows, classifySheet, splitMixed, prepareBooks, analyseExpenses, harmonize, readFile, decodeBytes, parseCSV, findTable, guess, analyse, buildTable, datesFromSheetNames, cleanedCSV, num, toDate, dateOrder, normName, periodOf, monthName, fmtN, TOTAL_ROW };
+  /** A Google Sheets / Drive link, or null. Returns the addresses worth trying, best first (the whole workbook, then one tab, then the table feed). */
+  function googleLinks(link) {
+    const s = String(link || '').trim();
+    let m = /^https:\/\/docs\.google\.com\/spreadsheets\/d\/(?:e\/)?([A-Za-z0-9_-]{15,})/i.exec(s);
+    if (m) {
+      const id = m[1], gid = (/[#&?]gid=(\d+)/.exec(s) || [])[1];
+      const base = 'https://docs.google.com/spreadsheets/d/' + id;
+      if (/\/d\/e\//i.test(s)) return { kind: 'sheet', id, urls: [s.replace(/(\?|&)output=\w+/i, '') + (s.includes('?') ? '&' : '?') + 'output=csv'] };
+      return { kind: 'sheet', id, urls: [base + '/export?format=xlsx', base + '/export?format=csv' + (gid ? '&gid=' + gid : ''), base + '/gviz/tq?tqx=out:csv' + (gid ? '&gid=' + gid : '')] };
+    }
+    m = /^https:\/\/drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:[^#]*&)?id=)([A-Za-z0-9_-]{15,})/i.exec(s);
+    if (m) return { kind: 'drive', id: m[1], urls: ['https://drive.google.com/uc?export=download&id=' + m[1]] };
+    return null;
+  }
+
+  return { TEMPLATE_TIPS, templateRows, googleLinks, classifySheet, splitMixed, prepareBooks, analyseExpenses, harmonize, readFile, decodeBytes, parseCSV, findTable, guess, analyse, buildTable, datesFromSheetNames, cleanedCSV, num, toDate, dateOrder, normName, periodOf, monthName, fmtN, TOTAL_ROW };
 });

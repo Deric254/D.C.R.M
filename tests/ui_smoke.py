@@ -241,6 +241,11 @@ try:
         page.click("#sform button[type=submit]")
         page.wait_for_selector(".toast")
         shot("7-settings")
+        page.click('.subnav-item[data-tab="data"]'); page.wait_for_selector("#eco-add")
+        page.fill("#eco-url", "http://127.0.0.1:9"); page.fill("#eco-name", "Down system"); page.click("#eco-add")
+        page.wait_for_function("document.querySelector('#eco-body').innerText.includes('Not reachable')")
+        page.click("[data-eco-del]"); page.wait_for_function("document.querySelector('#eco-body').innerText.includes('No other systems')")
+        page.click('.subnav-item[data-tab="sending"]')
         assert call("GET", "/settings")["email_daily_cap"] == 55
         page.click('.subnav-item[data-tab="business"]')
         shot("7a-settings-business")

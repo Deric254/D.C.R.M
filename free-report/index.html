@@ -31,6 +31,8 @@
   .fr-box{background:#fff;border:1px solid #cfe8dc;border-radius:14px;padding:18px;margin-top:16px;box-shadow:0 2px 10px rgba(73,160,120,.08)}
   .fr-box h2{font-size:1.15rem;font-weight:700;color:#3D8069;margin:0 0 4px}
   .fr-drop{border:2px dashed #49A078;border-radius:12px;padding:26px 14px;text-align:center;background:#f0fdf6}
+  .fr-gs{margin:14px 0 0;padding:12px 14px;border:1px solid #cfe9dc;border-radius:12px;background:#fff}
+  .fr-gs input{flex:1 1 auto;min-width:0;border:1px solid #c7d2cc;border-radius:10px;padding:10px 12px;font:inherit}
   .fr-drop.over{background:#dff3ea;border-color:#3D8069}
   .fr-btn,.fr-btn:hover,.fr-btn:focus{display:inline-block;border:0;border-radius:10px;padding:10px 18px;font:inherit;font-weight:700;font-size:.95rem;cursor:pointer;background:#49A078;color:#fff;text-decoration:none;transform:none;box-shadow:none;text-shadow:none}
   .fr-btn:hover{background:#3D8069;color:#fff}
@@ -182,28 +184,32 @@ document.addEventListener('click', (e) => {
 <div class="fr-wrap">
   <header class="fr-hero">
     <h1>Free Business Health Check</h1>
-    <p>Upload your sales sheet, however messy it is, and see what stands out: what sells best, what sits too long, your strongest months and what customers buy together. Free, and your file never leaves your device.</p>
+    <p>Upload your sales, and your expenses if you have them, however messy they are. See what sells best, what sits too long, where your money goes and whether you are really making a profit. Free, and your files never leave your device.</p>
   </header>
 
   <section class="fr-box fr-noprint" id="frUpload">
     <div class="fr-drop" id="frDrop">
-      <p style="margin:0 0 12px"><b>Drop your sales file here</b><br><span class="fr-mute fr-sm">Excel or CSV, tidy or messy. We clean it, and show you exactly what we did.</span></p>
+      <p style="margin:0 0 12px"><b>Drop your sales and expenses here</b><br><span class="fr-mute fr-sm">Excel or CSV, tidy or messy. Choose one file, or several at once (for example a sales file and an expenses file). We clean them, and show you exactly what we did.</span></p>
       <div class="fr-row" style="justify-content:center">
-        <label class="fr-btn" for="frFile" style="margin:0"><i class="fas fa-file-upload" aria-hidden="true"></i>&nbsp; Choose a file</label>
-        <input id="frFile" type="file" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods" class="fr-hide">
+        <label class="fr-btn" for="frFile" style="margin:0"><i class="fas fa-file-upload" aria-hidden="true"></i>&nbsp; Choose file(s)</label>
+        <input id="frFile" type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods" class="fr-hide">
         <button class="fr-btn fr-alt" id="frSample" type="button">Try it with sample data</button>
         <button class="fr-btn fr-alt" id="frTpl" type="button"><i class="fas fa-file-excel" aria-hidden="true"></i>&nbsp; Download the Excel template</button>
       </div>
     </div>
-    <p class="fr-mute fr-sm" style="margin:12px 0 0"><i class="fas fa-lock" aria-hidden="true"></i>&nbsp; Your sales file is read inside your own browser and is never uploaded. I only receive your details if you choose to leave them at the end.</p>
-    <p class="fr-mute fr-sm" style="margin:8px 0 0">Works with title lines, blank rows, totals, returns, KES amounts, repeated headings, monthly sheets and Swahili headings. Best results: a <b>product</b> and an <b>amount</b> (or quantity and price). A <b>date</b>, a <b>receipt number</b> and <b>stock on hand</b> unlock more.</p>
+    <form class="fr-gs" id="frGsForm" novalidate>
+      <label class="fr-f" for="frGsUrl"><b>Or keep them in Google Sheets?</b> Paste the link to your sheet:</label>
+      <div class="fr-row" style="flex-wrap:nowrap;margin-top:6px"><input id="frGsUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/..." aria-label="Google Sheets link"><button class="fr-btn fr-alt" id="frGsGo" type="submit" style="white-space:nowrap">Read my sheet</button></div>
+      <p class="fr-mute fr-sm" style="margin:6px 0 0">In Google Sheets press <b>Share</b>, set General access to <b>Anyone with the link</b> (Viewer), then copy the link. Sales and expenses can be two tabs of the same sheet. Your sheet is read in your own browser and is never sent to me.</p>
+    </form>
+    <p class="fr-mute fr-sm" style="margin:12px 0 0"><i class="fas fa-lock" aria-hidden="true"></i>&nbsp; Your files are read inside your own browser and are never uploaded. I only receive your details if you choose to leave them at the end.</p>
+    <p class="fr-mute fr-sm" style="margin:8px 0 0"><b>Sales</b> need a product and an amount (or quantity and price). <b>Expenses</b> need a category or description and an amount. Keep them in two tabs, two files, or one sheet with a Type column (Sale / Expense) or Money in / Money out columns, and we sort it out. Add a date, a receipt number and stock on hand to unlock more. Works with title lines, blank rows, totals, returns, KES amounts, repeated headings, monthly sheets and Swahili headings.</p>
     <p class="fr-warn fr-hide" id="frErr" role="alert"></p>
   </section>
 
   <section class="fr-box fr-noprint" id="frTips">
     <h2>Get the best results</h2>
-    <p class="fr-mute fr-sm" style="margin:2px 0 8px">Your own file works as it is. If you want the most from it, fill in our template (an invented pharmacy, so you can see how each column is used) or follow these tips.</p>
-    <div class="fr-row" style="margin-bottom:6px"><button class="fr-btn" id="frTpl2" type="button"><i class="fas fa-file-excel" aria-hidden="true"></i>&nbsp; Download the Excel template</button><button class="fr-btn fr-alt" id="frTplCsv" type="button">Sales sheet only (CSV)</button></div>
+    <p class="fr-mute fr-sm" style="margin:2px 0 8px">Your own file works as it is. For the most from it, follow these tips. The template above is a made-up neighbourhood shop with real-looking sales and expenses, so you can see each column in use.</p>
     <details class="fr-more"><summary>How to arrange your data</summary><ol id="frTipList" class="fr-find fr-sm"></ol></details>
   </section>
 
@@ -354,7 +360,7 @@ function toggleNewsletter() {
 <script defer src="../assets/js/chatbot.js?v=bf03de00"></script>
 <script defer src="../assets/js/social_links.js?v=6f1c5397"></script>
 <script defer src="../assets/js/email-link.js?v=bcd71479"></script>
-<script src="engine.js?v=4"></script>
+<script src="engine.js?v=6"></script>
 <script>
 (function () {
 'use strict';
@@ -385,16 +391,71 @@ function loadXlsx() {
   S.xlsxP = new Promise(function (res) { var s = document.createElement('script'); s.src = 'vendor/xlsx.full.min.js'; s.onload = function () { res(window.XLSX); }; s.onerror = function () { res(null); }; document.head.appendChild(s); });
   return S.xlsxP;
 }
-async function load(file) {
+function readBuffer(buf, name) {
+  var X = /\.(xlsx?|xlsm|ods)$/i.test(name) || (buf.byteLength > 3 && new Uint8Array(buf, 0, 2)[0] === 0x50) ? loadXlsx() : null;
+  return Promise.resolve(X).then(function (x) { return E.readFile(new Uint8Array(buf), name, x); });
+}
+// Several files (or several tabs) become one list of sheets. With more than one file, each sheet is named after its file,
+// so "expenses.csv" is understood as expenses and "sales.csv" as sales.
+function useFiles(groups, label) {
+  var sheets = [], notes = [], used = {}, many = groups.length > 1;
+  groups.forEach(function (g) {
+    var base = g.name.replace(/\.[^.]+$/, '');
+    g.res.sheets.forEach(function (sh) {
+      var nm = many ? (g.res.sheets.length > 1 ? base + ' - ' + sh.name : base) : sh.name, k = nm, n = 2;
+      while (used[k]) k = nm + ' ' + n++;
+      used[k] = 1; sheets.push({ name: k, rows: sh.rows });
+    });
+    g.res.notes.forEach(function (x) { notes.push(x); });
+  });
+  S.file = label; S.sheets = sheets; S.notes = notes; S.sheetChoice = 'auto'; S.kinds = {}; S.order = 'auto'; S.currency = 'auto'; S.sample = false; S.map = null;
+  prepare();
+}
+async function loadFiles(list) {
+  var files = Array.prototype.slice.call(list || []);
+  if (!files.length) return;
   fail(''); show('#frReport', false); show('#frCta', false); show('#frLead', false);
   try {
-    if (file.size > 60 * 1024 * 1024) throw new Error('That file is very large (over 60 MB). Please send me the first few months, or the file itself on WhatsApp.');
-    var buf = await file.arrayBuffer();
-    var X = /\.(xlsx?|xlsm|ods)$/i.test(file.name) || (buf.byteLength > 3 && new Uint8Array(buf, 0, 2)[0] === 0x50) ? await loadXlsx() : null;
-    var f = E.readFile(new Uint8Array(buf), file.name, X);
-    S.file = file.name; S.sheets = f.sheets; S.notes = f.notes; S.sheetChoice = 'auto'; S.kinds = {}; S.order = 'auto'; S.currency = 'auto'; S.sample = false; S.map = null;
-    prepare();
+    var groups = [];
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      if (file.size > 60 * 1024 * 1024) throw new Error('That file is very large (over 60 MB). Please send me the first few months, or the file itself on WhatsApp.');
+      var buf = await file.arrayBuffer();
+      try { groups.push({ name: file.name, res: await readBuffer(buf, file.name) }); }
+      catch (e) { throw new Error(files.length > 1 ? file.name + ': ' + (e.message || 'could not be read.') : (e.message || 'We could not read that file.')); }
+    }
+    useFiles(groups, files.map(function (f) { return f.name; }).join(' + '));
   } catch (e) { show('#frHow', false); fail(e.message || 'We could not read that file.'); }
+}
+
+// A Google Sheets link: try the whole workbook first (so the Sales and Expenses tabs both come), then one tab.
+async function loadGoogle(link) {
+  fail(''); show('#frReport', false); show('#frCta', false); show('#frLead', false);
+  var g = E.googleLinks(link);
+  if (!g) { show('#frHow', false); return fail('That does not look like a Google Sheets link. Open your sheet, copy the address from the top of the browser, and paste it here.'); }
+  var btn = $('#frGsGo'); btn.disabled = true; btn.textContent = 'Reading…';
+  var priv = false;
+  try {
+    for (var i = 0; i < g.urls.length; i++) {
+      var url = g.urls[i], ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, 20000);
+      try {
+        var res = await fetch(url, { credentials: 'omit', redirect: 'follow', signal: ctl.signal });
+        if (!res.ok) { if (res.status === 401 || res.status === 403 || res.status === 404) priv = true; continue; }
+        var buf = await res.arrayBuffer(), head = new TextDecoder().decode(new Uint8Array(buf.slice(0, 400))).toLowerCase();
+        if (head.indexOf('<html') >= 0 || head.indexOf('<!doctype') >= 0) { priv = true; continue; }     // Google sends a sign-in page for a private sheet
+        var name = url.indexOf('format=xlsx') >= 0 ? 'Google Sheet.xlsx' : 'Google Sheet.csv';
+        var r = await readBuffer(buf, name);
+        useFiles([{ name: name, res: r }], 'Google Sheet');
+        return;
+      } catch (e) { /* try the next address */ } finally { clearTimeout(timer); }
+    }
+    show('#frHow', false);
+    fail(g.kind === 'drive'
+      ? 'A file stored in Google Drive cannot always be opened from its link. Download it from Drive (right-click, Download) and drop it above. If it is an Excel file you can also open it with Google Sheets and paste that link instead.'
+      : priv
+        ? 'Google says this sheet is private. In Google Sheets press Share, set General access to "Anyone with the link" (Viewer), copy the link and paste it here again.'
+        : 'We could not open that link from here. Quick way round: in Google Sheets choose File > Download > Microsoft Excel (.xlsx) and drop the file above.');
+  } finally { btn.disabled = false; btn.textContent = 'Read my sheet'; }
 }
 function curOpts() { var o = {}; if (S.order !== 'auto') o.order = S.order; if (S.currency !== 'auto') o.currency = S.currency; return o; }
 function prepare() {
@@ -600,10 +661,10 @@ function download(data, name) {
 function serial(d) { return Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(1899, 11, 30)) / 86400000); }
 function saveBlob(blob, name) { var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
 function csvOf(rows) { return '\ufeff' + rows.map(function (r) { return r.map(function (c) { var v = c instanceof Date ? c.getFullYear() + '-' + String(c.getMonth() + 1).padStart(2, '0') + '-' + String(c.getDate()).padStart(2, '0') : String(c == null ? '' : c); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\r\n'); }
-async function downloadTemplate(csvOnly) {
+async function downloadTemplate() {
   try {
-    var T = E.templateRows(), X = csvOnly ? null : await loadXlsx();
-    if (!X) { saveBlob(new Blob([csvOf(T.sheets[1].rows)], { type: 'text/csv;charset=utf-8' }), 'dericBI-sales-template.csv'); if (!csvOnly) fail('The Excel maker could not load here, so you got the sales sheet as a CSV. Open it in Excel and add your own rows.'); return; }
+    var T = E.templateRows(), X = await loadXlsx();
+    if (!X) { saveBlob(new Blob([csvOf(T.sheets[1].rows)], { type: 'text/csv;charset=utf-8' }), 'dericBI-sales-template.csv'); fail('The Excel maker could not load here, so you got the sales sheet as a CSV. Open it in Excel and add your own rows.'); return; }
     var wb = X.utils.book_new(), widths = { 'Read me first': [26, 110], Sales: [12, 10, 24, 6, 11, 11, 14], Expenses: [12, 16, 22, 11] };
     T.sheets.forEach(function (sh) {
       var ws = X.utils.aoa_to_sheet(sh.rows.map(function (r) { return r.map(function (c) { return c instanceof Date ? serial(c) : c; }); }));
@@ -619,36 +680,21 @@ async function downloadTemplate(csvOnly) {
   } catch (e) { fail('We could not prepare the template on this device. Please message me and I will send it.'); }
 }
 $('#frTipList').innerHTML = E.TEMPLATE_TIPS.map(function (t) { return '<li><b>' + esc(t[0]) + '.</b> ' + esc(t[1]) + '</li>'; }).join('');
-$('#frTpl').addEventListener('click', function () { downloadTemplate(false); });
-$('#frTpl2').addEventListener('click', function () { downloadTemplate(false); });
-$('#frTplCsv').addEventListener('click', function () { downloadTemplate(true); });
+$('#frTpl').addEventListener('click', function () { downloadTemplate(); });
 
 /* ---------- wiring ---------- */
-$('#frFile').addEventListener('change', function (e) { if (e.target.files[0]) load(e.target.files[0]); e.target.value = ''; });
+$('#frFile').addEventListener('change', function (e) { var fl = Array.prototype.slice.call(e.target.files); e.target.value = ''; loadFiles(fl); });
+$('#frGsForm').addEventListener('submit', function (e) { e.preventDefault(); loadGoogle($('#frGsUrl').value); });
 var drop = $('#frDrop');
 ['dragover', 'dragenter'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
 ['dragleave', 'drop'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
-drop.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); });
+drop.addEventListener('drop', function (e) { if (e.dataTransfer.files.length) loadFiles(e.dataTransfer.files); });
 $('#frPrint').addEventListener('click', function () { window.print(); });
 
-// sample data (clearly an invented shop)
+// sample data: the same made-up neighbourhood shop as the template, so what you try is what you download
 $('#frSample').addEventListener('click', function () {
-  var seed = 7; var rnd = function () { return (seed = (seed * 16807) % 2147483647) / 2147483647; };
-  var items = [['Paracetamol 500mg', 20, 9], ['Amoxicillin 500mg', 45, 6], ['Cough syrup', 180, 4], ['Vitamin C', 120, 4], ['ORS sachets', 30, 7], ['Pain gel', 250, 3], ['Bandages', 90, 3], ['Antacid', 60, 5], ['Hand sanitiser', 150, 3], ['Thermometer', 600, 1], ['Baby lotion', 320, 1.5], ['Old brand tonic', 400, 0.8]];
-  var rows = [['Date', 'Receipt', 'Item', 'Qty', 'Unit price', 'Stock']], stock = {}; items.forEach(function (i) { stock[i[0]] = 60 + Math.floor(rnd() * 60); });
-  stock['Old brand tonic'] = 90; var rec = 1000, wt = items.reduce(function (a, i) { return a + i[2]; }, 0);
-  for (var d = 0; d < 180; d++) {
-    var date = new Date(2026, 3, 1 + d), dow = (date.getDay() + 6) % 7, bills = 8 + Math.floor(rnd() * 8) + (dow === 4 ? 6 : 0);
-    for (var b = 0; b < bills; b++) {
-      rec++; var n = 1 + Math.floor(rnd() * 3), picks = new Set();
-      if (rnd() < 0.3) { picks.add(0); picks.add(4); }
-      while (picks.size < n) { var t = rnd() * wt, k = 0; for (; k < items.length; k++) { t -= items[k][2]; if (t <= 0) break; } picks.add(Math.min(k, items.length - 1)); }
-      picks.forEach(function (k) { if (k === 11 && d > 60) return; var q = 1 + Math.floor(rnd() * 3); stock[items[k][0]] = Math.max(0, stock[items[k][0]] - (k === 11 ? 0 : q) + (rnd() < 0.05 ? 40 : 0));
-        rows.push([date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0'), 'R' + rec, items[k][0], q, items[k][1], stock[items[k][0]]]); });
-    }
-  }
-  var exp = [['Date', 'Category', 'Amount']]; [['Rent', 22000], ['Salaries', 45000], ['Electricity', 4500], ['Transport', 8000], ['Licences', 1500]].forEach(function (c) { for (var mo = 3; mo <= 8; mo++) { var q = c[0] === 'Electricity' || c[0] === 'Transport' ? 0.85 + rnd() * 0.3 : 1; exp.push([new Date(2026, mo, 1).getFullYear() + '-' + String(mo + 1).padStart(2, '0') + '-' + (c[0] === 'Rent' ? '01' : '28'), c[0], Math.round(c[1] * q)]); } });
-  fail(''); S.file = 'Sample data (an invented pharmacy)'; S.sheets = [{ name: 'Sales', rows: rows }, { name: 'Expenses', rows: exp }]; S.notes = ['This is sample data from an invented shop, not yours.']; S.sheetChoice = 'auto'; S.kinds = {}; S.order = 'auto'; S.currency = 'auto'; S.map = null; S.sample = true;
+  var T = E.templateRows();
+  fail(''); S.file = 'Sample data (an invented neighbourhood shop)'; S.sheets = [T.sheets[1], T.sheets[2]]; S.notes = ['This is sample data from an invented shop, not yours.']; S.sheetChoice = 'auto'; S.kinds = {}; S.order = 'auto'; S.currency = 'auto'; S.sample = true; S.map = null;
   prepare();
 });
 
@@ -658,7 +704,7 @@ $('#frForm').addEventListener('submit', async function (e) {
   e.preventDefault();
   var f = e.target, v = function (k) { return f.elements[k].value.trim(); }, msg = $('#frMsg');
   var say = function (t, ok) { msg.textContent = t; msg.className = 'fr-sm' + (ok ? ' fr-ok' : ' fr-warn'); };
-  var phoneOk = /^[+0-9][0-9 ()\-]{6,}$/.test(v('phone')), emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v('email'));
+  var phoneOk = /^[+0-9][0-9 ()-]{6,}$/.test(v('phone')), emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v('email'));
   if (!(v('name') || v('business'))) return say('Please tell us your name or your business.');
   if (!phoneOk && !emailOk) return say('Please give a phone number or an email so we can reply.');
   if (!f.elements.consent.checked) return say('Please tick the box to say we may contact you.');

@@ -3265,7 +3265,7 @@ def the_worker_records_a_message_already_in_the_chat_and_skips_follow_ups_to_peo
     fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
     ids = _wa_leads(3)
     with db.db() as c:
-        cid = C.create_campaign(c, "Dup", "whatsapp", "", "", {}, launch=True, style="ready")
+        C.create_campaign(c, "Dup", "whatsapp", "", "", {}, launch=True, style="ready")
     fake = FakeWA({"+254700000040": "already", "+254700000041": "replied"})
     orig = fake.send
     def send(phone, text, followup=False, **kw):
@@ -3358,7 +3358,7 @@ def two_taps_on_start_cannot_queue_the_same_leads_twice():
         gate.wait()
         try:
             out.append(C.send_now(one, "email", "Hello", "Hello {name}")["status"])
-        except ValueError as e:
+        except ValueError:
             out.append("refused")
     ts = [threading.Thread(target=hand) for _ in range(2)]
     [t.start() for t in ts]; [t.join() for t in ts]
@@ -3418,7 +3418,7 @@ def a_campaign_never_sends_a_first_message_into_a_chat_you_already_have_but_a_ha
     fresh(); configure(whatsapp_delay_sec=20); db.set_internal("whatsapp_linked", True)
     ids = _wa_leads(2)
     with db.db() as c:
-        cid = C.create_campaign(c, "First", "whatsapp", "", "", {}, launch=True, style="ready")
+        C.create_campaign(c, "First", "whatsapp", "", "", {}, launch=True, style="ready")
     seen = []
     fake = FakeWA({"+254700000040": "chatted"})
     orig = fake.send
@@ -3437,7 +3437,7 @@ def a_campaign_never_sends_a_first_message_into_a_chat_you_already_have_but_a_ha
         c.execute("UPDATE messages SET status='skipped' WHERE lead_id=?", (ids[1],))   # clear the way for the hand send
         c.execute("DELETE FROM messages WHERE lead_id=? AND status='skipped'", (ids[1],))
         c.execute("UPDATE leads SET last_contacted_at=NULL WHERE id=?", (ids[1],))
-    r = C.whatsapp_one(ids[1], "Hello by hand")
+    C.whatsapp_one(ids[1], "Hello by hand")
     seen.clear(); _run_wa(fake)
     assert seen and seen[0][2] is False, seen
 
@@ -3747,7 +3747,7 @@ def auto_mode_only_sends_low_risk_confident_fresh_turns_and_hands_the_rest_to_yo
 @test
 def suggest_mode_stores_one_draft_per_message_hides_it_from_the_timeline_and_never_sends_it_by_itself():
     _closer_setup("suggest"); ids = _wa_leads(1)
-    inbound = _chat(ids[0], "We already have a system, thanks")
+    _chat(ids[0], "We already have a system, thanks")
     fake = GOOD_AI()
     r = _with_ai(fake, lambda: closer.draft_for(ids[0]))
     assert r["action"] == "draft" and fake.calls == 1
@@ -3760,7 +3760,6 @@ def suggest_mode_stores_one_draft_per_message_hides_it_from_the_timeline_and_nev
         assert closer.pending_lead_ids(c) == []                                                                   # the same message is never drafted twice
     assert _with_ai(fake, lambda: closer.process_pending(lambda m: None)) == 0 and fake.calls == 1
     # a newer message replaces the unused draft, so you never see two
-    _chat_more = lambda t: db.db().__enter__().execute  # (kept simple below)
     with db.db() as c:
         L.record_reply(c, ids[0], "whatsapp", "10 years my own method works", "", "wa:second")
     assert _with_ai(fake, lambda: closer.process_pending(lambda m: None)) == 1
@@ -3786,7 +3785,6 @@ def sending_a_draft_queues_one_normal_message_through_the_whatsapp_path_moves_th
     assert _run_wa(FakeWA())[0] == "done"                                                                          # the worker sends it, once
     assert count("SELECT COUNT(*) FROM messages WHERE id=? AND status='sent'", res["id"]) == 1
     # an edited draft is recorded as edited
-    _chat_again = None
     with db.db() as c:
         L.record_reply(c, ids[0], "whatsapp", "yes interested", "", "wa:third")
     with db.db() as c:
@@ -4275,7 +4273,7 @@ def an_enquiry_that_starts_with_a_stranger_on_whatsapp_becomes_a_lead_and_your_p
 
 @test
 def the_worker_in_conversation_mode_stays_open_scans_unread_chats_and_stops_when_it_is_switched_off():
-    _closer_setup("suggest"); ids = _wa_leads(1)
+    _closer_setup("suggest"); _wa_leads(1)
     fake = FakeWA(); scans = {"n": 0}
     def scan(limit=8):
         scans["n"] += 1
@@ -4308,8 +4306,8 @@ def a_whatsapp_campaign_with_other_ways_ticked_moves_a_person_not_on_whatsapp_to
     with db.db() as c:
         a = L.add_lead(c, {"name": "A Shop", "phone": "0700000051", "email": "a@shop.test", "town": "Meru", "sector": "Pharmacy"})["id"]
         b = L.add_lead(c, {"name": "B Shop", "phone": "0700000052", "email": "b@shop.test", "town": "Meru", "sector": "Pharmacy"})["id"]
-        c1 = C.create_campaign(c, "WA fallback", "whatsapp", "", "Hello {name}, a quick question about your stock.", {"lead_ids": [a], "fallback": True}, launch=True)
-        c2 = C.create_campaign(c, "WA fixed", "whatsapp", "", "Hello {name}, a quick question about your stock.", {"lead_ids": [b]}, launch=True)
+        C.create_campaign(c, "WA fallback", "whatsapp", "", "Hello {name}, a quick question about your stock.", {"lead_ids": [a], "fallback": True}, launch=True)
+        C.create_campaign(c, "WA fixed", "whatsapp", "", "Hello {name}, a quick question about your stock.", {"lead_ids": [b]}, launch=True)
     fake = FakeWA({"+254700000051": "not_on", "+254700000052": "not_on"})
     assert _run_wa(fake)[0] == "done"
     with db.db() as c:
@@ -4478,7 +4476,6 @@ def email_and_sms_safeguards_bounces_dropped_connections_and_a_sleeping_phone():
     with db.db() as c:
         assert c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()["status"] == "running"
     # a sleeping phone is waited for, not a reason to pause texts
-    err = messaging.SendError("x", "transient")
     e = messaging._phone_unreachable("http://192.168.1.5:8080", OSError("down"))
     assert e.kind == "offline" and "Couldn't reach" in str(e), e
     # a connection that dies after the message was handed over is never retried by itself
@@ -5045,6 +5042,42 @@ def lead_capture_check_explains_what_is_wrong_in_plain_words_and_the_test_email_
     assert messaging.process_inbound_email(raw, db.get_settings()).get("test") and count("SELECT COUNT(*) FROM leads") == 0
     with AuthedClient(server.create_app(port=8769), base_url="http://127.0.0.1:8769") as cl:
         j = cl.post("/api/grow/lead-check", json={}).json(); assert j["ok"] is False and j["stage"] == "setup"
+
+
+@test
+def the_ecosystem_list_reads_cards_without_knowing_any_system_and_never_fails():
+    fresh(); configure(closer_mode="off")
+    import ecosystem, json
+    good = {"contract": "dericbi.ecosystem/1", "id": "bre", "name": "Engine", "version": "2", "role": "watches", "offers": ["alerts", "x.y"], "accepts": ["events.webhook"], "extra": {"ignored": 1}}
+    class R:
+        def __init__(self, code, body=b""): self.status_code, self.content = code, body
+    def fake(routes):
+        seen = []
+        def get(u):
+            seen.append(u); r = routes.get(u)
+            if isinstance(r, Exception): raise r
+            return r or R(404)
+        return get, seen
+    get, seen = fake({"https://a.test/.well-known/dericbi.json": R(200, json.dumps(good).encode())})
+    r = ecosystem.read_card("https://a.test/", get); assert r["ok"] and r["card"]["offers"] == ["alerts", "x.y"] and "extra" not in r["card"] and seen == ["https://a.test/.well-known/dericbi.json"]
+    get, seen = fake({"https://b.test/api/ecosystem/card": R(200, json.dumps(good).encode())})      # found at the later address after earlier ones answered 404
+    r = ecosystem.read_card("https://b.test", get); assert r["ok"] and len(seen) == 3
+    get, _ = fake({"https://c.test/.well-known/dericbi.json": R(200, b"<html>not json</html>")}); r = ecosystem.read_card("https://c.test", get); assert not r["ok"] and r["stage"] == "card" and "no capability card" in r["say"]
+    get, _ = fake({"https://d.test/dericbi.json": R(200, json.dumps({"id": "x", "name": "y"}).encode())}); assert not ecosystem.read_card("https://d.test", get)["ok"]      # not our format
+    get, _ = fake({"https://e.test/dericbi.json": R(200, json.dumps(dict(good, contract="dericbi.ecosystem/9")).encode())}); r = ecosystem.read_card("https://e.test", get); assert r["ok"] and r["newer"]
+    get, _ = fake({"https://f.test/.well-known/dericbi.json": ConnectionError("down")}); r = ecosystem.read_card("https://f.test", get); assert not r["ok"] and r["stage"] == "reach"
+    get, _ = fake({"https://g.test/dericbi.json": R(200, b"{" + b" " * 70000 + b"}")}); assert "too large" in ecosystem.read_card("https://g.test", get)["say"]
+    for bad in ("ftp://x.test", "not a url", "https://user:pw@x.test", ""):
+        assert not ecosystem.read_card(bad, get)["ok"]
+    with AuthedClient(server.create_app(port=8770), base_url="http://127.0.0.1:8770") as cl:
+        assert cl.get("/api/ecosystem/card").json()["contract"] == "dericbi.ecosystem/1"
+        assert cl.post("/api/ecosystem", json={"url": "javascript:alert(1)"}).status_code == 400
+        assert cl.get("/api/ecosystem").json()["systems"] == []
+        # an address that cannot be reached is still saved and reported in words, so the list never blocks on a down system
+        j = cl.post("/api/ecosystem", json={"name": "Local", "url": "http://127.0.0.1:9"}).json(); assert j["ok"] is False and j["id"]
+        assert cl.post("/api/ecosystem", json={"url": "http://127.0.0.1:9"}).status_code == 400      # no duplicates
+        assert len(cl.get("/api/ecosystem").json()["systems"]) == 1
+        assert cl.delete(f"/api/ecosystem/{j['id']}").status_code == 200 and cl.get("/api/ecosystem").json()["systems"] == []
 
 
 if __name__ == "__main__":

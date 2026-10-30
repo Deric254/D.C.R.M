@@ -332,7 +332,6 @@ def _unpack(path, work: Path, progress) -> tuple:
 def restore(path, progress=lambda s: None, after=None) -> dict:
     """Replace this computer's business data with a backup. All or nothing. Returns what was restored."""
     path = Path(path)
-    live_files = []
     with db.db() as conn:   # a lead search or enrichment running right now would write against ids that are about to change
         import jobs
         for r in conn.execute("SELECT pid FROM jobs WHERE status IN ('queued','running')").fetchall():

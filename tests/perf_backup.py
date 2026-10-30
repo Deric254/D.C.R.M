@@ -123,7 +123,6 @@ def main():
             time.sleep(0.25)
         info["restore"] = {"seconds": round(time.time() - t, 1), "error": stt.get("error"), "responsive": probe.finish()}
         print("3. restore on the new computer:", info["restore"], flush=True)
-        left = [m for m in B.call("GET", "/backups")["items"]]
         pa.terminate(); pb.terminate(); pa.wait(20); pb.wait(20)
         old, new = aggregate(os.path.join(src, "dericbi_crm.sqlite3")), aggregate(os.path.join(dst, "dericbi_crm.sqlite3"))
         info["identical"] = old == new
