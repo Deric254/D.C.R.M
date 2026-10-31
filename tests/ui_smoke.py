@@ -245,8 +245,7 @@ try:
         page.fill("#eco-url", "http://127.0.0.1:9"); page.fill("#eco-name", "Down system"); page.click("#eco-add")
         page.wait_for_function("document.querySelector('#eco-body').innerText.includes('Not reachable')")
         page.click("[data-eco-del]"); page.wait_for_function("document.querySelector('#eco-body').innerText.includes('No other systems')")
-        page.fill("input[name=advisor_feed_key]", "test-feed-key"); page.click("#sform button[type=submit]"); page.wait_for_selector(".toast")   # the feed key is saved like any secret
-        page.click("#eco-pull"); page.wait_for_function("document.querySelector('#eco-pull-say').innerText.includes('No linked system offers')")
+        page.click("#eco-pull"); page.wait_for_function("document.querySelector('#eco-pull-say').innerText.includes('Nothing to check yet')")   # nothing to set up: no key field
         page.click('.subnav-item[data-tab="sending"]')
         assert call("GET", "/settings")["email_daily_cap"] == 55
         page.click('.subnav-item[data-tab="business"]')
@@ -293,14 +292,14 @@ try:
         # a won lead offers the link another system advertises (opens there; nothing is sent from here); other leads do not
         wid = call("POST", "/leads", {"name": "Won Handoff Shop", "sector": "Retail", "town": "Nairobi", "phone": "0712000999"})["id"]
         call("PATCH", f"/leads/{wid}", {"status": "won"})
-        card = {"ok": True, "url": "https://bre.test/", "name": "Engine", "card": {"name": "Business Reality Engine", "handoffs": {"licence.issue": "/master?issue_to={name}&ref={ref}"}}}
+        card = {"ok": True, "url": "https://bre.test/", "name": "Engine", "card": {"name": "Business Reality Engine", "handoffs": {"licence.issue": "/master?issue_to={name}&ref={ref}"}, "feeds": {"advisor.alerts": "/api/advisor/alerts"}}}
         page.route("**/api/ecosystem", lambda r: r.fulfill(json={"me": {}, "systems": [card]}))
         page.click('#nav a[data-view="leads"]')
         page.wait_for_selector("table.t tbody tr")
         page.fill("#q", "Won Handoff"); page.wait_for_function("document.querySelectorAll('table.t tbody tr').length == 1")
         page.locator("table.t tbody tr").first.click()
         page.wait_for_selector(".drawer a:has-text('Set up a licence in Business Reality Engine')")
-        assert page.get_attribute(".drawer a:has-text('Set up a licence')", "href") == "https://bre.test/master?issue_to=Won%20Handoff%20Shop&ref=" + call("GET", f"/leads/{wid}")["uid"]
+        assert page.get_attribute(".drawer a:has-text('Set up a licence')", "href") == "https://bre.test/master?issue_to=Won%20Handoff%20Shop&ref=" + call("GET", f"/leads/{wid}")["uid"] + "#feed=" + call("GET", "/ecosystem/pair")["key"]
         page.keyboard.press("Escape"); page.wait_for_selector(".drawer", state="detached")
         page.fill("#q", ""); page.locator("table.t tbody tr").filter(has_not_text="Won Handoff").first.click(); page.wait_for_selector(".drawer")
         assert page.locator(".drawer a:has-text('Set up a licence')").count() == 0

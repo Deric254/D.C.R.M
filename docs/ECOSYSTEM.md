@@ -40,7 +40,7 @@ Many businesses use the Business Reality Engine; their alerts are theirs. So not
 1. A business only counts if its licence was issued from a CRM lead (the licence carries that lead's number).
 2. Its own owner must switch on **Tell my DericBI advisor about serious problems** (Settings; off by default, can be turned off at any time, and says what is shared).
 3. Only critical and high alerts that are still open, and only: lead number, business name, severity, the headline, the time. Never records, figures behind it, or explanations. A headline can name a branch or product and contain a percentage ("Westlands sales are down 15%"); the switch says so.
-4. Read-only, behind `ADVISOR_FEED_KEY` set on the engine. If it is not set the feed does not exist (404). The same value goes in the CRM (Settings > Data and backups > Your other systems > Alert feed key), where it is a saved secret like the mail password.
+4. Read-only, behind a key the CRM makes up by itself. Nothing is set up by hand: when you open the engine from a won lead, the link carries that key after the `#` (never sent to a server or logged). The engine, once you are signed in as the platform owner, keeps only a hash of it. Until that has happened the feed does not exist (404) and the CRM says "Not connected yet".
 5. The CRM asks every 5 minutes (it is a desktop app, so the engine cannot call it). Each alert becomes one follow-up on that lead, once: due today unless one is already due or overdue, and a later planned date that is brought forward is written in the lead's history. "Check alerts now" does it on demand and says in words what happened.
 
 ## Not built yet (on purpose)

@@ -5119,7 +5119,7 @@ def serious_alerts_from_a_shared_feed_become_one_follow_up_each_and_only_with_th
         calls.append((u, h.get("X-Advisor-Key")))
         return R(200, json.dumps(feed).encode()) if h.get("X-Advisor-Key") == "right" else R(404)
     assert ecosystem.pull_alerts("", get, card_get)["new"] == 0 and not calls                                   # no key: nothing is asked
-    bad = ecosystem.pull_alerts("wrong", get, card_get); assert not bad["ok"] and "did not accept the key" in bad["say"]
+    bad = ecosystem.pull_alerts("wrong", get, card_get); assert bad["ok"] and "Not connected yet" in bad["say"] and "Engine" in bad["say"]   # not paired yet is not an error
     r = ecosystem.pull_alerts("right", get, card_get); assert r["ok"] and r["new"] == 1, r
     assert calls[-1][0] == "https://bre.test/api/advisor/alerts"                                                 # first ask has no cursor
     with db.db() as c:
@@ -5142,9 +5142,11 @@ def serious_alerts_from_a_shared_feed_become_one_follow_up_each_and_only_with_th
     assert ecosystem.pull_alerts("right", lambda u, h: (_ for _ in ()).throw(ConnectionError("down")), card_get)["ok"] is False
     assert ecosystem.pull_alerts("right", get, lambda u: R(404))["say"] == "No linked system offers an alert feed"
     with AuthedClient(server.create_app(port=8771), base_url="http://127.0.0.1:8771") as cl:
-        assert cl.post("/api/ecosystem/pull").status_code == 400                                                  # no key saved yet
-        assert cl.put("/api/settings", json={"advisor_feed_key": "right"}).json()["advisor_feed_key_set"] is True
-        assert cl.get("/api/settings").json()["advisor_feed_key"] == ""                                           # the key is never sent back out
+        assert "Nothing to check yet" in cl.post("/api/ecosystem/pull").json()["say"]                              # no key made yet: nothing to ask
+        k1 = cl.get("/api/ecosystem/pair").json()["key"]
+        assert len(k1) >= 32 and cl.get("/api/ecosystem/pair").json()["key"] == k1                                  # made up once, then kept
+        assert cl.get("/api/settings").json()["advisor_feed_key_set"] is True and cl.get("/api/settings").json()["advisor_feed_key"] == ""   # never sent back through settings
+        assert cl.post("/api/ecosystem/pull").json()["ok"] is True                                                 # with a key and no systems: nothing to do, no error
 
 
 if __name__ == "__main__":

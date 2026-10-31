@@ -192,8 +192,11 @@
     let handoffs = [];
     if (lead.status === 'won') {
       try {
-        handoffs = (await api('/ecosystem')).systems.filter((s) => s.ok && s.card.handoffs && s.card.handoffs['licence.issue'])
-          .map((s) => ({ name: s.card.name, href: s.url.replace(/\/+$/, '') + s.card.handoffs['licence.issue'].replace('{name}', encodeURIComponent(lead.name)).replace('{ref}', lead.uid) }));
+        const systems = (await api('/ecosystem')).systems.filter((s) => s.ok && s.card.handoffs && s.card.handoffs['licence.issue']);
+        // A system that offers an alert feed also gets this app's own key, in the part of the address after "#" (never sent to a server or logged), which connects the two.
+        const key = systems.some((s) => s.card.feeds && s.card.feeds['advisor.alerts']) ? (await api('/ecosystem/pair')).key : '';
+        handoffs = systems.map((s) => ({ name: s.card.name, href: s.url.replace(/\/+$/, '') + s.card.handoffs['licence.issue'].replace('{name}', encodeURIComponent(lead.name)).replace('{ref}', lead.uid)
+          + (key && s.card.feeds && s.card.feeds['advisor.alerts'] ? '#feed=' + key : '') }));
       } catch (e) { handoffs = []; }
     }
     const CH = { email: 'email', sms: 'text', whatsapp: 'WhatsApp', other: 'call or chat' };

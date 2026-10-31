@@ -839,13 +839,15 @@ def create_app(port: int = config.DEFAULT_PORT, parent_pid=None) -> FastAPI:
         owner_only(request)
         return ecosystem.overview()
 
+    @app.get("/api/ecosystem/pair")
+    def eco_pair(request: Request):
+        owner_only(request)
+        return {"key": ecosystem.feed_key()}
+
     @app.post("/api/ecosystem/pull")
     def eco_pull(request: Request):
         owner_only(request)
-        key = db.get_settings().get("advisor_feed_key")
-        if not key:
-            raise ValueError("Save the alert feed key first.")
-        res = ecosystem.pull_alerts(key)
+        res = ecosystem.pull_alerts(db.get_settings().get("advisor_feed_key"))
         db.set_internal("eco_pull_last", res)
         return res
 

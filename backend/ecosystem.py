@@ -11,6 +11,7 @@ Capabilities are plain strings such as "events.ingest" or "lead.capture"; any sy
 """
 import json
 import re
+import secrets
 from datetime import datetime
 from urllib.parse import quote, urlsplit
 
@@ -130,6 +131,16 @@ FEED = "advisor.alerts"
 FEED_MAX_BYTES = 256 * 1024
 
 
+def feed_key() -> str:
+    """This app's own key for reading alert feeds. Made up here the first time it is needed and kept like a password; the owner never sees or types
+    it. It reaches another system only inside the link for opening that system from a won lead (see view-leads.js), which pairs the two."""
+    key = db.get_settings().get("advisor_feed_key")
+    if not key:
+        key = secrets.token_urlsafe(32)
+        db.set_internal("advisor_feed_key", key)
+    return key
+
+
 def pull_alerts(key: str, get=None, card_get=None) -> dict:
     """Ask each linked system that offers the "advisor.alerts" feed for serious alerts from the businesses that chose to share them, and turn each
     new one into a follow-up on the matching lead: due today, with the headline in the lead's history. The key is the one the owner set up on that
@@ -137,8 +148,9 @@ def pull_alerts(key: str, get=None, card_get=None) -> dict:
     get = get or (lambda u, h: requests.get(u, timeout=10, allow_redirects=False, headers=h, stream=True))
     out = {"at": now(), "ok": True, "new": 0, "say": ""}
     if not key:
+        out["say"] = "Nothing to check yet: no business has been connected"
         return out
-    problems, reached = [], 0
+    problems, reached, unpaired = [], 0, []
     for link in list_links():
         card = read_card(link["url"], card_get)
         path = ((card.get("card") or {}).get("feeds") or {}).get(FEED) if card.get("ok") else None
@@ -150,8 +162,11 @@ def pull_alerts(key: str, get=None, card_get=None) -> dict:
         try:
             r = get(url, {"X-Advisor-Key": key, "Accept": "application/json"})
             code = getattr(r, "status_code", 0)
+            if code in (401, 403, 404):   # not paired yet (or an older version without the feed): not an error, it connects when a licence is opened from a won lead
+                unpaired.append(link["name"])
+                continue
             if code != 200:
-                problems.append(f"{link['name']} did not accept the key" if code in (401, 403, 404) else f"{link['name']} answered {code}")
+                problems.append(f"{link['name']} answered {code}")
                 continue
             raw = _body_limited(r)
             alerts = json.loads(raw).get("alerts")
@@ -173,7 +188,8 @@ def pull_alerts(key: str, get=None, card_get=None) -> dict:
         if newest and newest != since:
             db.set_internal(cursor_key, newest)
     out["ok"] = not problems
-    out["say"] = "; ".join(problems) if problems else (f"{out['new']} new follow-up(s)" if out["new"] else ("Checked, nothing new" if reached else "No linked system offers an alert feed"))
+    out["say"] = "; ".join(problems) if problems else (f"{out['new']} new follow-up(s)" if out["new"] else (
+        "Checked, nothing new" if reached else (f"Not connected yet: open {', '.join(unpaired)} from a won lead once to connect it" if unpaired else "No linked system offers an alert feed")))
     return out
 
 

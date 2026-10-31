@@ -180,7 +180,7 @@
             <div class="small muted">Add the address of another system of yours (your website, your intelligence engine, a client system). This app reads its short "capability card" to see who it is and what it offers. Nothing is sent to it from here (except the optional alert feed key below, to read that feed), and a system that is off simply shows as not reachable.</div>
             <div id="eco-body" class="stack" style="gap:8px"><p class="muted small">Loading…</p></div>
             <div class="row" style="gap:8px;flex-wrap:wrap"><input id="eco-name" placeholder="Name (optional)" style="width:180px"><input id="eco-url" type="url" placeholder="https://dericbi.vercel.app" style="flex:1;min-width:240px"><button class="btn" id="eco-add" type="button">Add and check</button></div>
-            ${field(s, 'advisor_feed_key', 'Alert feed key (optional)', { secret: true, hint: 'The key you set on your intelligence engine (ADVISOR_FEED_KEY). With it, serious alerts from businesses that chose to share them, and that you set up from a won lead, become a follow-up due today on that lead. Only a headline arrives. Save settings, then press Check alerts now.' })}
+            <div class="small muted">Alerts: when you open a licence from a won lead, this app and that system connect by themselves. After that, serious alerts from businesses that chose to share them become a follow-up on that lead. Only a headline arrives. Nothing to set up.</div>
             <div class="row" style="gap:8px;align-items:center"><button class="btn" id="eco-pull" type="button">Check alerts now</button><span id="eco-pull-say" class="small muted"></span></div>
           </div></section>
 
