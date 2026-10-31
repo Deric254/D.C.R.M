@@ -36,6 +36,12 @@ import ed25519  # noqa: E402
 import owner_key  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+# The app's own sender thread may start a WhatsApp worker while a test runs. A real one would open the real WhatsApp Web (on a machine
+# with a browser and internet), find it not linked and switch the shared test database to "logged out" in the middle of a later test.
+# Tests that need a worker run it themselves with a fake driver, so no real WhatsApp browser is ever started here.
+_real_spawn = jobs.spawn
+jobs.spawn = lambda job_id, kind: None if kind == "whatsapp" else _real_spawn(job_id, kind)
+
 # A throwaway owner key for the tests: the app under test believes this is the owner's public key.
 TEST_OWNER_KEY, TEST_OWNER_PUB = auth.make_owner_key()
 owner_key.OWNER_PUBLIC_KEY = TEST_OWNER_PUB
