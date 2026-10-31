@@ -10,6 +10,7 @@ Contract "dericbi.ecosystem/1" (every field except contract, id and name is opti
 Capabilities are plain strings such as "events.ingest" or "lead.capture"; any system may invent new ones.
 """
 import json
+import re
 from datetime import datetime
 from urllib.parse import quote, urlsplit
 
@@ -167,7 +168,7 @@ def pull_alerts(key: str, get=None, card_get=None) -> dict:
             at, aid, ref = str(a.get("at") or "")[:40], str(a.get("id") or "")[:64], str(a.get("ref") or "")
             if at > newest:
                 newest = at
-            if aid and ref.isdigit() and _follow_up(link, aid, int(ref), str(a.get("severity") or "")[:20], str(a.get("headline") or "")[:200]):
+            if aid and re.fullmatch(r"[0-9a-f]{32}", ref) and _follow_up(link, aid, ref, str(a.get("severity") or "")[:20], str(a.get("headline") or "")[:200]):
                 out["new"] += 1
         if newest and newest != since:
             db.set_internal(cursor_key, newest)
@@ -185,13 +186,19 @@ def _body_limited(r) -> bytes:
     return raw
 
 
-def _follow_up(link: dict, alert_id: str, lead_id: int, severity: str, headline: str) -> bool:
+def _follow_up(link: dict, alert_id: str, lead_uid: str, severity: str, headline: str) -> bool:
     """One alert -> one follow-up, once. An alert for a lead this app does not have is skipped (and remembered, so it is not looked at again)."""
     with db.db() as conn:
         if conn.execute("INSERT OR IGNORE INTO ecosystem_alerts (system_url, alert_id, seen_at) VALUES (?,?,?)", (link["url"], alert_id, now())).rowcount == 0:
             return False
-        if not conn.execute("SELECT 1 FROM leads WHERE id=?", (lead_id,)).fetchone():
+        lead = conn.execute("SELECT id, next_followup FROM leads WHERE uid=?", (lead_uid,)).fetchone()
+        if not lead:
             return False
-        conn.execute("UPDATE leads SET next_followup=? WHERE id=?", (datetime.now().strftime("%Y-%m-%d"), lead_id))
-        db.log_event(conn, lead_id, "alert", f"{link['name']}: {severity} alert, \"{headline}\". Time to call them.")
+        today = datetime.now().strftime("%Y-%m-%d")
+        planned = lead["next_followup"] or ""
+        # A follow-up already due today or overdue stays as it is; a later one is brought forward, and the old date is written down so nothing is lost.
+        moved = f" (your follow-up of {planned} was brought forward)" if planned > today else ""
+        if not planned or planned > today:
+            conn.execute("UPDATE leads SET next_followup=? WHERE id=?", (today, lead["id"]))
+        db.log_event(conn, lead["id"], "alert", f"{link['name']}: {severity} alert, \"{headline}\". Time to call them.{moved}")
         return True

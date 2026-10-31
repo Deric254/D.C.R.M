@@ -366,6 +366,7 @@ def init_db():
                 ("messages", "reply_to", "INTEGER"),
                 ("leads", "offer", "TEXT NOT NULL DEFAULT ''"),
                 ("leads", "deal_value", "INTEGER NOT NULL DEFAULT 0"),
+                ("leads", "uid", "TEXT"),                                    # a lead's own permanent reference, the same on any copy of this database (other systems match on it)
                 ("campaigns", "ai_personalize", "INTEGER NOT NULL DEFAULT 0"),
                 ("campaigns", "followup_of", "INTEGER"),
                 ("campaigns", "followup_days", "INTEGER NOT NULL DEFAULT 0"),
@@ -373,6 +374,10 @@ def init_db():
                 ("campaigns", "followup_step", "INTEGER NOT NULL DEFAULT 0")):
             if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        conn.execute("UPDATE leads SET uid=lower(hex(randomblob(16))) WHERE uid IS NULL")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_leads_uid ON leads(uid)")
+        conn.execute("CREATE TRIGGER IF NOT EXISTS trg_leads_uid AFTER INSERT ON leads WHEN NEW.uid IS NULL "
+                     "BEGIN UPDATE leads SET uid=lower(hex(randomblob(16))) WHERE id=NEW.id; END")
         # Settings still on the old built-in defaults move to the current ones (anything the owner wrote is kept).
         for key, old in (("sender_name", "DericBI"), ("ai_pitch", ""), ("ai_pitch", OLD_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH), ("ai_pitch", PREVIOUS_DEFAULT_PITCH_2), ("sms_delay_sec", 4),
                          ("optout_suffix_sms", " Reply STOP to opt out.")):

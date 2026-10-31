@@ -193,7 +193,7 @@
     if (lead.status === 'won') {
       try {
         handoffs = (await api('/ecosystem')).systems.filter((s) => s.ok && s.card.handoffs && s.card.handoffs['licence.issue'])
-          .map((s) => ({ name: s.card.name, href: s.url.replace(/\/+$/, '') + s.card.handoffs['licence.issue'].replace('{name}', encodeURIComponent(lead.name)).replace('{ref}', lead.id) }));
+          .map((s) => ({ name: s.card.name, href: s.url.replace(/\/+$/, '') + s.card.handoffs['licence.issue'].replace('{name}', encodeURIComponent(lead.name)).replace('{ref}', lead.uid) }));
       } catch (e) { handoffs = []; }
     }
     const CH = { email: 'email', sms: 'text', whatsapp: 'WhatsApp', other: 'call or chat' };

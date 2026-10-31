@@ -5097,16 +5097,24 @@ def serious_alerts_from_a_shared_feed_become_one_follow_up_each_and_only_with_th
     import ecosystem, json, db
     with db.db() as c:
         lid = L.add_lead(c, {"name": "Licensed Shop", "town": "Nairobi", "phone": "0712 000 111"})["id"]
-        c.execute("UPDATE leads SET status='won', next_followup='' WHERE id=?", (lid,))
+        c.execute("UPDATE leads SET status='won', next_followup='2099-01-01' WHERE id=?", (lid,))
+        uid = c.execute("SELECT uid FROM leads WHERE id=?", (lid,)).fetchone()["uid"]
+        assert len(uid) == 32 and uid == L.get_lead(c, lid)["uid"]
+        other = L.add_lead(c, {"name": "Second Shop", "town": "Nairobi", "phone": "0712 000 222"})["id"]
+        assert c.execute("SELECT uid FROM leads WHERE id=?", (other,)).fetchone()["uid"] != uid                     # every lead gets its own
+        c.execute("UPDATE leads SET uid=NULL WHERE id=?", (other,))
+    db.init_db()                                                                                                       # a database from before the column gains one by itself
+    with db.db() as c:
+        assert len(c.execute("SELECT uid FROM leads WHERE id=?", (other,)).fetchone()["uid"]) == 32
     ecosystem.add_link("Engine", "https://bre.test")
     card = {"contract": "dericbi.ecosystem/1", "id": "bre", "name": "Engine", "feeds": {"advisor.alerts": "/api/advisor/alerts", "bad": "https://evil.test/x"}}
     class R:
         def __init__(self, code, body=b""): self.status_code, self.content = code, body
     def card_get(u): return R(200, json.dumps(card).encode()) if u.endswith("/dericbi.json") else R(404)
     calls = []
-    feed = {"alerts": [{"id": "a1", "ref": str(lid), "business": "Licensed Shop", "severity": "high", "headline": "Sales are down 15%", "at": "2026-10-31T09:00:00"},
-                       {"id": "a2", "ref": "99999", "business": "Unknown", "severity": "critical", "headline": "x", "at": "2026-10-31T09:05:00"},
-                       {"id": "a3", "ref": "not-a-number", "severity": "high", "headline": "y", "at": "2026-10-31T09:06:00"}]}
+    feed = {"alerts": [{"id": "a1", "ref": uid, "business": "Licensed Shop", "severity": "high", "headline": "Sales are down 15%", "at": "2026-10-31T09:00:00"},
+                       {"id": "a2", "ref": "0" * 32, "business": "Unknown", "severity": "critical", "headline": "x", "at": "2026-10-31T09:05:00"},
+                       {"id": "a3", "ref": str(lid), "severity": "high", "headline": "y", "at": "2026-10-31T09:06:00"}]}
     def get(u, h):
         calls.append((u, h.get("X-Advisor-Key")))
         return R(200, json.dumps(feed).encode()) if h.get("X-Advisor-Key") == "right" else R(404)
@@ -5118,8 +5126,16 @@ def serious_alerts_from_a_shared_feed_become_one_follow_up_each_and_only_with_th
         l = c.execute("SELECT next_followup FROM leads WHERE id=?", (lid,)).fetchone()
         ev = [e["detail"] for e in c.execute("SELECT detail FROM events WHERE lead_id=? AND kind='alert'", (lid,))]
     assert l["next_followup"] == datetime.now().strftime("%Y-%m-%d") and len(ev) == 1 and "Sales are down 15%" in ev[0] and "Engine" in ev[0]
+    assert "2099-01-01 was brought forward" in ev[0]                                                                # the date that was replaced is written down
+    with db.db() as c:
+        c.execute("UPDATE leads SET next_followup='2020-01-01' WHERE id=?", (lid,))                                  # an overdue follow-up is left alone
+    feed["alerts"].append({"id": "a4", "ref": uid, "severity": "critical", "headline": "Again", "at": "2026-10-31T10:00:00"})
+    assert ecosystem.pull_alerts("right", get, card_get)["new"] == 1
+    with db.db() as c:
+        assert c.execute("SELECT next_followup FROM leads WHERE id=?", (lid,)).fetchone()["next_followup"] == "2020-01-01"
+        c.execute("DELETE FROM events WHERE lead_id=? AND kind='alert' AND detail LIKE '%Again%'", (lid,))
     r = ecosystem.pull_alerts("right", get, card_get); assert r["new"] == 0                                      # the same alerts again: no second follow-up
-    assert "since=2026-10-31T09%3A06%3A00" in calls[-1][0]                                                      # and it asks only for newer ones
+    assert "since=2026-10-31T10%3A00%3A00" in calls[-1][0]                                                      # and it asks only for newer ones
     with db.db() as c:
         assert c.execute("SELECT COUNT(*) FROM events WHERE lead_id=? AND kind='alert'", (lid,)).fetchone()[0] == 1
     assert ecosystem.pull_alerts("right", lambda u, h: R(200, b"<html>"), card_get)["ok"] is False             # nonsense answers are reported, never raised
