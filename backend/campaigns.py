@@ -30,6 +30,7 @@ from difflib import SequenceMatcher
 import ai
 import backup
 import db
+import ecosystem
 import jobs
 import leads as L
 import library
@@ -1464,6 +1465,7 @@ class Sender(threading.Thread):
         self.stop_event = threading.Event()
         self.next_ok = {ch: 0.0 for ch in AUTO_CHANNELS}
         self.last_release = 0.0
+        self.last_eco = 0.0
         self.last_wa_spawn = 0.0
         self.wa_job = None       # the WhatsApp worker started last
         self.wa_crashes = 0      # workers in a row that died without a word
@@ -1520,6 +1522,12 @@ class Sender(threading.Thread):
             self.last_release = time.time()
             try:
                 release_followups(s)
+            except Exception:
+                traceback.print_exc()
+        if s.get("advisor_feed_key") and time.time() - self.last_eco >= 300:   # serious alerts from businesses that chose to share them, every 5 minutes
+            self.last_eco = time.time()
+            try:
+                db.set_internal("eco_pull_last", ecosystem.pull_alerts(s["advisor_feed_key"]))
             except Exception:
                 traceback.print_exc()
         waits, sent_any, pending = [], False, False

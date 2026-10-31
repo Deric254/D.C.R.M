@@ -177,9 +177,11 @@
 
         <section class="panel" data-group="data" id="eco-panel"><div class="panel-head"><h2>Your other systems</h2></div>
           <div class="panel-body stack" style="gap:12px">
-            <div class="small muted">Add the address of another system of yours (your website, your intelligence engine, a client system). This app reads its short "capability card" to see who it is and what it offers. Nothing is sent to it from here, and a system that is off simply shows as not reachable.</div>
+            <div class="small muted">Add the address of another system of yours (your website, your intelligence engine, a client system). This app reads its short "capability card" to see who it is and what it offers. Nothing is sent to it from here (except the optional alert feed key below, to read that feed), and a system that is off simply shows as not reachable.</div>
             <div id="eco-body" class="stack" style="gap:8px"><p class="muted small">Loading…</p></div>
             <div class="row" style="gap:8px;flex-wrap:wrap"><input id="eco-name" placeholder="Name (optional)" style="width:180px"><input id="eco-url" type="url" placeholder="https://dericbi.vercel.app" style="flex:1;min-width:240px"><button class="btn" id="eco-add" type="button">Add and check</button></div>
+            ${field(s, 'advisor_feed_key', 'Alert feed key (optional)', { secret: true, hint: 'The key you set on your intelligence engine (ADVISOR_FEED_KEY). With it, serious alerts from businesses that chose to share them, and that you set up from a won lead, become a follow-up due today on that lead. Only a headline arrives. Save settings, then press Check alerts now.' })}
+            <div class="row" style="gap:8px;align-items:center"><button class="btn" id="eco-pull" type="button">Check alerts now</button><span id="eco-pull-say" class="small muted"></span></div>
           </div></section>
 
         <section class="panel" data-group="data" id="backups-panel"><div class="panel-head"><h2>Backups and moving to another computer</h2></div>
@@ -225,6 +227,7 @@
             ${x.card.accepts.length ? html`<div class="small">Accepts: ${x.card.accepts.map((o) => html`<span class="chip">${o}</span> `)}</div>` : ''}` : ''}
         </div></div>`;
         render(box, eco.systems.length ? html`${eco.systems.map(line)}` : html`<p class="muted small">No other systems added yet. This is optional: nothing here changes how the app works.</p>`);
+        const pulled = $('#eco-pull-say'); if (pulled && eco.alert_feed) pulled.textContent = 'Last check ' + eco.alert_feed.at + ': ' + eco.alert_feed.say;
       };
       const drawBackups = async () => {
         const box = $('#bk-body'); if (!box) return;
@@ -298,7 +301,14 @@
         el.querySelectorAll('.subnav-item').forEach((b) => { b.classList.toggle('active', b.dataset.tab === tab); b.setAttribute('aria-current', b.dataset.tab === tab ? 'page' : 'false'); });
       };
       el.addEventListener('click', async (e) => {
-        const eadd = e.target.closest('#eco-add'), edel = e.target.closest('[data-eco-del]');
+        const eadd = e.target.closest('#eco-add'), edel = e.target.closest('[data-eco-del]'), epull = e.target.closest('#eco-pull');
+        if (epull) {
+          epull.disabled = true;
+          try { const r = await api('/ecosystem/pull', { method: 'POST' }); $('#eco-pull-say').textContent = r.say; toast(r.say, !r.ok); }
+          catch (err) { toast(err.message, true, 8000); }
+          finally { epull.disabled = false; }
+          return;
+        }
         if (eadd) {
           eadd.disabled = true;
           try { const r = await api('/ecosystem', { method: 'POST', body: { name: $('#eco-name').value, url: $('#eco-url').value } }); $('#eco-name').value = ''; $('#eco-url').value = ''; toast(r.say, !r.ok); await drawEco(); }

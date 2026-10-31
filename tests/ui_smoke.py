@@ -245,6 +245,8 @@ try:
         page.fill("#eco-url", "http://127.0.0.1:9"); page.fill("#eco-name", "Down system"); page.click("#eco-add")
         page.wait_for_function("document.querySelector('#eco-body').innerText.includes('Not reachable')")
         page.click("[data-eco-del]"); page.wait_for_function("document.querySelector('#eco-body').innerText.includes('No other systems')")
+        page.fill("input[name=advisor_feed_key]", "test-feed-key"); page.click("#sform button[type=submit]"); page.wait_for_selector(".toast")   # the feed key is saved like any secret
+        page.click("#eco-pull"); page.wait_for_function("document.querySelector('#eco-pull-say').innerText.includes('No linked system offers')")
         page.click('.subnav-item[data-tab="sending"]')
         assert call("GET", "/settings")["email_daily_cap"] == 55
         page.click('.subnav-item[data-tab="business"]')

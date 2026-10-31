@@ -14,7 +14,8 @@ A small JSON file every system publishes. Only `contract`, `id` and `name` are r
 ```
 `offers` and `accepts` are plain strings. Any system may invent new ones; nobody needs a central list. Unknown fields are kept and ignored.
 
-A card may also carry `"handoffs": {"licence.issue": "/master?issue_to={name}"}`: a ready-made link (a plain path on that same system, `{name}` filled in by the opener) that another system can show its owner. Anything that is not a plain path is dropped. Opening it sends nothing; it only fills a form that the owner still submits. The CRM shows it as a button on a won lead.
+A card may also carry `"handoffs": {"licence.issue": "/master?issue_to={name}&ref={ref}"}`: a ready-made link (a plain path on that same system, `{name}` and `{ref}` filled in by the opener) that another system can show its owner. Anything that is not a plain path is dropped. Opening it sends nothing; it only fills a form that the owner still submits. The CRM shows it as a button on a won lead (`{ref}` is the lead's number, kept on the licence only so alerts can be matched back).
+A card may also list `"feeds": {"advisor.alerts": "/api/advisor/alerts"}`: a place another system may read from, under that system's own rules.
 Cards hold no secrets and no business data.
 
 ## Where each card lives (the CRM tries these in order)
@@ -34,8 +35,15 @@ system is, and what it offers and accepts. Owner only. Nothing is sent to those 
 - When data starts to flow (next step), it goes through each system's own existing door (for example BRE's per-connector webhook token) with
   a retry queue, so a down system never loses or blocks anything.
 
-## Not built yet (on purpose, in this order)
-1. A won lead handed to BRE as a pre-filled licence invite.
-2. BRE alerts and quiet clients coming back to the CRM as follow-up tasks.
-3. Shared fixture files so the Health Check page and BRE read messy files identically.
+## Alerts from businesses back to the CRM (opt-in, narrow)
+Many businesses use the Business Reality Engine; their alerts are theirs. So nothing flows by default:
+1. A business only counts if its licence was issued from a CRM lead (the licence carries that lead's number).
+2. Its own owner must switch on **Tell my DericBI advisor about serious problems** (Settings; off by default, can be turned off at any time, and says what is shared).
+3. Only critical and high alerts that are still open, and only: lead number, business name, severity, the headline, the time. Never records, figures behind it, or explanations. A headline can contain a percentage ("sales are down 15%"); the switch says so.
+4. Read-only, behind `ADVISOR_FEED_KEY` set on the engine. If it is not set the feed does not exist (404). The same value goes in the CRM (Settings > Data and backups > Your other systems > Alert feed key), where it is a saved secret like the mail password.
+5. The CRM asks every 5 minutes (it is a desktop app, so the engine cannot call it). Each alert becomes one follow-up due today on that lead, once. "Check alerts now" does it on demand and says in words what happened.
+
+## Not built yet (on purpose)
+1. Quiet clients (no data for days) coming back as follow-ups, and anything flowing the other way.
+2. Shared fixture files so the Health Check page and BRE read messy files identically.
 Each will be off by default and use the cards to decide whether it applies.

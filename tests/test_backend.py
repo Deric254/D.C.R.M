@@ -5085,6 +5085,46 @@ def the_ecosystem_list_reads_cards_without_knowing_any_system_and_never_fails():
         assert cl.delete(f"/api/ecosystem/{j['id']}").status_code == 200 and cl.get("/api/ecosystem").json()["systems"] == []
 
 
+@test
+def serious_alerts_from_a_shared_feed_become_one_follow_up_each_and_only_with_the_key():
+    fresh()
+    import ecosystem, json, db
+    with db.db() as c:
+        lid = L.add_lead(c, {"name": "Licensed Shop", "town": "Nairobi", "phone": "0712 000 111"})["id"]
+        c.execute("UPDATE leads SET status='won', next_followup='' WHERE id=?", (lid,))
+    ecosystem.add_link("Engine", "https://bre.test")
+    card = {"contract": "dericbi.ecosystem/1", "id": "bre", "name": "Engine", "feeds": {"advisor.alerts": "/api/advisor/alerts", "bad": "https://evil.test/x"}}
+    class R:
+        def __init__(self, code, body=b""): self.status_code, self.content = code, body
+    def card_get(u): return R(200, json.dumps(card).encode()) if u.endswith("/dericbi.json") else R(404)
+    calls = []
+    feed = {"alerts": [{"id": "a1", "ref": str(lid), "business": "Licensed Shop", "severity": "high", "headline": "Sales are down 15%", "at": "2026-10-31T09:00:00"},
+                       {"id": "a2", "ref": "99999", "business": "Unknown", "severity": "critical", "headline": "x", "at": "2026-10-31T09:05:00"},
+                       {"id": "a3", "ref": "not-a-number", "severity": "high", "headline": "y", "at": "2026-10-31T09:06:00"}]}
+    def get(u, h):
+        calls.append((u, h.get("X-Advisor-Key")))
+        return R(200, json.dumps(feed).encode()) if h.get("X-Advisor-Key") == "right" else R(404)
+    assert ecosystem.pull_alerts("", get, card_get)["new"] == 0 and not calls                                   # no key: nothing is asked
+    bad = ecosystem.pull_alerts("wrong", get, card_get); assert not bad["ok"] and "did not accept the key" in bad["say"]
+    r = ecosystem.pull_alerts("right", get, card_get); assert r["ok"] and r["new"] == 1, r
+    assert calls[-1][0] == "https://bre.test/api/advisor/alerts"                                                 # first ask has no cursor
+    with db.db() as c:
+        l = c.execute("SELECT next_followup FROM leads WHERE id=?", (lid,)).fetchone()
+        ev = [e["detail"] for e in c.execute("SELECT detail FROM events WHERE lead_id=? AND kind='alert'", (lid,))]
+    assert l["next_followup"] == datetime.now().strftime("%Y-%m-%d") and len(ev) == 1 and "Sales are down 15%" in ev[0] and "Engine" in ev[0]
+    r = ecosystem.pull_alerts("right", get, card_get); assert r["new"] == 0                                      # the same alerts again: no second follow-up
+    assert "since=2026-10-31T09%3A06%3A00" in calls[-1][0]                                                      # and it asks only for newer ones
+    with db.db() as c:
+        assert c.execute("SELECT COUNT(*) FROM events WHERE lead_id=? AND kind='alert'", (lid,)).fetchone()[0] == 1
+    assert ecosystem.pull_alerts("right", lambda u, h: R(200, b"<html>"), card_get)["ok"] is False             # nonsense answers are reported, never raised
+    assert ecosystem.pull_alerts("right", lambda u, h: (_ for _ in ()).throw(ConnectionError("down")), card_get)["ok"] is False
+    assert ecosystem.pull_alerts("right", get, lambda u: R(404))["say"] == "No linked system offers an alert feed"
+    with AuthedClient(server.create_app(port=8771), base_url="http://127.0.0.1:8771") as cl:
+        assert cl.post("/api/ecosystem/pull").status_code == 400                                                  # no key saved yet
+        assert cl.put("/api/settings", json={"advisor_feed_key": "right"}).json()["advisor_feed_key_set"] is True
+        assert cl.get("/api/settings").json()["advisor_feed_key"] == ""                                           # the key is never sent back out
+
+
 if __name__ == "__main__":
     SMTP.stop()
     PHONE.shutdown()

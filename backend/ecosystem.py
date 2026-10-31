@@ -10,7 +10,8 @@ Contract "dericbi.ecosystem/1" (every field except contract, id and name is opti
 Capabilities are plain strings such as "events.ingest" or "lead.capture"; any system may invent new ones.
 """
 import json
-from urllib.parse import urlsplit
+from datetime import datetime
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -105,12 +106,12 @@ def _tidy(card: dict) -> dict:
     def strs(v, n=40):
         return [str(x)[:60] for x in v[:n]] if isinstance(v, list) else []
     return {"id": str(card.get("id"))[:40], "name": str(card.get("name"))[:80], "version": str(card.get("version") or "")[:20], "role": str(card.get("role") or "")[:160],
-            "offers": strs(card.get("offers")), "accepts": strs(card.get("accepts")), "handoffs": _handoffs(card.get("handoffs"))}
+            "offers": strs(card.get("offers")), "accepts": strs(card.get("accepts")), "handoffs": _handoffs(card.get("handoffs")), "feeds": _handoffs(card.get("feeds"))}
 
 
 def _handoffs(v) -> dict:
-    """Links a system offers ("what to do" -> a path on that system, with {name} for the business). Only plain relative paths are kept, so a card can
-    never point the owner's browser at another website."""
+    """Links or feeds a system offers ("what" -> a path on that system; a link may hold {name} and {ref}). Only plain relative paths are kept, so a card can
+    never point the owner's browser, or this app, at another website."""
     out = {}
     if isinstance(v, dict):
         for k, p in list(v.items())[:10]:
@@ -121,4 +122,76 @@ def _handoffs(v) -> dict:
 
 def overview(get=None) -> dict:
     links = list_links()
-    return {"me": my_card(), "systems": [dict(l, **read_card(l["url"], get)) for l in links]}
+    return {"me": my_card(), "systems": [dict(l, **read_card(l["url"], get)) for l in links], "alert_feed": db.get_internal("eco_pull_last")}
+
+
+FEED = "advisor.alerts"
+FEED_MAX_BYTES = 256 * 1024
+
+
+def pull_alerts(key: str, get=None, card_get=None) -> dict:
+    """Ask each linked system that offers the "advisor.alerts" feed for serious alerts from the businesses that chose to share them, and turn each
+    new one into a follow-up on the matching lead: due today, with the headline in the lead's history. The key is the one the owner set up on that
+    system. Only a headline and a lead reference arrive; nothing is sent from here except the key. Returns a summary in plain words; never raises."""
+    get = get or (lambda u, h: requests.get(u, timeout=10, allow_redirects=False, headers=h, stream=True))
+    out = {"at": now(), "ok": True, "new": 0, "say": ""}
+    if not key:
+        return out
+    problems, reached = [], 0
+    for link in list_links():
+        card = read_card(link["url"], card_get)
+        path = ((card.get("card") or {}).get("feeds") or {}).get(FEED) if card.get("ok") else None
+        if not path:
+            continue
+        cursor_key = "eco_cursor:" + link["url"]
+        since = db.get_internal(cursor_key)
+        url = link["url"] + path + ("?since=" + quote(since, safe="") if since else "")
+        try:
+            r = get(url, {"X-Advisor-Key": key, "Accept": "application/json"})
+            code = getattr(r, "status_code", 0)
+            if code != 200:
+                problems.append(f"{link['name']} did not accept the key" if code in (401, 403, 404) else f"{link['name']} answered {code}")
+                continue
+            raw = _body_limited(r)
+            alerts = json.loads(raw).get("alerts")
+            if not isinstance(alerts, list):
+                raise ValueError("no list")
+        except Exception:   # noqa: BLE001  (any trouble is reported in words)
+            problems.append(f"Could not read the alerts from {link['name']}")
+            continue
+        reached += 1
+        newest = since or ""
+        for a in alerts[:100]:
+            if not isinstance(a, dict):
+                continue
+            at, aid, ref = str(a.get("at") or "")[:40], str(a.get("id") or "")[:64], str(a.get("ref") or "")
+            if at > newest:
+                newest = at
+            if aid and ref.isdigit() and _follow_up(link, aid, int(ref), str(a.get("severity") or "")[:20], str(a.get("headline") or "")[:200]):
+                out["new"] += 1
+        if newest and newest != since:
+            db.set_internal(cursor_key, newest)
+    out["ok"] = not problems
+    out["say"] = "; ".join(problems) if problems else (f"{out['new']} new follow-up(s)" if out["new"] else ("Checked, nothing new" if reached else "No linked system offers an alert feed"))
+    return out
+
+
+def _body_limited(r) -> bytes:
+    raw = b""
+    for chunk in r.iter_content(8192) if hasattr(r, "iter_content") else [r.content]:
+        raw += chunk
+        if len(raw) > FEED_MAX_BYTES:
+            raise ValueError("too large")
+    return raw
+
+
+def _follow_up(link: dict, alert_id: str, lead_id: int, severity: str, headline: str) -> bool:
+    """One alert -> one follow-up, once. An alert for a lead this app does not have is skipped (and remembered, so it is not looked at again)."""
+    with db.db() as conn:
+        if conn.execute("INSERT OR IGNORE INTO ecosystem_alerts (system_url, alert_id, seen_at) VALUES (?,?,?)", (link["url"], alert_id, now())).rowcount == 0:
+            return False
+        if not conn.execute("SELECT 1 FROM leads WHERE id=?", (lead_id,)).fetchone():
+            return False
+        conn.execute("UPDATE leads SET next_followup=? WHERE id=?", (datetime.now().strftime("%Y-%m-%d"), lead_id))
+        db.log_event(conn, lead_id, "alert", f"{link['name']}: {severity} alert, \"{headline}\". Time to call them.")
+        return True

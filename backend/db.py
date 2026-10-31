@@ -153,6 +153,14 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- Other systems of yours this app knows about (the ecosystem). Only a name and an address: nothing is ever sent to them from here yet.
+-- Alerts already turned into follow-ups, so a feed that repeats itself never repeats a follow-up.
+CREATE TABLE IF NOT EXISTS ecosystem_alerts (
+  system_url TEXT NOT NULL,
+  alert_id TEXT NOT NULL,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (system_url, alert_id)
+);
+
 CREATE TABLE IF NOT EXISTS ecosystem_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -244,7 +252,7 @@ SETTING_DEFAULTS = {
     # WhatsApp runs in a hidden browser (no window), and reads replies from the chats every this many minutes (0 = never)
     "whatsapp_hide_window": True, "whatsapp_sync_minutes": 10,
     # the AI sales assistant (closer.py): off | suggest (you press send) | auto (low-risk turns only)
-    "closer_mode": "off", "closer_kb": "", "closer_proof": "", "auto_find_emails": True, "closer_booking_link": "", "free_report_url": "", "free_report_token": "", "closer_min_confidence": 80, "closer_max_auto": 3,
+    "closer_mode": "off", "closer_kb": "", "closer_proof": "", "auto_find_emails": True, "closer_booking_link": "", "free_report_url": "", "free_report_token": "", "advisor_feed_key": "", "closer_min_confidence": 80, "closer_max_auto": 3,
     "closer_delay_sec": 60, "closer_disclose": "ask", "closer_on_mode": "suggest", "closer_deal_desk": True,
     "closer_report_max": 2000, "closer_system_once": 20000, "closer_system_start": 1000, "closer_system_monthly": 200,
     "send_window_enabled": True, "send_window_start": "08:00", "send_window_end": "18:00",
@@ -266,7 +274,7 @@ SETTING_DEFAULTS = {
 for _n in range(2, 11):   # extra email accounts (up to 9): used when the main one fails, hits its limit, or cannot be reached
     SETTING_DEFAULTS.update({f"smtp{_n}_host": "", f"smtp{_n}_port": 587, f"smtp{_n}_security": "starttls", f"smtp{_n}_user": "",
                      f"smtp{_n}_pass": "", f"smtp{_n}_from": "", f"smtp{_n}_cap": 80})
-SECRET_KEYS = {"free_report_token", *(f"smtp{_n}_pass" for _n in range(2, 11)), "smtp_pass", "imap_pass", "sms_gateway_pass", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
+SECRET_KEYS = {"free_report_token", "advisor_feed_key", *(f"smtp{_n}_pass" for _n in range(2, 11)), "smtp_pass", "imap_pass", "sms_gateway_pass", "ai_key_gemini", "ai_key_groq", "ai_key_nvidia",
                "ai_key_openrouter", "ai_key_mistral", "ai_key_custom"}
 
 
