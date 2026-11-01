@@ -594,7 +594,7 @@ function profitCards(hm, xo, o) {
   h += '</div>';
   if (hm.rows.length > 1) {
     h += '<table style="margin-top:14px"><tr><th>Month</th><th class="n">Sales</th><th class="n">Expenses</th><th class="n">Profit</th></tr>' + hm.rows.map(function (r) {
-      var p = r.sales - r.expenses; return '<tr><td>' + esc(E.monthName(r.key)) + (r.comparable ? '' : ' <span class="fr-tag">not compared</span>') + '</td><td class="n">' + fmt(r.sales) + '</td><td class="n">' + fmt(r.expenses) + '</td><td class="n" style="' + (p < 0 ? 'color:#b45309;font-weight:700' : '') + '">' + fmt(p) + '</td></tr>'; }).join('') + '</table>';
+      var p = r.sales - r.expenses; return '<tr><td>' + esc(E.monthName(r.key)) + (r.partial ? ' <span class="fr-tag">so far</span>' : r.comparable ? '' : ' <span class="fr-tag">not compared</span>') + '</td><td class="n">' + fmt(r.sales) + '</td><td class="n">' + fmt(r.expenses) + '</td><td class="n" style="' + (p < 0 ? 'color:#b45309;font-weight:700' : '') + '">' + fmt(p) + '</td></tr>'; }).join('') + '</table>';
   }
   if (hm.finds.length) h += '<ul class="fr-find">' + hm.finds.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>';
   if (hm.notes.length) h += '<p class="fr-mute fr-sm" style="margin:10px 0 0">' + hm.notes.map(esc).join('<br>') + '</p>';

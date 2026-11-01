@@ -122,7 +122,7 @@ r = run(buf('Date,Details,Amount\n2026-01-02,Takings,100\n2026-01-03,Takings,250
 }
 // ---- books: sales and expenses, in two sheets, in one sheet, in and out columns, bank-style negatives
 const d1 = (m) => `2026-${String(m).padStart(2, '0')}-01`, d2 = (m) => `2026-${String(m).padStart(2, '0')}-${m === 2 ? 28 : m % 2 ? 31 : 30}`;
-const bookRun = (sheets, kinds) => { const B = E.prepareBooks(sheets, kinds); const so = B.sales ? E.analyse(B.sales, E.guess(B.sales), {}) : null; const xo = B.expenses ? E.analyseExpenses(B.expenses, {}) : null; return { B, so, xo, hm: so && xo ? E.harmonize(so, xo) : null }; };
+const bookRun = (sheets, kinds, opts) => { const B = E.prepareBooks(sheets, kinds); const so = B.sales ? E.analyse(B.sales, E.guess(B.sales), opts || {}) : null; const xo = B.expenses ? E.analyseExpenses(B.expenses, opts || {}) : null; return { B, so, xo, hm: so && xo ? E.harmonize(so, xo) : null }; };
 const sheetOf = (name, rows) => ({ name, rows });
 {
   const salesRows = [['Date', 'Item', 'Qty', 'Amount']]; const expRows = [['Date', 'Category', 'Amount']];
@@ -227,6 +227,36 @@ for (let k = 0; k < 300; k++) {
 ok(bad === 0 && n >= 290, `books fuzz: ${n} random sales+expenses files checked, ${bad} problems`);
 
 })();
+
+// in progress means the calendar says so (the month, week or day that contains today), never where a file's data starts or ends
+{
+  const dd = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const mk = (months, octBig) => {
+    const sales = [['Date', 'Item', 'Amount']], exp = [['Date', 'Category', 'Amount']];
+    months.forEach(([y, m, to]) => { for (let d = 1; d <= to; d += 3) { sales.push([dd(y, m, d), 'Sugar', 1000 + (octBig && m === 10 ? 9000 : 0)]); exp.push([dd(y, m, d), 'Rent', 400]); } });
+    return [sheetOf('Sales', sales), sheetOf('Expenses', exp)];
+  };
+  const find = (r, k) => r.hm.rows.find((x) => x.key === k);
+  // today is 20 October and the files run to the 20th: October is in progress, compared, marked, and never ranked as a whole month
+  let r = bookRun(mk([[2026, 7, 28], [2026, 8, 28], [2026, 9, 28], [2026, 10, 20]], true), null, { now: new Date(2026, 9, 20) });
+  ok(find(r, '2026-10').partial && find(r, '2026-10').comparable, 'in progress: today is in October, so October is in progress ' + JSON.stringify(find(r, '2026-10')));
+  ok(r.hm.notes.some((n) => /October 2026 is still in progress/.test(n)), 'in progress: said in words ' + JSON.stringify(r.hm.notes));
+  ok(!r.so.finds.some((f) => /October/.test(f)) && !r.hm.finds.some((f) => /October/.test(f)), 'in progress: never ranked as strongest or quietest ' + JSON.stringify(r.so.finds));
+  // the very same files read after October is over: the month is simply short (the data ended early), not in progress, and is left out
+  r = bookRun(mk([[2026, 7, 28], [2026, 8, 28], [2026, 9, 28], [2026, 10, 20]], true), null, { now: new Date(2026, 10, 5) });
+  ok(!find(r, '2026-10').partial && !find(r, '2026-10').comparable, 'in progress: a past month that ends early is not in progress ' + JSON.stringify(find(r, '2026-10')));
+  // today is 1 November and there is one day of November: that is already a month in progress
+  r = bookRun(mk([[2026, 8, 28], [2026, 9, 28], [2026, 10, 30], [2026, 11, 1]], false), null, { now: new Date(2026, 10, 1) });
+  ok(find(r, '2026-11').partial && find(r, '2026-11').comparable, 'in progress: 1 November with one day of data ' + JSON.stringify(find(r, '2026-11')));
+  // a month only one file has is never "in progress" (nothing to compare it with)
+  const only = mk([[2026, 9, 28], [2026, 10, 30], [2026, 11, 1]], false); only[1].rows = only[1].rows.filter((row) => !/^2026-11/.test(String(row[0])));
+  r = bookRun(only, null, { now: new Date(2026, 10, 1) }); ok(!find(r, '2026-11').partial && !find(r, '2026-11').comparable, 'in progress: needs both files ' + JSON.stringify(find(r, '2026-11')));
+  // week and day: a huge sale today must not make today's weekday the "busiest day"
+  const daily = [['Date', 'Item', 'Amount']]; for (let d = 1; d <= 31; d++) { const dow = new Date(2026, 9, d).getDay(); daily.push([dd(2026, 10, d), 'Sugar', dow === 6 ? 300 : 100 + (d === 27 ? 100000 : 0)]); }
+  const busy = (now) => E.analyse(E.prepareBooks([sheetOf('Sales', daily)], null).sales, E.guess(E.prepareBooks([sheetOf('Sales', daily)], null).sales), { now }).finds.find((f) => /busiest day/.test(f)) || '';
+  ok(/Tuesday is your busiest/.test(busy(new Date(2026, 10, 5))), 'in progress: once the week is over, 27 October counts ' + busy(new Date(2026, 10, 5)));
+  ok(/Saturday is your busiest/.test(busy(new Date(2026, 9, 27))), 'in progress: today and its week are left out of the busiest-day count ' + busy(new Date(2026, 9, 27)));
+}
 
 console.log(`engine tests: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -18,11 +18,25 @@ A card may also carry `"handoffs": {"licence.issue": "/master?issue_to={name}&re
 A card may also list `"feeds": {"advisor.alerts": "/api/advisor/alerts"}`: a place another system may read from, under that system's own rules.
 Cards hold no secrets and no business data.
 
-## Where each card lives (the CRM tries these in order)
+## Where each card lives (the CRM tries these three paths in order)
 1. `/.well-known/dericbi.json`   2. `/dericbi.json`   3. `/api/ecosystem/card`
-- Website: `.well-known/dericbi.json` and `dericbi.json` (static files).
-- Business Reality Engine: `GET /api/ecosystem/card` (`app/api/ecosystem.py`, no database needed).
-- CRM: `GET /api/ecosystem/card` (for display; it needs sign-in).
+
+| System | Kind | Card at | Reachable at |
+|---|---|---|---|
+| Website and Health Check | static site | `/.well-known/dericbi.json`, `/dericbi.json` | the public site |
+| Portfolio | static site | `/.well-known/dericbi.json`, `/dericbi.json` | the public site |
+| Business Reality Engine | hosted, many businesses | `/api/ecosystem/card` | its own address; no database needed for the card |
+| CRM | desktop (yours only) | `/api/ecosystem/card` | needs sign-in; for display |
+| Inventory Control | desktop, per customer | `/api/ecosystem/card` | `http://127.0.0.1:47615` while it runs (any free port only if that one is taken) |
+| Imara Links | desktop, per customer | `/api/ecosystem/card` | `http://127.0.0.1:9000` while it runs (any free port only if that one is taken) |
+| smePro | desktop and phone, per customer | none yet | `http://127.0.0.1:8080` while it runs |
+| Pharmacy ERP | desktop, per customer | none, on purpose | a fresh free port each start, chosen so it can never clash with another app |
+
+The cards are the truth; this table can lag behind them.
+
+The desktop programs that publish a card serve it from a plain data file (Inventory Control: `src/ecosystem.json`; Imara Links: `backend/ecosystem.json`). Edit the file to change what the card says, no code. If the file is missing or broken the address answers 404 and nothing else is affected. The card is served without sign-in and without a licence, because it holds no data and other systems need to find the app before it is licensed.
+
+A desktop program has no public web address, so it can only be reached while it is running, on the same computer. That is why a card only matters for the programs on your own machine. Customers' copies run on their own computers and are never reached from outside; they stay fully independent.
 
 ## In the CRM
 Settings > Data and backups > **Your other systems**: add a name and address, press Add and check. It shows reachable or not, what the
