@@ -38,7 +38,6 @@
   .fr-btn:hover{background:#3D8069;color:#fff}
   .fr-btn.fr-alt,.fr-btn.fr-alt:hover{background:#fff;color:#3D8069;border:1px solid #49A078}
   .fr-btn.fr-alt:hover{background:#f0fdf6}
-  .fr-btn.fr-gold,.fr-btn.fr-gold:hover{background:#facc15;color:#1f2937}
   .fr-btn[disabled]{opacity:.55;cursor:not-allowed}
   .fr-btn:focus-visible,.fr-box select:focus-visible,.fr-box input:focus-visible,.fr-box textarea:focus-visible,summary:focus-visible{outline:3px solid #facc15;outline-offset:2px}
   .fr-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
@@ -72,7 +71,26 @@
   details.fr-more summary{cursor:pointer;color:#3D8069;font-weight:700;font-size:.92rem;margin-top:10px}
   .fr-chip{display:inline-block;background:#f0fdf6;border:1px solid #cfe8dc;border-radius:999px;padding:2px 10px;font-size:.82rem;margin:2px 4px 2px 0}
   @media(max-width:480px){.fr-box{padding:14px}.fr-box td:first-child{word-break:break-word}}
+  .fr-printonly{display:none}
   @media print{nav,footer,#backToTop,.fr-noprint,.fr-drop,#frHow,#chatbot-container,[id*=chatbot]{display:none!important}body{background:#fff}.fr-box{break-inside:avoid;box-shadow:none;border-color:#bbb}.fr-cta{background:#fff;color:#000;border:1px solid #000}.fr-cta h2{color:#000}.fr-cta .fr-btn{display:none}}
+  /* Print / Save-as-PDF: report only. Hides the form, call-to-action, upload and chrome; keeps colours and bars; avoids splitting cards across pages. */
+  @page{size:A4;margin:14mm 12mm}
+  @media print{
+    #frLead,#frCta,#frUpload,#frTips,.fr-hero p,.fr-btn,#scrollProgress,body>.h-14{display:none!important}
+    html,body{background:#fff!important;overflow:visible!important;height:auto!important;min-height:0!important}
+    body{display:block!important;font-size:11pt}
+    main{overflow:visible!important;background:#fff!important;display:block!important}
+    .fr-wrap{max-width:none;padding:0}
+    .fr-hero{text-align:left;padding:0 0 8px;border-bottom:2px solid #49A078;margin-bottom:4px}
+    .fr-hero h1{font-size:20pt;margin:0}
+    .fr-hero .fr-printonly{display:block!important;max-width:none;margin:6px 0 0;font-size:9.5pt;color:#4b5563}
+    .fr-box{margin-top:12px;padding:12px 14px;box-shadow:none;border:1px solid #cfe8dc;break-inside:avoid;page-break-inside:avoid}
+    .fr-box h2{break-after:avoid;page-break-after:avoid}
+    .fr-stat,.fr-box tr,.fr-find li{break-inside:avoid;page-break-inside:avoid}
+    .fr-bar,.fr-bar>i,.fr-stat,.fr-tag,.fr-chip,.fr-check{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .fr-note{margin:14px 0 0;text-align:left;font-size:8.5pt;color:#6b7280;border-top:1px solid #e5e7eb;padding-top:8px}
+    a{color:inherit;text-decoration:none}
+  }
   </style>
   <style>
   .nav-link{transition:color .3s ease,text-shadow .3s ease}
@@ -184,6 +202,7 @@ document.addEventListener('click', (e) => {
 <div class="fr-wrap">
   <header class="fr-hero">
     <h1>Free Business Health Check</h1>
+    <p class="fr-printonly" id="frPrintMeta"></p>
     <p>Upload your sales, and your expenses if you have them, however messy they are. See what sells best, what sits too long, where your money goes and whether you are really making a profit. Free, and your files never leave your device.</p>
   </header>
 
@@ -191,10 +210,10 @@ document.addEventListener('click', (e) => {
     <div class="fr-drop" id="frDrop">
       <p style="margin:0 0 12px"><b>Drop your sales and expenses here</b><br><span class="fr-mute fr-sm">Excel or CSV, tidy or messy. Choose one file, or several at once (for example a sales file and an expenses file). We clean them, and show you exactly what we did.</span></p>
       <div class="fr-row" style="justify-content:center">
-        <label class="fr-btn" for="frFile" style="margin:0"><i class="fas fa-file-upload" aria-hidden="true"></i>&nbsp; Choose file(s)</label>
+        <label class="fr-btn" for="frFile" style="margin:0">Choose file(s)</label>
         <input id="frFile" type="file" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.ods" class="fr-hide">
         <button class="fr-btn fr-alt" id="frSample" type="button">Try it with sample data</button>
-        <button class="fr-btn fr-alt" id="frTpl" type="button"><i class="fas fa-file-excel" aria-hidden="true"></i>&nbsp; Download the Excel template</button>
+        <button class="fr-btn fr-alt" id="frTpl" type="button">Download the Excel template</button>
       </div>
     </div>
     <form class="fr-gs" id="frGsForm" novalidate>
@@ -202,7 +221,7 @@ document.addEventListener('click', (e) => {
       <div class="fr-row" style="flex-wrap:nowrap;margin-top:6px"><input id="frGsUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/..." aria-label="Google Sheets link"><button class="fr-btn fr-alt" id="frGsGo" type="submit" style="white-space:nowrap">Read my sheet</button></div>
       <p class="fr-mute fr-sm" style="margin:6px 0 0">In Google Sheets press <b>Share</b>, set General access to <b>Anyone with the link</b> (Viewer), then copy the link. Sales and expenses can be two tabs of the same sheet. Your sheet is read in your own browser and is never sent to me.</p>
     </form>
-    <p class="fr-mute fr-sm" style="margin:12px 0 0"><i class="fas fa-lock" aria-hidden="true"></i>&nbsp; Your files are read inside your own browser and are never uploaded. I only receive your details if you choose to leave them at the end.</p>
+    <p class="fr-mute fr-sm" style="margin:12px 0 0">Your files are read inside your own browser and are never uploaded. I only receive your details if you choose to leave them at the end.</p>
     <p class="fr-mute fr-sm" style="margin:8px 0 0"><b>Sales</b> need a product and an amount (or quantity and price). <b>Expenses</b> need a category or description and an amount. Keep them in two tabs, two files, or one sheet with a Type column (Sale / Expense) or Money in / Money out columns, and we sort it out. Add a date, a receipt number and stock on hand to unlock more. Works with title lines, blank rows, totals, returns, KES amounts, repeated headings, monthly sheets and Swahili headings.</p>
     <p class="fr-warn fr-hide" id="frErr" role="alert"></p>
   </section>
@@ -219,7 +238,7 @@ document.addEventListener('click', (e) => {
   <section class="fr-cta fr-hide" id="frCta">
     <h2>Want this on your full records, every month?</h2>
     <p style="margin:6px 0 14px">I can look at your complete sales and stock records and show you exactly where money is slipping and where the opportunities are. You only pay when you see value.</p>
-    <div class="fr-row"><a class="fr-btn fr-hide" id="frWa" target="_blank" rel="noopener"><i class="fab fa-whatsapp" aria-hidden="true"></i>&nbsp; Message me on WhatsApp</a><a class="fr-btn fr-alt fr-hide" id="frMail"><i class="fas fa-envelope" aria-hidden="true"></i>&nbsp; Send me an email</a><button class="fr-btn fr-alt fr-noprint" id="frPrint" type="button"><i class="fas fa-print" aria-hidden="true"></i>&nbsp; Save this report as PDF</button></div>
+    <div class="fr-row"><a class="fr-btn fr-hide" id="frWa" target="_blank" rel="noopener">Message me on WhatsApp</a><a class="fr-btn fr-alt fr-hide" id="frMail">Send me an email</a><button class="fr-btn fr-alt fr-noprint" id="frPrint" type="button">Save this report as PDF</button></div>
   </section>
 
   <section class="fr-box fr-hide" id="frLead">
@@ -267,20 +286,6 @@ document.addEventListener('click', (e) => {
       <div class="flex flex-wrap justify-center gap-2 xs:gap-3 sm:gap-4 mt-1">
         <a href="../about.html" class="footer-link text-xs xs:text-sm bg-green-50 hover:bg-green-100 px-2 py-1 rounded-md shadow-sm hover:shadow transition-all">About Us</a>
         <a href="../terms.html" class="footer-link text-xs xs:text-sm bg-green-50 hover:bg-green-100 px-2 py-1 rounded-md shadow-sm hover:shadow transition-all">T&C's</a>
-        <button onclick="toggleNewsletter()" class="footer-link text-xs bg-green-50 hover:bg-green-100 px-2 py-1 rounded-md shadow-sm hover:shadow transition-all">
-          <i class="fas fa-envelope mr-1"></i>Newsletter
-        </button>
-      </div>
-      <!-- Hidden Newsletter Signup -->
-      <div id="newsletterSignup" class="hidden mt-2 w-full max-w-xs bg-white rounded-lg p-2 shadow-md border border-green-200">
-        <div class="flex text-xs">
-          <input type="email" placeholder="Your email..." 
-            class="flex-1 px-2 py-1 text-xs border border-gray-300 rounded-l focus:outline-none focus:ring-2 focus:ring-[#49A078] shadow-inner">
-          <button aria-label="Send" class="bg-gradient-to-r from-[#49A078] to-[#3e8865] text-white px-3 py-1 rounded-r text-xs hover:from-[#3e8865] hover:to-[#357255] transition shadow-sm hover:shadow">
-            <i class="fas fa-paper-plane"></i>
-          </button>
-        </div>
-        <p class="text-xs text-gray-600 mt-1 font-medium">Monthly insights & tips</p>
       </div>
     </div>
 
@@ -326,19 +331,12 @@ document.addEventListener('click', (e) => {
   text-shadow: 0 0 4px rgba(250, 204, 21, 0.5); /* Subtle glow */
 }
 </style>
-
-<script>
-function toggleNewsletter() {
-  const newsletterSignup = document.getElementById('newsletterSignup');
-  newsletterSignup.classList.toggle('hidden');
-}
-</script>
 </footer>
 
 <!-- Back to Top Button -->
 <button aria-label="Back to top" id="backToTop" class="fixed bg-[#49A078] text-white rounded-full shadow-lg flex items-center justify-center text-xl z-40 opacity-0 transition-opacity duration-300 md:flex"
   style="border: none; outline: none; display: none; bottom: 10rem; right: 2rem; width: 3rem; height: 3rem; pointer-events: auto !important; cursor: pointer !important;">
-  <i class="fas fa-arrow-up"></i>
+  
 </button>
 
 <script>
@@ -577,12 +575,12 @@ function qualityCard(o, X) {
   if (o.totalMismatch) extra.push('In ' + fmt(o.totalMismatch) + ' row' + (o.totalMismatch > 1 ? 's' : '') + ' your Total column does not match the months added up, for example ' + ((o.examples.totalMismatch || [])[0] ? esc(o.examples.totalMismatch[0]) : ''));
   o.notes.forEach(function (n) { extra.push(esc(n)); });
   var cls = r.ok ? '' : ' bad';
-  var h = '<section class="fr-box fr-check' + cls + '"><h2>' + (r.ok ? '<i class="fas fa-circle-check fr-ok" aria-hidden="true"></i> ' + (X ? 'Your expenses add up' : 'Your numbers add up') : (X ? 'Your expenses do not add up yet' : 'Your numbers do not add up yet')) + '</h2>';
+  var h = '<section class="fr-box fr-check' + cls + '"><h2>' + (r.ok ? '' + (X ? 'Your expenses add up' : 'Your numbers add up') : (X ? 'Your expenses do not add up yet' : 'Your numbers do not add up yet')) + '</h2>';
   h += '<p class="fr-mute fr-sm" style="margin:2px 0 8px">We read <b>' + fmt(o.rowsRead) + '</b> row' + (o.rowsRead === 1 ? '' : 's') + '. Every number in the amount column is accounted for below, and nothing was thrown away.</p>';
   h += '<table>' + rowsList.map(function (x) { return '<tr><td>' + x[0] + '</td><td class="n">' + x[1] + '</td></tr>'; }).join('') + '<tr><td><b>Everything we read from your file</b></td><td class="n"><b>' + mny(r.readSum) + '</b></td></tr></table>';
   h += '<p class="fr-sm" style="margin:8px 0 0">' + (r.ok ? '<span class="fr-ok">' + (X ? 'Expenses + credits + total lines' : 'Sales + returns + total lines') + ' = everything we read. Difference: ' + mny(0) + '.</span>' : '<span class="fr-warn">Difference of ' + mny(r.diff) + ' between what we read and what we counted. Please tell me and I will look into it.</span>') + '</p>';
   if (extra.length) h += '<ul class="fr-find fr-sm">' + extra.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>';
-  h += '<div class="fr-row fr-noprint" style="margin-top:12px"><button class="fr-btn fr-alt" id="' + (X ? 'frDlX' : 'frDl') + '" type="button"><i class="fas fa-download" aria-hidden="true"></i>&nbsp; Download the cleaned ' + (X ? 'expenses ' : '') + 'file</button><span class="fr-mute fr-sm">Every row, with what we did with it. It stays on your device.</span></div></section>';
+  h += '<div class="fr-row fr-noprint" style="margin-top:12px"><button class="fr-btn fr-alt" id="' + (X ? 'frDlX' : 'frDl') + '" type="button">Download the cleaned ' + (X ? 'expenses ' : '') + 'file</button><span class="fr-mute fr-sm">Every row, with what we did with it. It stays on your device.</span></div></section>';
   return h;
 }
 function profitCards(hm, xo, o) {
@@ -690,6 +688,7 @@ var drop = $('#frDrop');
 ['dragleave', 'drop'].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
 drop.addEventListener('drop', function (e) { if (e.dataTransfer.files.length) loadFiles(e.dataTransfer.files); });
 $('#frPrint').addEventListener('click', function () { window.print(); });
+window.addEventListener('beforeprint', function () { var m = $('#frPrintMeta'); if (m) m.textContent = (S.file ? S.file + ' \u00b7 ' : '') + 'Prepared ' + new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) + ' \u00b7 dericBI \u00b7 dericbi.vercel.app'; });
 
 // sample data: the same made-up neighbourhood shop as the template, so what you try is what you download
 $('#frSample').addEventListener('click', function () {

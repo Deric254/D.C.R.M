@@ -71,10 +71,6 @@ def _pay_line(s) -> str:
     return m.group(0).strip() if m else ""
 
 
-def _pays_when_satisfied(s) -> bool:
-    return bool(_pay_line(s))
-
-
 class AIError(Exception):
     pass
 

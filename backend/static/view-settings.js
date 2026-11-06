@@ -1,5 +1,5 @@
 (function () {
-  const { html, render, api, $, $$, toast, fail } = App;
+  const { html, render, api, $, toast, fail } = App;
 
   const field = (s, key, label, { type = 'text', hint = '', placeholder = '', secret = false, min } = {}) => html`
     <label class="field">${label}

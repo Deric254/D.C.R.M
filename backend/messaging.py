@@ -125,15 +125,6 @@ def sms_clean(text: str) -> str:
     return re.sub(r"[ \t]+", " ", t).strip()
 
 
-def sms_segments(text: str) -> int:
-    n = len(text)
-    if n == 0:
-        return 0
-    gsm = all(ord(c) < 128 for c in text)
-    single, multi = (160, 153) if gsm else (70, 67)
-    return 1 if n <= single else -(-n // multi)
-
-
 def sms_total(body: str, s: dict) -> int:
     """Length of the text exactly as it will be sent, opt-out line included."""
     return len(final_body("sms", body, s))
